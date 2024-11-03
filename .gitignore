@@ -1,3 +1,7 @@
 .DS_Store
 cmake-build-debug
 simulator/data
+simulator/venv
+__pycache__
+venv
+cmake-build-release

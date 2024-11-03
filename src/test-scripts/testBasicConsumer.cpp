@@ -8,6 +8,8 @@
 #include <csignal>
 #include <cstring>
 #include <string>
+#include <thread>
+#include <chrono>
 
 #define BUFFER_SIZE 2 * 3 * 4
 void *g_shared_mem_ptr = nullptr;
@@ -45,13 +47,12 @@ void signalHandler(int signum)
 void *initializeConnectionToSharedMemory(const char *name, int size)
 {
     // Open the shared memory segment
-    int shm_fd = shm_open(name, O_RDONLY, 0666);
-    if (shm_fd == -1)
+    int shm_fd;
+    while (shm_fd = shm_open(name, O_RDONLY, 0666), shm_fd == -1)
     {
-        std::cerr << "Failed to open shared memory segment" << std::endl;
-        return nullptr;
+      std::cout << "Waiting for shared mem to open" << std::endl;
+      std::this_thread::sleep_for(std::chrono::seconds(1));
     }
-
     // Map the shared memory segment to the process's address space
     void *shared_mem_ptr = mmap(nullptr, size, PROT_READ, MAP_SHARED, shm_fd, 0);
     if (shared_mem_ptr == MAP_FAILED)
