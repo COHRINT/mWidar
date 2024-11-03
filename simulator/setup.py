@@ -1,24 +1,32 @@
-# setup.py
+import os
 import platform
-from setuptools import setup
+import subprocess
 
-# Common dependencies
-with open('requirements.txt') as f:
-    install_requires = f.read().splitlines()
+#activate and run simulateTracks in venv
 
-# OS-specific dependencies
-if platform.system() == "Linux" or platform.system() == "Darwin":
-    install_requires.append("posix-ipc==1.1.1")
-elif platform.system() == "Windows":
-    install_requires.extend([
-        "win32api==1.0.0",
-        "win32pipe==1.0.0",
-        "win32process==1.0.0"
-    ])
+def activate_venv():
+	#run in existing virtual environment
+	if os.path.exists("venv"):
+		print("Running venv")
+	#determine the path to the Python interpreter within the virtual environment
+		if platform.system() == "Windows":
+			python_executable = os.path.join("venv", "Scripts", "python.exe")
+		else:
+			python_executable = os.path.join("venv", "bin", "python")
+		#run simulateTracks.py using the virtual environment's Python interpreter
+			print("running simulator")
+			subprocess.run([python_executable, "simulateTracks.py",
+				"-o", "[-4,50,2,1,0,0]", "[130,120,-1,-2,-1,0]",
+				"-s", "true",
+				"-T", "true"])
+	else:
+		print("No virtual environment found. Run the setup script first.")
 
-setup(
-    name="simulateTracks",
-    version="0.1",
-    install_requires=install_requires,
-    # other setup parameters
-)
+def deactivate_venv():
+		if platform.system() == "Windows":
+			os.system("venv\\Scripts\\deactivate")
+		else:
+			os.system("deactivate")
+if __name__== "__main__":
+	activate_venv()
+	deactivate_venv()

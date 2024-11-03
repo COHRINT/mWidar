@@ -1,6 +1,6 @@
 #include <cstdlib> // For std::system
 #include "../../include/DataProcessor.h"
-#include "../../include/graphProcessor.h"
+#include "../../include/GraphProcessor.h"
 #include "../../include/VisionProcessor.h"
 #include "../../include/Object.h"
 #include "../../include/dataStructures.h"
