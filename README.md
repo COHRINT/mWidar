@@ -2,9 +2,11 @@
 
 Target tracking application in partnership with Wavesens
 
-Note: This project is in it's initial development phase, so broken code may be found within the main branch.
+Note: This project is in its initial development phase, so broken code may be found within the main branch.
 
 ## Build Instructions
+
+This project depends on a working installation of OpenCV2. Installation instructions can be found [here](https://docs.opencv.org/4.x/df/d65/tutorial_table_of_content_introduction.html).
 
 This project is designed to be developed with CLion, upon cloning this repository users should be able to build the files using a build button. But building and running is simple when using other editors.
 
@@ -16,8 +18,10 @@ Changes to the `CmakeLists.txt` in the project root requires a rebuild of the di
 ./mWidar <image_file> <truth_file>
 ```
 
-To run the python simulator, create a virtual environment, and run the `setup.py` within the simulator directory. Then, run with:
+To run the python simulator, create a virtual environment, and run the `setup.[bash, cmd]` within the simulator directory. Then, activate and run with:
 ```
+cd simulator
+source venv/bin/activate
 python3 simulateTracks.py -o "[x,y,vx,vy,ax,ay]" ... -s true -t true
 ```
 

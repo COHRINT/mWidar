@@ -46,7 +46,7 @@ set(SOURCES
         src/test-scripts/testBasicConsumer.cpp
         src/GraphProcessor.cpp
         src/Object.cpp
-        src/visionProcessor.cpp
+        src/VisionProcessor.cpp
         src/DataProcessor.cpp
         include/GraphProcessor.h
 )

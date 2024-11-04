@@ -25,14 +25,14 @@ else
 fi
 
 # Install the required packages
-pip install -r requirements.txt
+pip3 install -r requirements.txt
 if [ $? -ne 0 ]; then
     echo "Failed to install required packages"
     exit 1
 fi
 
 # Install posix_ipc
-pip install posix_ipc
+pip3 install posix_ipc
 if [ $? -ne 0 ]; then
     echo "Failed to install posix_ipc"
     exit 1
