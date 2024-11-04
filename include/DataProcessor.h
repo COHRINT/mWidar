@@ -12,6 +12,11 @@
 #include <string>
 
 using namespace cv;
+template <typename eig_t>
+    static eig_t scale(eig_t &matrix_or_vector, double scale)
+{
+    matrix_or_vector *= scale;
+}
 
 class DataProcessor
 /*
@@ -53,7 +58,11 @@ public:
     void particleUpdate(Object &obj, Eigen::VectorXd &measurement);
     void prettyPrintObjectData();
     std::vector<std::pair<cv::Point, Object *>> truthDataMapping(std::vector<cv::Point> &measurements, std::vector<std::pair<int, cv::Point>> &truthData);
-    std::pair<cv::Point, std::pair<int, cv::Point>> findClosestPointToTruth(std::vector<cv::Point> &measurements, std::pair<int, cv::Point> &truthPoint);
+
+    template<class eig_t>
+    static void convertMetersToPx(eig_t &eigen_type, double scale);
+
+    static std::pair<cv::Point, std::pair<int, cv::Point>> findClosestPointToTruth(std::vector<cv::Point> &measurements, std::pair<int, cv::Point> &truthPoint);
     void printMatrices();
 
     // void createStateMatrices();                                                                               // Create the state matrices for some object

@@ -37,6 +37,7 @@ void DataProcessor::printMatrices()
 
 void DataProcessor::initializeStateMatrices()
 {
+    double scale = 0.03125; // 1/32
     // Initialize the sparse matrices with the appropriate sizes
     A.resize(4, 4);
     Gamma.resize(4, 2);
@@ -69,12 +70,19 @@ void DataProcessor::initializeStateMatrices()
     // Insert elements into W
     W.insert(0, 0) = 1.0;
     W.insert(1, 1) = 1.0;
-    W = W * 10; // Adjust as needed
+    W = W * 5; // Adjust as needed
 
     // Insert elements into R
     R.insert(0, 0) = 1.0;
     R.insert(1, 1) = 1.0;
-    R = R * 1e-4; // Adjust as needed
+    // R = R * 1e-4; // Adjust as needed
+
+    // convert meters to pixels
+    convertMetersToPx(A, scale);
+    convertMetersToPx(Gamma, scale);
+    convertMetersToPx(H, scale);
+    convertMetersToPx(W, scale);
+    convertMetersToPx(R, scale);
 
     // create Dense matrices so we can compute the matrix exponential
     Eigen::MatrixXd A_dense = Eigen::MatrixXd(A);
@@ -161,7 +169,6 @@ void DataProcessor::processMatFile(mat_t *matfp, matvar_t *matvar, Eigen::Sparse
 
     size_t rows = matvar->dims[0];
     size_t cols = matvar->dims[1];
-    std::cout << "Matrix dimensions: " << rows << "x" << cols << std::endl;
 
     // Check if the matrix is sparse
     if (matvar->isComplex)
@@ -255,7 +262,6 @@ std::vector<Object> DataProcessor::createObjectsFromPeaks(std::vector<cv::Point>
 
         for (auto it = this->objects.begin(); it != this->objects.end();)
         {
-            std::cout << "peakRemove" << std::endl;
             if (it->getPixelPosition().x < borderTolerance || it->getPixelPosition().x > IMAGE_SIZE - borderTolerance ||
                 it->getPixelPosition().y < borderTolerance || it->getPixelPosition().y > IMAGE_SIZE - borderTolerance)
             {
@@ -353,9 +359,11 @@ std::vector<std::pair<cv::Point, Object *>> DataProcessor::truthDataMapping(std:
 {
     // find the closest peak to the truth data
     std::vector<std::pair<cv::Point, std::pair<int, cv::Point>>> closestPoints; // (peak, (truthID, truthPeak))
+    std::vector<cv::Point> measurementPoints = measurements;
+    closestPoints.reserve(truthData.size());
     for (auto &truth : truthData)
     {
-        closestPoints.push_back(findClosestPointToTruth(measurements, truth));
+        closestPoints.push_back(findClosestPointToTruth(measurementPoints, truth));
     }
     // create an object for each truth data point if it doesn't already exist
     std::vector<std::pair<cv::Point, Object *>> objectMapping;
@@ -367,7 +375,7 @@ std::vector<std::pair<cv::Point, Object *>> DataProcessor::truthDataMapping(std:
             if (obj.getID() == closest.second.first)
             {
                 exists = true;
-                objectMapping.push_back(std::make_pair(closest.first, &obj));
+                objectMapping.emplace_back(closest.first, &obj);
                 Eigen::VectorXd z(2);
                 z << closest.first.x, closest.first.y;
                 obj.appendMeasurementStateVector(z);
@@ -379,10 +387,16 @@ std::vector<std::pair<cv::Point, Object *>> DataProcessor::truthDataMapping(std:
             Eigen::VectorXd x(4);
             x << closest.first.x, 0, closest.first.y, 0; // object gets the measurement, not the truth data
             Eigen::MatrixXd P = Eigen::MatrixXd::Identity(4, 4);
-            this->objects.push_back(Object(x, P, this->objects.size()));
+            this->objects.emplace_back(x, P, this->objects.size());
         }
     }
     return objectMapping;
+}
+
+template <typename eig_t>
+void DataProcessor::convertMetersToPx(eig_t &eigen_type, double scale)
+{
+    eigen_type *= scale;
 }
 
 /**
@@ -437,7 +451,6 @@ void DataProcessor::markovUpdate(Object &obj, Eigen::VectorXd &measurement)
  */
 void DataProcessor::kalmanUpdate(Object &obj, Eigen::VectorXd &measurement)
 {
-    std::cout << "Kalman update" << std::endl;
     Eigen::VectorXd x_minus = F * obj.getStateVector();
     Eigen::MatrixXd P_minus = F * obj.getStateCovariance() * F.transpose() + Q;
     Eigen::MatrixXd inov_cov = H * obj.getStateCovariance() * H.transpose() + R;
