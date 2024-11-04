@@ -68,6 +68,12 @@ class SharedMemory:
         try:
             with self.image_lock:
                 image_array = self.fig_to_array(fig)
+                if image_array.shape != (128, 128, 4):
+                    print("Image shape mismatch")
+                    return
+                if image_array.dtype != np.uint8:
+                    print("Image data type mismatch")
+                    return
                 image_bytes = image_array.tobytes()
                 if len(image_bytes) != 128*128*4:
                     print("Image size mismatch")
