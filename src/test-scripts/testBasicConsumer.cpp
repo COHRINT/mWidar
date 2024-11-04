@@ -10,10 +10,19 @@
 #include <string>
 #include <thread>
 #include <chrono>
+#include <opencv2/opencv.hpp>
 
 #define BUFFER_SIZE 2 * 3 * 4
+#define IMAGE_SIZE 128 * 128 * 4
+
+using namespace cv;
+
+
 void *g_shared_mem_ptr = nullptr;
 int g_shared_mem_size = 0;
+
+void *i_shared_mem_ptr = nullptr;
+int i_shared_mem_size = 0;
 
 void closeConnectionToSharedMemory(void *shared_mem_ptr, int size)
 {
@@ -101,30 +110,48 @@ std::string getDataFromBuffer(void *shared_mem_ptr, int size, sem_t *sem)
     //     std::cout << "Waiting for semaphore signal" << std::endl;
     // }
     sem_wait(sem);
-    std::cout << "getting data" << std::endl;
     // Read the data from shared memory
-    return readDataAsString(shared_mem_ptr, 1);
+    return readDataAsString(shared_mem_ptr, 2);
     std::string data = static_cast<char *>(shared_mem_ptr);
     return data;
 }
 
+cv::Mat readDataAsImage(void *shared_mem_ptr, int size)
+{
+    cv::Mat image(128, 128, CV_8UC4, shared_mem_ptr);
+    return image;
+}
+
+
+
+
 int main()
 {
     signal(SIGINT, signalHandler);
-    const char *sem_name = "/object_sem";
-    const char *data_name = "/objects";
-    sem_t *sem = createSemaphore(sem_name, 0);
-    g_shared_mem_ptr = initializeConnectionToSharedMemory(data_name, BUFFER_SIZE);
+    const char *obj_sem_name = "/object_sem";
+    const char *obj_data_name = "/objects";
+    sem_t *obj_sem = createSemaphore(obj_sem_name, 0);
+    const char *image_name = "/image";
+    const char *image_sem_name = "/image_sem";
+    sem_t *image_sem = createSemaphore(image_sem_name, 0);
+
+    g_shared_mem_ptr = initializeConnectionToSharedMemory(obj_data_name, BUFFER_SIZE);
     g_shared_mem_size = BUFFER_SIZE;
-    if (!g_shared_mem_ptr)
+    i_shared_mem_ptr = initializeConnectionToSharedMemory(image_name, IMAGE_SIZE);
+    i_shared_mem_size = IMAGE_SIZE;
+
+    if (!g_shared_mem_ptr || !i_shared_mem_ptr)
     {
         return -1;
     }
-    std::cout << "attempting to read data" << std::endl;
+    std::cout << "Attempting to read data" << std::endl;
     while (true)
     {
-        std::string data = getDataFromBuffer(g_shared_mem_ptr, BUFFER_SIZE, sem);
-        std::cout << "Data: " << data << std::endl;
+        std::string data = getDataFromBuffer(g_shared_mem_ptr, BUFFER_SIZE, obj_sem);
+        std::cout << "Data:\n" << data << std::endl;
+
+        cv::imshow("Image",readDataAsImage(i_shared_mem_ptr, IMAGE_SIZE));
+        if (cv::waitKey(1) >= 0) break;
     }
     return 0;
 }
