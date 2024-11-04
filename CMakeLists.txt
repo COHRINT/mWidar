@@ -43,7 +43,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Specify source files
 set(SOURCES
 
-        src/test-scripts/testBasicConsumer.cpp
+#        src/test-scripts/testBasicConsumer.cpp
+        src/test-scripts/testKFSharedData.cpp
         src/GraphProcessor.cpp
         src/Object.cpp
         src/VisionProcessor.cpp

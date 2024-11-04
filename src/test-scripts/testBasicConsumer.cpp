@@ -24,7 +24,7 @@ int g_shared_mem_size = 0;
 void *i_shared_mem_ptr = nullptr;
 int i_shared_mem_size = 0;
 
-void closeConnectionToSharedMemory(void *shared_mem_ptr, int size)
+void closeConnectionToSharedMemory(void *shared_mem_ptr, const int size)
 {
     if (shared_mem_ptr)
     {
@@ -53,7 +53,7 @@ void signalHandler(int signum)
     exit(signum);
 }
 
-void *initializeConnectionToSharedMemory(const char *name, int size)
+void *initializeConnectionToSharedMemory(const char *name, const int size)
 {
     // Open the shared memory segment
     int shm_fd;
@@ -76,7 +76,7 @@ void *initializeConnectionToSharedMemory(const char *name, int size)
     return shared_mem_ptr;
 }
 
-sem_t *createSemaphore(const char *name, int value)
+sem_t *createSemaphore(const char *name, const int value)
 {
     sem_t *sem = sem_open(name, O_CREAT, 0666, value);
     if (sem == SEM_FAILED)
@@ -88,7 +88,7 @@ sem_t *createSemaphore(const char *name, int value)
     return sem;
 }
 
-std::string readDataAsString(void *shared_mem_ptr, size_t num_objects)
+std::string readDataAsString(void *shared_mem_ptr, const int num_objects)
 {
     std::string result;
     int *data = static_cast<int *>(shared_mem_ptr);

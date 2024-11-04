@@ -10,6 +10,7 @@
 #include <opencv2/imgcodecs.hpp> // Include for cv::imread
 #include "../include/json.hpp"
 #include "../include/VisionProcessor.h"
+#include <thread>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -35,6 +36,7 @@ using json = nlohmann::json;
  *
  *
  * @param image The input image.
+ * @param threshold The threshold value for a pixel to be considered a peak. Default is 0.90.
  * @return A vector of points representing the locations of the peaks.
  */
 std::vector<cv::Point> VisionProcessor::findPeaks(const cv::Mat &image, double threshold = 0.90)
@@ -89,9 +91,9 @@ std::vector<cv::Point> VisionProcessor::findPeaks(const cv::Mat &image, double t
     return peaks;
 }
 
-bool VisionProcessor::peaksWithinRange(std::vector<cv::Point> peaks, int x, int y, int range)
+bool VisionProcessor::peaksWithinRange(const std::vector<cv::Point>& peaks, const int x, const int y, const int range)
 {
-    for (auto peak : peaks)
+    for (const auto& peak : peaks)
     {
         if (cv::norm(peak.x - x) < range || cv::norm(peak.y - y) < range)
         {
@@ -101,122 +103,75 @@ bool VisionProcessor::peaksWithinRange(std::vector<cv::Point> peaks, int x, int 
     return false;
 }
 
-void *VisionProcessor::createImageBuffer(const char *filename, int width, int height)
+cv::Mat VisionProcessor::readDataAsImage(void *shared_mem_ptr, sem_t *semaphore, int size)
 {
-    if (image_ptr != nullptr)
-    {
-        return image_ptr;
-    }
-    const size_t size = width * height * 4; // 4 bytes per pixel
-    int shm_fd = shm_open(filename, O_RDONLY, 0666);
-    if (shm_fd == -1)
-    {
-        std::cerr << "Failed to open image shared memory segment" << std::endl;
-        return nullptr;
-    }
-
-    image_ptr = mmap(nullptr, size, PROT_READ, MAP_SHARED, shm_fd, 0);
-    if (image_ptr == MAP_FAILED)
-    {
-        std::cerr << "Failed to map shared image memory segment" << std::endl;
-        close(shm_fd);
-        return nullptr;
-    }
-    return image_ptr;
-}
-
-void *VisionProcessor::createTruthBuffer(const char *filename, int num_truth_points)
-{
-    if (truth_ptr != nullptr)
-    {
-        return truth_ptr;
-    }
-    const size_t size = num_truth_points * 2 * 3;
-    int shm_fd = shm_open(filename, O_RDONLY, 0666);
-    if (shm_fd == -1)
-    {
-        std::cerr << "Failed to open truth shared memory segment" << std::endl;
-        return nullptr;
-    }
-    truth_ptr = mmap(nullptr, size, PROT_READ, MAP_SHARED, shm_fd, 0);
-    if (truth_ptr == MAP_FAILED)
-    {
-        std::cerr << "Failed to map truth shared memory segment" << std::endl;
-        close(shm_fd);
-        return nullptr;
-    }
-    return truth_ptr;
-}
-
-/**
- * @brief Reads image data from a shared data object.
- *
- * This function is intended to take in a shared data object and read the image data from it.
- * There needs to be both POSIX and Windows implementations of this function.
- * The parameters and return values are the same as the openAndRead function.
- *
- * @param filename The name of the file to open and read.
- * @return the set of peaks found in the image.
- */
-cv::Mat VisionProcessor::readSharedImgBuffer(void *shared_mem_ptr, int width, int height)
-{
-    sem_t *sem = sem_open("/image_sem", O_CREAT, 0666, 0);
-    if (sem == SEM_FAILED)
-    {
-        std::cerr << "Failed to open semaphore" << std::endl;
-        return cv::Mat();
-    }
-
-    // Wait for the semaphore to be signaled by the Python process
-    sem_wait(sem);
-
-    // Load the data into CV::Mat
-    cv::Mat image;
-    image = cv::Mat(height, width, CV_8UC4, shared_mem_ptr);
-
-    // Process the image (e.g., find peaks)
-    // Example: peaks = findPeaks(image);
-
-    // Clear the data from the shared memory
-    memset(shared_mem_ptr, 0, width * height * 4);
-
-    // Close the semaphore
-    sem_close(sem);
-
+    sem_wait(semaphore);
+    cv::Mat image(128, 128, CV_8UC4, shared_mem_ptr);
     return image;
 }
 
-std::vector<std::pair<int, cv::Point>> VisionProcessor::readSharedTruthBuffer(void *shared_mem_ptr, int num_truth_points)
+std::string VisionProcessor::readDataAsString(void *shared_mem_ptr, sem_t *semaphore, const int num_objects)
 {
-    sem_t *sem = sem_open("/truth_sem", O_CREAT, 0666, 0);
-    if (sem == SEM_FAILED)
-    {
-        std::cerr << "Failed to open semaphore" << std::endl;
-        return std::vector<std::pair<int, cv::Point>>();
-    }
-
-    // Wait for the semaphore to be signaled by the Python process
-    sem_wait(sem);
-
-    // Load the data into a vector of cv::Point
-    // Read the data from shared memory
-    std::vector<std::pair<int, cv::Point>> truth_data;
+    sem_wait(semaphore);
+    std::string result;
     int *data = static_cast<int *>(shared_mem_ptr);
-    for (size_t i = 0; i < num_truth_points; ++i)
+    for (size_t i = 0; i < num_objects; ++i)
     {
         int x = data[i * 3];
         int y = data[i * 3 + 1];
         int counter = data[i * 3 + 2];
-        truth_data.push_back(std::make_pair(counter, cv::Point(x, y)));
+        result += "Object " + std::to_string(i) + ": x=" + std::to_string(x) + ", y=" + std::to_string(y) + ", counter=" + std::to_string(counter) + "\n";
+    }
+    return result;
+}
+
+std::vector<std::pair<int, cv::Point>> VisionProcessor:: readDataAsVector(void *shared_mem_ptr, sem_t *semaphore, const int num_objects)
+{
+    sem_wait(semaphore);
+    std::vector<std::pair<int, cv::Point>> result;
+    auto data = static_cast<int *>(shared_mem_ptr);
+    for (size_t i = 0; i < num_objects; ++i)
+    {
+        int x = data[i * 3];
+        int y = data[i * 3 + 1];
+        int counter = data[i * 3 + 2];
+        result.emplace_back(counter, cv::Point(x, y));
+    }
+    return result;
+}
+
+sem_t *VisionProcessor::initSemaphore(const char *name, const int value)
+{
+    sem_t *sem = sem_open(name, O_CREAT, 0666, value);
+    if (sem == SEM_FAILED)
+    {
+        std::cerr << "Failed to create semaphore" << std::endl;
+        return nullptr;
+    }
+    return sem;
+}
+
+void *VisionProcessor::initializeConnectionToSharedMemory(const char *name, const int size)
+{
+    // Open the shared memory segment
+    int shm_fd;
+    while (shm_fd = shm_open(name, O_RDONLY, 0666), shm_fd == -1)
+    {
+        std::cout << "Waiting for shared mem to open" << std::endl;
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+    // Map the shared memory segment to the process's address space
+    void *shared_mem_ptr = mmap(nullptr, size, PROT_READ, MAP_SHARED, shm_fd, 0);
+    if (shared_mem_ptr == MAP_FAILED)
+    {
+        std::cerr << "Failed to map shared memory" << std::endl;
+        close(shm_fd);
+        return nullptr;
     }
 
-    // Clear the data from the shared memory
-    memset(shared_mem_ptr, 0, num_truth_points * 2 * 3);
-
-    // Close the semaphore
-    sem_close(sem);
-
-    return truth_data;
+    std::cout << "Shared memory initialized" << std::endl;
+    close(shm_fd); // Close the file descriptor as it is no longer needed after mmap
+    return shared_mem_ptr;
 }
 /**
  * @brief Open the image file and load the data, locking the file from other processes.
@@ -242,7 +197,7 @@ std::vector<cv::Point> VisionProcessor::openAndRead(const char *filename) // rea
             return peaks;
         }
 
-        struct flock lock;
+        struct flock lock{};
         lock.l_type = F_WRLCK;
         lock.l_whence = SEEK_SET;
         lock.l_start = 0;
