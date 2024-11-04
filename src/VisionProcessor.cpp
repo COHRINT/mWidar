@@ -25,6 +25,7 @@
 #error "Unknown operating system"
 #endif
 
+#define BOTTOM_THRESHOLD 128 - 25
 using namespace cv;
 using json = nlohmann::json;
 
@@ -39,7 +40,7 @@ using json = nlohmann::json;
  * @param threshold The threshold value for a pixel to be considered a peak. Default is 0.90.
  * @return A vector of points representing the locations of the peaks.
  */
-std::vector<cv::Point> VisionProcessor::findPeaks(const cv::Mat &image, double threshold = 0.90)
+std::vector<cv::Point> VisionProcessor::findPeaks(const cv::Mat &image, double threshold = 0.40)
 {
     std::vector<cv::Point> peaks;
 
@@ -80,7 +81,7 @@ std::vector<cv::Point> VisionProcessor::findPeaks(const cv::Mat &image, double t
             }
 
             // If the current pixel is a local maximum, add it to the peaks vector
-            if (isPeak && !(peaksWithinRange(peaks, x, y, 2))) // and if there are no other peaks within x pixels
+            if (isPeak && !(peaksWithinRange(peaks, x, y, 2)) && y < BOTTOM_THRESHOLD) // and if there are no other peaks within x pixels
             {
                 cv::Point newPeak = cv::Point(x, y);
                 peaks.push_back(newPeak);
@@ -106,8 +107,15 @@ bool VisionProcessor::peaksWithinRange(const std::vector<cv::Point>& peaks, cons
 cv::Mat VisionProcessor::readDataAsImage(void *shared_mem_ptr, sem_t *semaphore, int size)
 {
     sem_wait(semaphore);
+    // Ensure the shared memory pointer is not null
     cv::Mat image(128, 128, CV_8UC4, shared_mem_ptr);
-    return image;
+    cv::Mat img_cpy = image.clone();
+    cv::normalize(img_cpy, img_cpy, 0, 255, cv::NORM_MINMAX);
+    cv::cvtColor(img_cpy, img_cpy, cv::COLOR_BGRA2GRAY);
+    cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE();
+    clahe->setClipLimit(15.0); // Adjust the clip limit to control the contrast enhancement
+    clahe->apply(img_cpy, img_cpy);
+    return img_cpy;
 }
 
 std::string VisionProcessor::readDataAsString(void *shared_mem_ptr, sem_t *semaphore, const int num_objects)
@@ -134,8 +142,8 @@ std::vector<std::pair<int, cv::Point>> VisionProcessor:: readDataAsVector(void *
     {
         int x = data[i * 3];
         int y = data[i * 3 + 1];
-        int counter = data[i * 3 + 2];
-        result.emplace_back(counter, cv::Point(x, y));
+        // int counter = data[i * 3 + 2];
+        result.emplace_back(i, cv::Point(x, y));
     }
     return result;
 }

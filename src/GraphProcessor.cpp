@@ -98,6 +98,19 @@ cv::Mat GraphProcessor::drawSquare(cv::Mat &image, const cv::Point &center, int 
     return image;
 }
 
+cv::Mat GraphProcessor::drawEqualateralTriangle(cv::Mat &image, const cv::Point &center, int size, const cv::Scalar &color)
+{
+    cv::Point scaledCenter = cv::Point(center.x * UPSCALE_FACTOR, center.y * UPSCALE_FACTOR);
+    // cv::Mat img = image.clone();
+    cv::Point p1 = scaledCenter + cv::Point(0, -size);
+    cv::Point p2 = scaledCenter + cv::Point(size * std::sqrt(3) / 2, size / 2);
+    cv::Point p3 = scaledCenter + cv::Point(-size * std::sqrt(3) / 2, size / 2);
+    cv::line(image, p1, p2, color, 1);
+    cv::line(image, p2, p3, color, 1);
+    cv::line(image, p3, p1, color, 1);
+    return image;
+}
+
 cv::Mat GraphProcessor::drawVelocityVector(cv::Mat &image, const cv::Point &center, const cv::Point &velocity, const cv::Scalar &color)
 {
     cv::Point scaledCenter = cv::Point(center.x * UPSCALE_FACTOR, center.y * UPSCALE_FACTOR);
@@ -131,6 +144,17 @@ cv::Mat GraphProcessor::writeEstTargetsToImg(cv::Mat &image, std::vector<Object>
     }
     return img;
 }
+
+cv::Mat GraphProcessor::writeGeneralPoint(cv::Mat &image, std::vector<cv::Point> &targets)
+{
+    cv::Mat img = image.clone();
+    for (auto &target : targets)
+    {
+        img = drawEqualateralTriangle(img, target);
+    }
+    return img;
+}
+
 cv::Mat GraphProcessor::clearImage()
 {
     img = originalImg;

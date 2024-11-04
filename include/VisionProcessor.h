@@ -1,17 +1,10 @@
 #pragma once
 #include <iostream>
-#include <fstream>
-#include <sstream>
 #include <string>
-#include <Eigen/Sparse>
-#include <Eigen/Dense>
 #include <vector>
 #include <opencv2/core/core.hpp>
-#include <opencv2/opencv.hpp>
-#include <opencv2/imgcodecs.hpp> // Include for cv::imread
-#include <sys/mman.h>
 #include <semaphore.h>
-
+#include <sys/mman.h>
 #define V_IMAGE_SIZE 128 * 128 * 4
 #define V_OBJECT_SIZE 3 * 4
 
@@ -39,10 +32,4 @@ public:
     static bool peaksWithinRange(const std::vector<cv::Point>& peaks, int x, int y, int range);
     std::pair<std::vector<cv::Point>, std::vector<std::pair<int, cv::Point>>> getPeaksWithTruth(const char *filename, const char *truthFileJson);
     std::vector<std::pair<int, cv::Point>> readTruthFile(const char *filename);
-
-private:
-    void *image_ptr;
-    void *truth_ptr;
-    bool is_image_buffer_empty = true;
-    bool is_truth_buffer_empty = true;
 };
