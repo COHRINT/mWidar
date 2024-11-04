@@ -6,7 +6,8 @@ GraphProcessor::GraphProcessor() : b(B_SIZE * B_SIZE)
 {
     b.setZero();
     img = cv::Mat(IMAGE_SIZE, IMAGE_SIZE, CV_64F, const_cast<double *>(scaleB(b, UPSCALE_FACTOR).data()));
-    cv::Mat originalImg = img.clone();
+    originalImg = img.clone();
+    std::cout << "GraphProcessor created" << std::endl;
     processImage(img);
 }
 
