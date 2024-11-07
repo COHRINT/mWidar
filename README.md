@@ -22,7 +22,7 @@ To run the python simulator, create a virtual environment, and run the `setup.[b
 ```
 cd simulator
 source venv/bin/activate
-python3 simulateTracks.py -o "[x,y,vx,vy,ax,ay]" ... -s true -t true
+python3 simulateTracks.py -o "[x,y,vx,vy,ax,ay]" ... -s true -T true
 ```
 
 Note: As of now, we are depending on a truth target association, so the `t` flag must be set to true in order to work with the truth mapping function in the tracker.
