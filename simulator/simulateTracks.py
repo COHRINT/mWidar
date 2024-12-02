@@ -1,9 +1,36 @@
+import copy
+
 import numpy as np
 import matplotlib.pyplot as plt
 import argparse
 import time
 import json
 from helper_classes import Object, SharedMemory
+import cv2
+
+def convertTomWidar(obj):
+    pos_vector = np.array([obj.x, obj.y, 0])
+    img_size = 128
+    Q = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+    translation_vector = np.array([-img_size / 2, 0, 0])
+    pos_vector = np.matmul(pos_vector, Q) + translation_vector
+    obj.x = int(pos_vector[0])
+    obj.y = int(pos_vector[1])
+    return obj
+
+def swapAxs(obj):
+    temp = obj.x
+    obj.x = obj.y
+    obj.y = temp
+    temp = obj.vx
+    obj.vx = obj.vy
+    obj.vy = temp
+    temp = obj.ax
+    obj.ax = obj.ay
+    obj.ay = temp
+    return obj
+
+
 
 
 def main():
@@ -16,7 +43,7 @@ def main():
     parser = argparse.ArgumentParser(description='Simulate object tracks.')
     parser.add_argument('-o', '--objects', nargs='+', required=True, help='List of objects in the form "[x0,y0,vx0,vy0,ax0,ay0]"')
     parser.add_argument('-t', '--time', type=float, default=0.2, help='Time step for simulation')
-    parser.add_argument('-f', '--output', type=str, default="output/img", help='Output file to save the image')
+    parser.add_argument('-f', '--output', type=str, default="data/img", help='Output file to save the image')
     parser.add_argument('-d', '--display', type=bool, default=False, help='Setting this flag will display the image')
     parser.add_argument('-T', '--truth', type=bool, default=False, help='Export the object coordinate data (rounded to nearest integer) to a file')
     parser.add_argument('-s', '--shared', type=bool, default=False, help='Use shared memory for image data')
@@ -45,9 +72,10 @@ def main():
         counter = counter + 1
         S = np.zeros((128, 128))
         for obj in objects:
-            print(f"Object {obj.getID()} at: ", obj.getPos())
-            if (obj.x > 0 and obj.x < 128) and (obj.y > 0 and obj.y < 128):
-                S[int(obj.x)][ int(obj.y)] = 1
+            print(f"Object {obj.getID()} at: (", convertTomWidar(copy.deepcopy(obj)).x, convertTomWidar(copy.deepcopy(obj)).y, ") (mWidar)")
+            print(f"Object {obj.getID()} at: (", obj.x, obj.y, ") (sim)")
+            if (0 < obj.y < 128) and (0 < obj.x < 128):
+                S[int(obj.y)][ int(obj.x)] = 1
             signal = M.dot(S.flatten())
             obj.update(args.time)
         image = signal.dot(G).reshape(128, 128)
@@ -72,9 +100,18 @@ def main():
         time.sleep(args.time)
         if (args.shared == True):
             try:
-                sm.send_image(fig)
+                # sm.send_image(fig)
+                # convert fig to opencv image
+                # image_array = sm.experimental_fig_to_array(fig)
+                im = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+                cv2.imshow('image', im)
+                sm.send_cv_image(im)
                 if (args.truth == True):
-                    sm.send_objects(objects, counter)
+                    # convert objects to mWidar frame
+                    objects_cpy = copy.deepcopy(objects)
+                    for i in range(len(objects_cpy)):
+                        objects_cpy[i] = convertTomWidar(objects_cpy[i])
+                    sm.send_objects(objects_cpy, counter)
             except Exception as e:
                 print(e)
                 continue

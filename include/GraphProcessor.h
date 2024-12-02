@@ -28,7 +28,7 @@ public:
     cv::Mat drawSquare(cv::Mat &image, const cv::Point &center, int size = 4, const cv::Scalar &color = cv::Scalar(255, 0, 217));
     cv::Mat drawEqualateralTriangle(cv::Mat &image, const cv::Point &center, int size = 4, const cv::Scalar &color = cv::Scalar(255, 0, 217));
     cv::Mat drawVelocityVector(cv::Mat &image, const cv::Point &center, const cv::Point &velocity, const cv::Scalar &color);
-    cv::Mat writeTruthTargetsToImg(cv::Mat &image, std::vector<std::pair<int, cv::Point>> &targets);
+    cv::Mat writeTruthTargetsToImg(cv::Mat &image, std::vector<cv::Point> &targets);
     cv::Mat writeEstTargetsToImg(cv::Mat &image, std::vector<Object> &targets, bool drawVelocity = false);
     cv::Mat writeGeneralPoint(cv::Mat &image, std::vector<cv::Point> &targets);
     cv::Mat clearImage();

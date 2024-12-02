@@ -1,4 +1,5 @@
 #include "../include/GraphProcessor.h"
+#include "../include/DataProcessor.h"
 #define B_SIZE 128
 using namespace cv;
 
@@ -120,12 +121,12 @@ cv::Mat GraphProcessor::drawVelocityVector(cv::Mat &image, const cv::Point &cent
     return image;
 }
 
-cv::Mat GraphProcessor::writeTruthTargetsToImg(cv::Mat &image, std::vector<std::pair<int, cv::Point>> &targets)
+cv::Mat GraphProcessor::writeTruthTargetsToImg(cv::Mat &image, std::vector<cv::Point> &targets)
 {
     cv::Mat img = image.clone();
     for (auto &target : targets)
     {
-        img = drawCircle(img, target.second);
+        img = drawCircle(img, target);
     }
     return img;
 }
@@ -135,11 +136,16 @@ cv::Mat GraphProcessor::writeEstTargetsToImg(cv::Mat &image, std::vector<Object>
     cv::Mat img = image.clone();
     for (auto &target : targets)
     {
+        Eigen::VectorXd state = target.getStateVector();
+        Eigen::VectorXd points = Eigen::VectorXd(2);
+        points << state(0), state(2);
+        DataProcessor::convertCoordinateFrame(points, "openCV");
+        cv::Point point = cv::Point(points(0), points(1));
         img = drawSquare(img, target.getPixelPosition());
         if (drawVelocity)
         {
-            cv::Point velocity = cv::Point(target.getStateVector()(1), target.getStateVector()(3));
-            img = drawVelocityVector(img, target.getPixelPosition(), velocity, cv::Scalar(255, 255, 255));
+            cv::Point velocity = cv::Point(state(1), state(3));
+            img = drawVelocityVector(img, point, velocity, cv::Scalar(255, 255, 255));
         }
     }
     return img;
