@@ -19,6 +19,9 @@ def activate_venv():
 			"-o", "[-4,50,2,1,0,0]", "[130,120,-1,-2,-1,0]",
 			"-s", "true",
 			"-T", "true"])
+		# subprocess.run([python_executable, "simulateTracks.py",
+		# 				"-o", "[-4,50,2,1,0,0]", "[130,120,-1,-2,-1,0]",
+		# 				"-d", "true"])
 	else:
 		print("No virtual environment found. Run the setup script first.")
 

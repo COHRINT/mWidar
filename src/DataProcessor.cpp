@@ -1,16 +1,14 @@
 #include "../include/DataProcessor.h"
-
+#define IMG_SIZE 128
 using namespace cv;
 // using namespace Eigen;
 
 DataProcessor::DataProcessor(int imageSize, std::string filter = "kalman-filter")
 {
-    IMAGE_SIZE = imageSize;
     initializeStateMatrices();
 }
 DataProcessor::DataProcessor()
 {
-    IMAGE_SIZE = 128;
     initializeStateMatrices();
 }
 DataProcessor::~DataProcessor()
@@ -76,6 +74,7 @@ void DataProcessor::initializeStateMatrices()
     R.insert(0, 0) = 1.0;
     R.insert(1, 1) = 1.0;
     // R = R * 1e-4; // Adjust as needed
+    R = R * 2;
 
     // convert meters to pixels
     convertMetersToPx(A, scale);
@@ -262,8 +261,8 @@ std::vector<Object> DataProcessor::createObjectsFromPeaks(std::vector<cv::Point>
 
         for (auto it = this->objects.begin(); it != this->objects.end();)
         {
-            if (it->getPixelPosition().x < borderTolerance || it->getPixelPosition().x > IMAGE_SIZE - borderTolerance ||
-                it->getPixelPosition().y < borderTolerance || it->getPixelPosition().y > IMAGE_SIZE - borderTolerance)
+            if (it->getPixelPosition().x < borderTolerance || it->getPixelPosition().x > IMG_SIZE - borderTolerance ||
+                it->getPixelPosition().y < borderTolerance || it->getPixelPosition().y > IMG_SIZE - borderTolerance)
             {
                 it = this->objects.erase(it);
                 break;
@@ -359,11 +358,10 @@ std::vector<std::pair<cv::Point, Object *>> DataProcessor::truthDataMapping(std:
 {
     // find the closest peak to the truth data
     std::vector<std::pair<cv::Point, std::pair<int, cv::Point>>> closestPoints; // (peak, (truthID, truthPeak))
-    std::vector<cv::Point> measurementPoints = measurements;
     closestPoints.reserve(truthData.size());
     for (auto &truth : truthData)
     {
-        closestPoints.push_back(findClosestPointToTruth(measurementPoints, truth));
+        closestPoints.push_back(findClosestPointToTruth(measurements, truth));
     }
     // create an object for each truth data point if it doesn't already exist
     std::vector<std::pair<cv::Point, Object *>> objectMapping;
@@ -399,6 +397,52 @@ void DataProcessor::convertMetersToPx(eig_t &eigen_type, double scale)
     eigen_type *= scale;
 }
 
+void DataProcessor::convertCoordinateFrame(Eigen::VectorXd &coordinate_vector, const std::string &new_frame)
+{
+    Eigen::MatrixXd Q = Eigen::MatrixXd::Identity(3, 3);
+    Q(1,1) = -1;
+
+    Eigen::Vector3d translation = Eigen::Vector3d::Zero();
+    translation(0) = (IMG_SIZE) / 2;
+    translation(1) = (IMG_SIZE);
+    if (coordinate_vector.size() == 2) {
+        coordinate_vector.resize(3);
+        coordinate_vector(2) = 0;
+    }
+    else if (coordinate_vector.size() < 2 || coordinate_vector.size() > 3) {
+        std::cerr << "Invalid coordinate vector size." << std::endl;
+    }
+    if (new_frame == "mWidar") {
+        coordinate_vector = Q * (coordinate_vector + translation);
+    }
+    else if (new_frame == "openCV") {
+        coordinate_vector = (Q * coordinate_vector) + translation;
+    }
+    else {
+        std::cerr << "Invalid coordinate frame." << std::endl;
+    }
+}
+
+void DataProcessor::convertCoordinateFrame(cv::Point &coordinate_point, const std::string &new_frame)
+{
+    Eigen::MatrixXd Q = Eigen::MatrixXd::Identity(3, 3);
+    Q(1,1) = -1;
+
+    int translation[2] = {0, 0}; // x, y
+    translation[0] = (IMG_SIZE) / 2;
+    translation[1] = (IMG_SIZE);
+    if (new_frame == "mWidar") {
+        coordinate_point.x = 1 * (coordinate_point.x + translation[0]);
+        coordinate_point.y = -1 * (coordinate_point.y + translation[1]);
+    }
+    else if (new_frame == "openCV") {
+        coordinate_point.x = (1 * coordinate_point.x) + translation[0];
+        coordinate_point.y = (-1 * coordinate_point.y) + translation[1];
+    }
+    else {
+        std::cerr << "Invalid coordinate frame." << std::endl;
+    }
+}
 /**
  * @brief Propogates the state of objects based on the new peak positions.
  *
@@ -408,10 +452,11 @@ void DataProcessor::convertMetersToPx(eig_t &eigen_type, double scale)
  * - Kalman Filter (uses x, y, x velocity, y velocity)
  * - Particle Filter (uses x, y, x velocity, y velocity)
  *
+ * @param measurement The measurement vector to be used for the update.
  * @param objects The set of objects to be updated.
  * @param filter The type of filter to be used for state estimation. Default is a kalman filter.
  */
-void DataProcessor::propogateState(Object &obj, Eigen::VectorXd &measurement, std::string filter = "kalman-filter")
+void DataProcessor::propogateState(Object &obj, Eigen::VectorXd &measurement, const std::string& filter = "kalman-filter")
 {
     obj.setMeasurementState(measurement);
 
@@ -457,7 +502,7 @@ void DataProcessor::kalmanUpdate(Object &obj, Eigen::VectorXd &measurement)
     Eigen::MatrixXd K = obj.getStateCovariance() * H.transpose() * inov_cov.inverse();
     Eigen::VectorXd inov = measurement - H * x_minus;
 
-    obj.setStateVector(x_minus + K * inov);
+    obj.setStateVector(x_minus + (K * inov));
     obj.setStateCovariance((Eigen::MatrixXd::Identity(4, 4) - K * H) * P_minus);
 }
 
