@@ -5,7 +5,7 @@
 #include <opencv2/core/core.hpp>
 #include <semaphore.h>
 #include <sys/mman.h>
-#define V_IMAGE_SIZE 128 * 128 * 4
+#define V_IMAGE_SIZE 128 * 128
 #define V_OBJECT_SIZE 3 * 4
 
 using namespace cv;
