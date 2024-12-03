@@ -50,9 +50,8 @@ public:
     Eigen::SparseMatrix<double> eZ;
     Eigen::SparseMatrix<double> Q;
     Eigen::SparseMatrix<double> manualMatrixExponential(Eigen::MatrixXd &A, int terms);
-    int IMAGE_SIZE;
 
-    void propogateState(Object &obj, Eigen::VectorXd &measurement, std::string filter);
+    void propogateState(Object &obj, Eigen::VectorXd &measurement, const std::string& filter);
     void markovUpdate(Object &obj, Eigen::VectorXd &measurement);
     void kalmanUpdate(Object &obj, Eigen::VectorXd &measurement);
     void particleUpdate(Object &obj, Eigen::VectorXd &measurement);
@@ -61,7 +60,8 @@ public:
 
     template<class eig_t>
     static void convertMetersToPx(eig_t &eigen_type, double scale);
-
+    static void convertCoordinateFrame(Eigen::VectorXd &coordinate_vector, const std::string &new_frame);
+    static void convertCoordinateFrame(cv::Point &coordinate_point, const std::string &new_frame);
     static std::pair<cv::Point, std::pair<int, cv::Point>> findClosestPointToTruth(std::vector<cv::Point> &measurements, std::pair<int, cv::Point> &truthPoint);
     void printMatrices();
 

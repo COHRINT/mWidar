@@ -108,14 +108,14 @@ cv::Mat VisionProcessor::readDataAsImage(void *shared_mem_ptr, sem_t *semaphore,
 {
     sem_wait(semaphore);
     // Ensure the shared memory pointer is not null
-    cv::Mat image(128, 128, CV_8UC4, shared_mem_ptr);
-    cv::Mat img_cpy = image.clone();
-    cv::normalize(img_cpy, img_cpy, 0, 255, cv::NORM_MINMAX);
-    cv::cvtColor(img_cpy, img_cpy, cv::COLOR_BGRA2GRAY);
-    cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE();
-    clahe->setClipLimit(15.0); // Adjust the clip limit to control the contrast enhancement
-    clahe->apply(img_cpy, img_cpy);
-    return img_cpy;
+    cv::Mat image(128, 128, CV_8UC1, shared_mem_ptr);
+    // cv::Mat img_cpy = image.clone();
+    // cv::normalize(img_cpy, img_cpy, 0, 255, cv::NORM_MINMAX);
+    // cv::cvtColor(img_cpy, img_cpy, cv::COLOR_BGRA2GRAY);
+    // cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE();
+    // clahe->setClipLimit(15.0); // Adjust the clip limit to control the contrast enhancement
+    // clahe->apply(img_cpy, img_cpy);
+    return image;
 }
 
 std::string VisionProcessor::readDataAsString(void *shared_mem_ptr, sem_t *semaphore, const int num_objects)
