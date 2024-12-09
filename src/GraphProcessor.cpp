@@ -115,7 +115,7 @@ cv::Mat GraphProcessor::drawEqualateralTriangle(cv::Mat &image, const cv::Point 
 cv::Mat GraphProcessor::drawVelocityVector(cv::Mat &image, const cv::Point &center, const cv::Point &velocity, const cv::Scalar &color)
 {
     cv::Point scaledCenter = cv::Point(center.x * UPSCALE_FACTOR, center.y * UPSCALE_FACTOR);
-    cv::Point scaledVelocity = cv::Point(velocity.x * UPSCALE_FACTOR, velocity.y * UPSCALE_FACTOR);
+    cv::Point scaledVelocity = cv::Point(velocity.x * UPSCALE_FACTOR * 3, velocity.y * UPSCALE_FACTOR * 3);
     // cv::Mat img = image.clone();
     cv::arrowedLine(image, scaledCenter, scaledCenter + scaledVelocity, color, 1);
     return image;
@@ -141,7 +141,7 @@ cv::Mat GraphProcessor::writeEstTargetsToImg(cv::Mat &image, std::vector<Object>
         points << state(0), state(2);
         DataProcessor::convertCoordinateFrame(points, "openCV");
         cv::Point point = cv::Point(points(0), points(1));
-        img = drawSquare(img, target.getPixelPosition());
+        img = drawSquare(img, point);
         if (drawVelocity)
         {
             cv::Point velocity = cv::Point(state(1), state(3));
