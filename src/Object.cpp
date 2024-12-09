@@ -4,7 +4,7 @@ Object::Object(int id)
 {
     // matrices are set to I, vectors are set to 0
     this->transitionMatrix = Eigen::MatrixXd::Identity(4, 4);
-    this->stateVector = Eigen::MatrixXd::Zero(4, 1);
+    this->stateVector = Eigen::MatrixXd::Zero(4, 1); // of the form [x, x', y, y']
     this->stateCovariance = Eigen::MatrixXd::Identity(4, 4);
     this->processNoise = Eigen::MatrixXd::Identity(4, 4);
     this->id = id;
