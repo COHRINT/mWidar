@@ -2,7 +2,8 @@ function [V] = GenerateVTruth(x0)
 
 V = zeros(6,100);
 tspan = linspace(0,10,100);
-% 2 seperate SS modals
+
+% 2 seperate SS models
 A_V1 =  [0 1 0 0 0 0;
           0 0 0 0 0 0 ;
           0 0 0 0 0 0;

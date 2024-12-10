@@ -1,8 +1,7 @@
 clear; close all; clc
 
 % Initialize
-Simulations = 100;
-
+Simulations = 100; % # of MC runs
 
 %% Initialize KF Matrices
 
@@ -11,7 +10,7 @@ dtsamp = 0.5*c*667e-12; %image frame subsampling step size for each Tx
 
 step = 41;
 
-alpha = 0.05;
+alpha = 0.05; % Significance level
 
 r1 = chi2inv(alpha/2,Simulations*6)/Simulations;
 r2 = chi2inv(1-alpha/2,Simulations*6)/Simulations;
@@ -31,11 +30,11 @@ A = [0 1 0 0 0 0;
 
 %Van Loans Method
 
-% Going to test multiple different W matrices, changing one diag at a time
-W = [1 0 0 0;
-    0 2 0 0;
-    0 0 1 0;
-    0 0 0 2];
+W = [5 0 0 0;
+    0 7 0 0;
+    0 0 5 0;
+    0 0 0 7];
+
 
 Z = chol(W); %Cholskey decomp will fail if not pos def
 R = 1.75*eye(2); 
@@ -44,11 +43,10 @@ eZ = expm(Z);
 F = eZ(7:12,7:12)';
 Q = F * eZ(1:6,7:12);
 
-Q(1,1) = 0.1;
-%Q(2,2) = 1;
+Q(1,1) = 0.75;
+Q(4,4) = 0.75;
 
-Q(4,4) = 0.1;
-%Q(5,5) = 1;
+Q = 1.5*Q;
 
 Z = chol(Q);
 %% Preallocate variables
@@ -123,6 +121,4 @@ title('Chi-Squared NEES Test')
 
 legend(str1,Location="southeast")
 
-% pause()
-% clc
 

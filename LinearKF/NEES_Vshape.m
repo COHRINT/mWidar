@@ -2,6 +2,7 @@ clear; close all; clc
 
 %initialize
 
+%# of MC sims
 Simulations = 100;
 
 P0 = diag([0.5 0.75 1 0.5 0.75 1]);
@@ -12,11 +13,11 @@ P0 = diag([0.5 0.75 1 0.5 0.75 1]);
 c = physconst('LightSpeed'); %speed of light in m/s
 dtsamp = 0.5*c*667e-12; %image frame subsampling step size for each Tx
 
-step = 100;
+step = 100; % # of tims steps
 
-alpha = 0.05;
+alpha = 0.05; % Significance level, if NEES test passes, we declare KF consistent with 5% significance level
 
-r1 = chi2inv(alpha/2,Simulations*6)/Simulations;
+r1 = chi2inv(alpha/2,Simulations*6)/Simulations; %Chi^2 bounds
 r2 = chi2inv(1-alpha/2,Simulations*6)/Simulations;
 
 % KF Matrices
@@ -33,7 +34,6 @@ A = [0 1 0 0 0 0;
 
 %Van Loans Method
 
-% Going to test multiple different W matrices, changing one diag at a time
 W = [0.5 0 0 0;
     0 1.5 0 0;
     0 0 0.5 0;
@@ -67,7 +67,8 @@ epMC = zeros(1,step);
 
 for i=1:Simulations
 
-x0 = mvnrnd([0;0;0;0;0;0],P0)';
+% Generate new initial condition each MC run
+x0 = abs(mvnrnd([0;0;0;0;0;0],P0)');
 true = GenerateVTruth(x0);
 xhat_0 = true(:,1);
 y = [true(1,:);true(4,:)];
@@ -86,11 +87,10 @@ y = [true(1,:);true(4,:)];
 
 end
 
-for k=1:step
-epMC(k) = mean(epsilon(:,k));
+% Average of epsilon over each MC run
+epMC = mean(epsilon);
 
-end
-
+% # of epsilon within our bounds
 inRange = 0;
 for i=1:step
     if(r1<epMC(i)) && (r2>epMC(i))
@@ -101,12 +101,11 @@ percent = inRange/step * 100;
 
 str1 = [num2str(percent),' % in bounds'];
 
+% Plot
 figure(1);hold on; grid on;
 plot(epMC,'o')
 yline(r1,'r--',LineWidth=1)
 yline(r2,'r--',LineWidth=1)
-
-%ylim([0 7.5])
 
 xlabel('Time Step')
 ylabel('NEES Statistic')
