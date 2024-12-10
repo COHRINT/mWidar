@@ -3,7 +3,7 @@ clear; close all; clc
 
 %% Load Relevant Data
 
-Simulations = 100;
+Simulations = 100; % # of MC runs
 
 P0 = diag([0.75 0.75 1 0.75 0.75 1]);
 
@@ -55,9 +55,6 @@ Z = chol(Q);
 
 xhat_plus = cell(Simulations,step);
 P = cell(Simulations,step);
-% inov = cell(Simulations,tstep+1);
-% inovCov = cell(Simulations,tstep+1);
-%y = cell(Simulations,tstep+1);
 
 err = zeros(6,step);
 
@@ -110,7 +107,7 @@ plot(epMC,'o')
 yline(r1,'r--',LineWidth=1)
 yline(r2,'r--',LineWidth=1)
 xlim([0 step])
-%ylim([0 7.5])
+
 
 xlabel('Time Step')
 ylabel('NEES Statistic')
