@@ -25,7 +25,7 @@
 #error "Unknown operating system"
 #endif
 
-#define BOTTOM_THRESHOLD 128 - 25
+#define BOTTOM_THRESHOLD 128 - 15
 using namespace cv;
 using json = nlohmann::json;
 
