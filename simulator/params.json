@@ -4,7 +4,7 @@
   "objects" : [
     {
       "type": "npyarray",
-      "path": "data/tracks/SimTraj_Circle.npy"
+      "path": "simulator/data/tracks/SimTraj_Circle.npy"
     }
   ]
 }

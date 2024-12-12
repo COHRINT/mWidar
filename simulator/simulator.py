@@ -85,8 +85,8 @@ Terminate the loop when there are no more objects to track.
 """
 def main(argpath):
     # read in matrices for sampling and recovery
-    M = np.load('data/sampling-12tx-4096samples-128x128.npy')
-    G = np.load('data/recovery-12tx-4096samples-128x128.npy')
+    M = np.load('simulator/data/sampling-12tx-4096samples-128x128.npy')
+    G = np.load('simulator/data/recovery-12tx-4096samples-128x128.npy')
     # print_npy_array('data/tracks/SimTraj_Corners.npy')
     # create objects from arguments
     truth_flag, independent_var, objects = read_json(argpath)
@@ -142,4 +142,4 @@ def main(argpath):
     sm.cleanup()
 
 if __name__ == '__main__':
-    main("params.json")
+    main("simulator/params.json")
