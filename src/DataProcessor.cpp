@@ -68,13 +68,13 @@ void DataProcessor::initializeStateMatrices()
     // Insert elements into W
     W.insert(0, 0) = 1.0;
     W.insert(1, 1) = 1.0;
-    W = W * 5; // Adjust as needed
+    W = W * 1; // Adjust as needed
 
     // Insert elements into R
     R.insert(0, 0) = 1.0;
     R.insert(1, 1) = 1.0;
     // R = R * 1e-4; // Adjust as needed
-    R = R * 2;
+    R = R * 0.9;
 
     // convert meters to pixels
     convertMetersToPx(A, scale);
@@ -383,7 +383,7 @@ std::vector<std::pair<cv::Point, Object *>> DataProcessor::truthDataMapping(std:
         if (!exists)
         {
             Eigen::VectorXd x(4);
-            x << closest.first.x, 0, closest.first.y, 0; // object gets the measurement, not the truth data
+            x << closest.first.x, 0, closest.first.y, 0; // object gets the measurement, not the truth data. Form of [x, xdot, y, ydot]
             Eigen::MatrixXd P = Eigen::MatrixXd::Identity(4, 4);
             this->objects.emplace_back(x, P, this->objects.size());
         }
@@ -400,27 +400,30 @@ void DataProcessor::convertMetersToPx(eig_t &eigen_type, double scale)
 void DataProcessor::convertCoordinateFrame(Eigen::VectorXd &coordinate_vector, const std::string &new_frame)
 {
     Eigen::MatrixXd Q = Eigen::MatrixXd::Identity(3, 3);
-    Q(1,1) = -1;
+    Q(1, 1) = -1;
 
     Eigen::Vector3d translation = Eigen::Vector3d::Zero();
-    translation(0) = (IMG_SIZE) / 2;
-    translation(1) = (IMG_SIZE);
+    translation(0) = IMG_SIZE / 2;
+    translation(1) = IMG_SIZE;
+
     if (coordinate_vector.size() == 2) {
-        coordinate_vector.resize(3);
-        coordinate_vector(2) = 0;
-    }
-    else if (coordinate_vector.size() < 2 || coordinate_vector.size() > 3) {
+        coordinate_vector.conservativeResize(3);
+        coordinate_vector(2) = 1; // Homogeneous coordinate for translation
+    } else if (coordinate_vector.size() != 3) {
         std::cerr << "Invalid coordinate vector size." << std::endl;
+        return;
     }
-    if (new_frame == "mWidar") {
-        coordinate_vector = Q * (coordinate_vector + translation);
-    }
-    else if (new_frame == "openCV") {
-        coordinate_vector = (Q * coordinate_vector) + translation;
-    }
-    else {
+
+    if (new_frame == "mWidar") { // convert from openCV to mWidar
+        coordinate_vector = Q * (coordinate_vector - translation);
+    } else if (new_frame == "openCV") { // convert from mWidar to openCV
+        coordinate_vector = Q.inverse() * coordinate_vector + translation;
+    } else {
         std::cerr << "Invalid coordinate frame." << std::endl;
     }
+
+    // Remove the homogeneous coordinate
+    coordinate_vector.conservativeResize(2);
 }
 
 void DataProcessor::convertCoordinateFrame(cv::Point &coordinate_point, const std::string &new_frame)
@@ -429,15 +432,15 @@ void DataProcessor::convertCoordinateFrame(cv::Point &coordinate_point, const st
     Q(1,1) = -1;
 
     int translation[2] = {0, 0}; // x, y
-    translation[0] = (IMG_SIZE) / 2;
+    translation[0] = -(IMG_SIZE) / 2;
     translation[1] = (IMG_SIZE);
     if (new_frame == "mWidar") {
-        coordinate_point.x = 1 * (coordinate_point.x + translation[0]);
-        coordinate_point.y = -1 * (coordinate_point.y + translation[1]);
+        coordinate_point.x = 1 * coordinate_point.x + translation[0];
+        coordinate_point.y = -1 * coordinate_point.y + translation[1];
     }
     else if (new_frame == "openCV") {
-        coordinate_point.x = (1 * coordinate_point.x) + translation[0];
-        coordinate_point.y = (-1 * coordinate_point.y) + translation[1];
+        coordinate_point.x = 1 * (coordinate_point.x - translation[0]);
+        coordinate_point.y = -1 * (coordinate_point.y - translation[1]);
     }
     else {
         std::cerr << "Invalid coordinate frame." << std::endl;
