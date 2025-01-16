@@ -3,8 +3,8 @@
   "independent_var" : "x",
   "objects" : [
     {
-        "type" : "npyarray",
-        "path" : "data/tracks/SimTraj_Corners.npy"
+      "type": "npyarray",
+      "path": "simulator/data/tracks/SimTraj_Circle.npy"
     }
   ]
 }

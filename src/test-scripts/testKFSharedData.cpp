@@ -45,19 +45,15 @@ int main(int argc, char *argv[])
 {
     signal(SIGTERM, signalHandler);
     int counter = 0;
-//    if (argc < 3)
-//    {
-//        std::cerr << "Usage: " << argv[0] << " <image_file> <truth_file>" << std::endl;
-//        return -1;
-//    }
-//    std::system("python3 path/to/your/simulator.py");
 
+    // initialize the classes
     GraphProcessor gp = GraphProcessor();
     std::cout << "Running test of Kalman Filter" << std::endl;
     DataProcessor dp = DataProcessor();
     dp.printMatrices();
     VisionProcessor vp = VisionProcessor();
-    // std::vector<std::pair<int, cv::Point>> oldTruth = vp.readTruthFile(argv[2]); // read initial truth data
+
+
     // create buffers for truth and image shared mem
     image_sem = VisionProcessor::initSemaphore("/image_sem", 0);
     truth_sem = VisionProcessor::initSemaphore("/object_sem", 0);
@@ -71,25 +67,33 @@ int main(int argc, char *argv[])
         {
             break;
         }
-        // read and find the peaks (in mWidar frame)
-        // std::pair<std::vector<cv::Point>, std::vector<std::pair<int, cv::Point>>> pairMapping = vp.getPeaksWithTruth(argv[1], argv[2]);
-        std::vector<std::pair<int, cv::Point>> truthPeaksWithID = VisionProcessor::readDataAsVector(truth_ptr, truth_sem, 1);
+        // read in the image and the truth data (truth data is in mWidar frame)
+        std::vector<std::pair<int, cv::Point>> truthPeaksWithID = VisionProcessor::readDataAsVector(truth_ptr, truth_sem, 1); // get truth peaks in mWidar frame
         cv::Mat img = VisionProcessor::readDataAsImage(image_ptr, image_sem, 128);
-        // std::cout << "truthPeaksWithID: " << std::endl;
         for (auto &pair : truthPeaksWithID)
         {
             std::cout << "Object " << pair.first << " at: " << pair.second << std::endl;
         }
-        std::vector<cv::Point> allImgPeaks = VisionProcessor::findPeaks(img, 0.75); // finds peaks in CV frame
-        for (auto &peak : allImgPeaks)
+
+        // find peaks and convert them to the mWidar frame for KF
+        std::vector<cv::Point> allImgPeaks = VisionProcessor::findPeaks(img, 0.85); // finds peaks in CV frame
+        std::vector<cv::Point> allImgPeaksMwidar = allImgPeaks;
+        for (auto &peak : allImgPeaksMwidar)
         {
             DataProcessor::convertCoordinateFrame(peak, "mWidar");
         }
-        std::vector<std::pair<cv::Point, Object *>> truthObjectMap = dp.truthDataMapping(allImgPeaks, truthPeaksWithID); // one truth per object
+
+        // map the closest peak to the truth data
+        std::vector<std::pair<cv::Point, Object *>> truthObjectMap = dp.truthDataMapping(allImgPeaksMwidar, truthPeaksWithID); // one truth per object
+
+        // using the closest peak to the truth data, propagate the state of the objects using a KF
         for (auto pairing : truthObjectMap)
         {
             Eigen::VectorXd measurement(2); // Initialize with size 2
             measurement << pairing.first.x, pairing.first.y; // Assign values
+            // std::cout << "truth:       (" << pairing.first.x << ", " << pairing.first.y << ")" << std::endl;
+            // std::cout << "object:      (" << pairing.second->getStateVector()(0) << ", " << pairing.second->getStateVector()(2) << ")" << std::endl;
+
             dp.propogateState(*pairing.second, measurement, "kalman-filter"); // propogateState(Object, Point, filter)
             // std::cout << "xplus: " << pairing.second->getStateVector() << std::endl;
             // std::cout << "z: " << pairing.second->getMeasurementState() << std::endl;
@@ -102,10 +106,8 @@ int main(int argc, char *argv[])
         // for (auto &obj : objects)
         // {
         // std::cout << "objects size: " << objects.size() << std::endl;
-        //     std::cout << "obj " << obj.getID() << " state:\n"
-        //               << obj.getStateVector() << std::endl;
-        //     std::cout << "obj " << obj.getID() << " measurement:"
-        //               << std::endl;
+        //     std::cout << "obj " << obj.getID() << " state:\n" << obj.getStateVector() << std::endl;
+        //     std::cout << "obj " << obj.getID() << " measurement:" << std::endl;
         //     for (int i = 0; i < obj.getMeasurementState().size(); i++)
         //     {
         //         std::cout << obj.getMeasurementState()(i) << std::endl;
@@ -126,8 +128,8 @@ int main(int argc, char *argv[])
             DataProcessor::convertCoordinateFrame(point.second, "openCV");
             truthcvpoints.push_back(point.second);
         }
-        gp.img = gp.updateMap(gp.b); // idk
-        gp.img = gp.writeGeneralPoint(gp.img, allImgPeaks); // draw the peaks
+        gp.img = gp.updateMap(gp.b); // for probability heatmap
+        // gp.img = gp.writeGeneralPoint(gp.img, allImgPeaks); // draw the peaks
         gp.img = gp.writeEstTargetsToImg(gp.img, objects, true);
         gp.img = gp.writeTruthTargetsToImg(gp.img, truthcvpoints);
         truthcvpoints.clear();
