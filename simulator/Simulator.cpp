@@ -1,4 +1,4 @@
-/*
+/**
  * mWidar Simulator implementation -- Simulator.cpp
  * Compile and run seperately from the main program
  *
@@ -32,7 +32,6 @@
  *        large datasets. The default is false (do not use shared memory).
  */
 
-#include "Eigen/Dense"
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -46,32 +45,35 @@
 #include <vector>
 
 #include "opencv2/opencv.hpp"
+#include "Eigen/Dense"
 
+ // Global Variables 
+const int IMAGE_SIZE = 128;
+Eigen::MatrixXd M, G;
 
- // Create Object class
+/**
+  * Object class to store object data
+  *
+  * @param x A double representing the x-coordinate of the object
+  * @param y A double representing the y-coordinate of the object
+  * @param vx A double representing the x-velocity of the object
+  * @param vy A double representing the y-velocity of the object
+  * @param ax A double representing the x-acceleration of the object
+  * @param ay A double representing the y-acceleration of the object
+  *
+  * @return None
+  *
+  * @example
+  * Object obj = Object(0.0, 0.0, 1.0, 1.0, 0.0, 0.0)
+  * obj.update(0.2)
+  * pos = obj.get_position()
+  * vel = obj.get_velocity()
+  * acc = obj.get_acceleration()
+  * obj.set_position(Eigen::Vector2f(1.0, 1.0))
+  * obj.set_velocity(Eigen::Vector2f(0.0, 0.0))
+  * obj.set_acceleration(Eigen::Vector2f(1.0, 1.0))
+  */
 class Object {
-    /**
-      * Object class to store object data
-      *
-      * @param x A double representing the x-coordinate of the object
-      * @param y A double representing the y-coordinate of the object
-      * @param vx A double representing the x-velocity of the object
-      * @param vy A double representing the y-velocity of the object
-      * @param ax A double representing the x-acceleration of the object
-      * @param ay A double representing the y-acceleration of the object
-      *
-      * @return None
-      *
-      * @example
-      * Object obj = Object(0.0, 0.0, 1.0, 1.0, 0.0, 0.0)
-      * obj.update(0.2)
-      * pos = obj.get_position()
-      * vel = obj.get_velocity()
-      * acc = obj.get_acceleration()
-      * obj.set_position(Eigen::Vector2f(1.0, 1.0))
-      * obj.set_velocity(Eigen::Vector2f(0.0, 0.0))
-      * obj.set_acceleration(Eigen::Vector2f(1.0, 1.0))
-      */
 public:
     double x, y, vx, vy, ax, ay;
     std::string ID;
@@ -93,7 +95,6 @@ public:
     }
 
     // Getter Functions -- return pairs of values in Eigen::Vector2f
-
     Eigen::Vector2f get_position() {
         return Eigen::Vector2f(x, y);
     }
@@ -127,8 +128,18 @@ public:
 
 };
 
-// OpenCV Image Display 
 
+/**
+ * @brief Display an image using OpenCV
+ *
+ * This function takes an Eigen::MatrixXf image and displays it using OpenCV.
+ * The image is first normalized to the range [0, 255] and then converted to
+ * an 8-bit unsigned integer format for display.
+ *
+ * @param image An Eigen::MatrixXf representing the image data
+ *
+ * @return None
+ */
 void displayimage(const Eigen::MatrixXf& image) {
     /**
      * @brief Display an image using OpenCV
@@ -161,83 +172,81 @@ void displayimage(const Eigen::MatrixXf& image) {
     // Resize window
 
     // Wait for 1 second -- NOT KEY PRESS
-    cv::waitKey(100);
+    cv::waitKey(1);
 
 }
 
-
-// Helper function to parse float directly from char buffer
-float parse_float(const char*& p) {
-    while (*p == ' ' || *p == '\t') ++p;
-    char* end;
-    float result = strtof(p, &end);
-    p = end;
-    return result;
-}
-
-Eigen::MatrixXf import_matrix(const std::string& file_path) {
-    constexpr size_t ROWS = 4096;
-    constexpr size_t COLS = 16384;
-
-    // Open file
-    int fd = open(file_path.c_str(), O_RDONLY);
-    if (fd == -1) throw std::runtime_error("Cannot open file");
-
-    struct stat sb;
-    if (fstat(fd, &sb) == -1) throw std::runtime_error("Cannot get file size");
-
-    const char* data = static_cast<const char*>(
-        mmap(nullptr, sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0));
-    if (data == MAP_FAILED) throw std::runtime_error("Cannot map file");
-
-    // Pre-allocate matrix with known size
-    Eigen::MatrixXf objects_matrix(ROWS, COLS);
-
-    const char* p = data;
-    for (size_t row = 0; row < ROWS; ++row) {
-        for (size_t col = 0; col < COLS; ++col) {
-            while (*p == ' ' || *p == '\t') ++p;
-            objects_matrix(row, col) = strtof(p, const_cast<char**>(&p));
-        }
-        while (*p != '\n' && *p != '\0') ++p;
-        ++p;
-
-        if (row % 100 == 0) {
-            int progress = (row * 100) / ROWS;
-            // std::cout << "\rProgress: " << progress << "%" << std::flush;
-        }
+/**
+ * @brief Imports a binary file containing matrix data into an Eigen::MatrixXd object.
+ *
+ * This function reads binary data from a file and populates an Eigen::MatrixXd matrix.
+ * The function handles row/column major differences between numpy (row major) and
+ * Eigen (column major) by performing an in-place transpose after reading.
+ *
+ * @param path File path to the binary file containing matrix data
+ * @param matrix Reference to the Eigen::MatrixXd that will store the imported data
+ * @param row Number of rows in the target matrix
+ * @param col Number of columns in the target matrix
+ *
+ * @throws std::runtime_error If the file cannot be opened or read
+ *
+ * @note The binary file should contain raw double values in row-major order
+ * @note The matrix parameter will be resized to match the specified dimensions
+ *
+ * Example:
+ * @code
+ *     Eigen::MatrixXd matrix;
+ *     importMatrix("data.bin", matrix, 3, 4);
+ * @endcode
+ */
+void importMatrix(std::string path, Eigen::MatrixXd& matrix, int row, int col) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        throw std::runtime_error("Failed to open file: " + path);
     }
 
-    munmap(const_cast<char*>(data), sb.st_size);
-    close(fd);
+    // Allocate memory for the matrix -- (row major order)
+    matrix.resize(col, row);
 
-    std::cout << "Matrix Imported" << std::endl;
-    return objects_matrix;
+    // Read the entire binary file into the matrix
+    file.read(reinterpret_cast<char*>(matrix.data()),
+        matrix.size() * sizeof(double));
+
+    // Resize matrix (correct dimensions)
+    matrix.transposeInPlace();
+
+    if (!file) {
+        throw std::runtime_error("Failed to read data from file: " + path);
+    }
+
+    file.close();
 }
 
 
-Eigen::MatrixXf sampleDistribution(Eigen::VectorXf truth, const Eigen::MatrixXf M, const Eigen::MatrixXf G){
-    /**
-     * @brief Based on the truth matrix, hypothesis the mWidar signal and return it 
-     * 
-     * @param truth The vector representing the object distribution
-     * @param M The matrix representing the mWidar sampling matrix (4096 x 16384)
-     * @param G The matrix representing the mWidar recovery matrix (4096 x 16384)
-     * 
-     * @return The mWidar signal matrix
-     */
 
-    // If truth is not 16384x1, return error 
-    if (truth.size() != 16384) {
-        throw std::runtime_error("Truth vector is not 16384x1");
-    }
-
-    // Multiply the truth vector by the mWidar sampling matrix
-    Eigen::VectorXf signal = M * truth;
-    truth = G.transpose() * signal;
-
-    // Return the mWidar signal matrix
-    return Eigen::Map<Eigen::MatrixXf>(truth.data(), 128, 128);
+/**
+ * @brief Propagates the distribution of objects in the scene through measurement and recovery matrices
+ *
+ * This function takes an input distribution matrix S and transforms it using measurement matrix M
+ * and recovery matrix G to simulate the radar measurement and recovery process.
+ * The transformation follows these steps:
+ * 1. Flattens the input distribution matrix S into a column vector
+ * 2. Applies measurement matrix M to get simulated measurements
+ * 3. Applies recovery matrix G to reconstruct the image
+ * 4. Reshapes the result back to a 128x128 matrix
+ *
+ * @param S The input 128x128 matrix representing the object distribution in the scene
+ * @param signal The output 128x128 matrix to store the recovered signal/image
+ *
+ * @note Assumes global measurement matrix M and recovery matrix G are properly initialized
+ * @note Input and output matrices must be 128x128 dimensional
+ */
+void propogateDistribution(const Eigen::MatrixXd& S, Eigen::MatrixXd& signal) {
+    // Compute signal using intermediate vector
+    Eigen::MatrixXd S_flat = Eigen::Map<Eigen::MatrixXd>((double*)S.transpose().data(), 128 * 128, 1);
+    Eigen::MatrixXd signal_flat = M * S_flat;
+    signal_flat = G.transpose() * signal_flat;
+    signal = Eigen::Map<Eigen::MatrixXd>((double*)signal_flat.data(), 128, 128);
 }
 
 // Test the Simulator -- include arguments
@@ -245,19 +254,11 @@ Eigen::MatrixXf sampleDistribution(Eigen::VectorXf truth, const Eigen::MatrixXf 
 int main(int argc, char* argv[]) {
     std::cout << "Starting Simulator" << std::endl;
 
-
-
     // Import matricies
-    Eigen::MatrixXf M(4096, 16384);
-    Eigen::MatrixXf G(4096, 16384);
     std::cout << "Importing Matricies" << std::endl;
-    M = import_matrix("data_txt/recovery-12tx-4096samples-128x128.txt");
-    G = import_matrix("data_txt/sampling-12tx-4096samples-128x128.txt");
+    importMatrix("../sampling.bin", M, 4096, 16384);
+    importMatrix("../recovery.bin", G, 4096, 16384);
     std::cout << "Matricies Imported" << std::endl;
-
-    // Matricies are constructed baesd on ROW MAJOR FLATTENING -- so we need to use RowMajorMatrix 
-    // put here to avoid confusion with Eigen::MatrixXf
-    using RowMajorMatrix = Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
 
     // Default values
     float time_step = 1.0;
@@ -268,18 +269,18 @@ int main(int argc, char* argv[]) {
 
     // Parse arguments
     // TODO: DO THIS LATER
+    Eigen::MatrixXd S; // Will be 128x128
     std::vector<Object> objects;
 
-    objects.push_back(Object(34.0, 64.0, 1.0, 0, 0.0, 0.0, "Object1"));
-    objects.push_back(Object(64.0, 34.0, -1.0, 0, 0.0, 0.0, "Object2"));
-    objects.push_back(Object(94.0, 64.0, 0.0, 1.0, 0.0, 0.0, "Object3"));
-    objects.push_back(Object(64.0, 94.0, 0.0, -1.0, 0.0, 0.0, "Object4"));
+    objects.push_back(Object(66.0, 66.0, 1.0, 0, 0.0, 0.0, "Object1"));
+    objects.push_back(Object(63.0, 63.0, -1.0, 0, 0.0, 0.0, "Object2"));
+    // objects.push_back(Object(64.0, 34.0, -1.0, 0, 0.0, 0.0, "Object2"));
+    // objects.push_back(Object(94.0, 64.0, 0.0, 1.0, 0.0, 0.0, "Object3"));
+    // objects.push_back(Object(64.0, 94.0, 0.0, -1.0, 0.0, 0.0, "Object4"));
 
     int MaxTimestep = 100; // TODO: Dynamically calculate this for last timestep object will be in frame
-
-    RowMajorMatrix S; // Will be 128x128
     for (int i = 0; i < MaxTimestep; i++) {
-        S = Eigen::MatrixXf::Zero(128, 128);
+        S = Eigen::MatrixXd::Zero(128, 128);
         std::cout << "Time Step: " << i << std::endl;
         for (int obj = 0; obj < objects.size(); obj++) {
             std::cout << "Object: " << objects[obj].get_ID();
@@ -294,21 +295,13 @@ int main(int argc, char* argv[]) {
             objects[obj].update(time_step);
         }
 
-        Eigen::VectorXf S_flat = Eigen::Map<Eigen::VectorXf>(S.data(), S.size());
+        // Calculate new signal
+        Eigen::MatrixXd signal;
+        propogateDistribution(S, signal);
 
-        // As a check -- print out index number of 1s in S_flat
-        for (int i = 0; i < S_flat.size(); i++) {
-            if (S_flat(i) == 1) {
-                std::cout << i << " ";
-            }
-        }
-        std::cout << std::endl;
-
-        Eigen::MatrixXf S_new = sampleDistribution(S_flat, M, G);
 
         if (display_image) {
-            displayimage(S * 100);
-            displayimage(S_new);
+            displayimage(signal.cast<float>() * 100.0f);
         }
 
     }
