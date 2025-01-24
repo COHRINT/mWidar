@@ -2,11 +2,7 @@
 #include <iostream>
 #include <Eigen/Sparse>
 #include <Eigen/Dense>
-// #include "../dependencies/unsupported/Eigen/MatrixFunctions"
-#include <tuple>
 #include <opencv2/opencv.hpp>
-#include <map>
-#include <limits>
 #include <matio.h>
 #include "Object.h"
 #include <string>
