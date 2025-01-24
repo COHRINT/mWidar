@@ -120,6 +120,13 @@ cv::Point Object::getPixelPosition()
     pixelPos.y = int(this->stateVector(2));
     return pixelPos;
 }
+std::pair<double, double> Object::getPixelVelocity()
+{
+    std::pair<double, double> pixelVel;
+    pixelVel.first = this->stateVector(1);
+    pixelVel.second = this->stateVector(3);
+    return pixelVel;
+}
 void Object::setID(int id)
 {
     this->id = id;
