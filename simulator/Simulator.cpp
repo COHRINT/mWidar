@@ -172,7 +172,7 @@ void displayimage(const Eigen::MatrixXf& image) {
     // Resize window
 
     // Wait for 1 second -- NOT KEY PRESS
-    cv::waitKey(1);
+    cv::waitKey(.5);
 
 }
 
@@ -272,13 +272,13 @@ int main(int argc, char* argv[]) {
     Eigen::MatrixXd S; // Will be 128x128
     std::vector<Object> objects;
 
-    objects.push_back(Object(66.0, 66.0, 1.0, 0, 0.0, 0.0, "Object1"));
-    objects.push_back(Object(63.0, 63.0, -1.0, 0, 0.0, 0.0, "Object2"));
+    objects.push_back(Object(66.0, 66.0, 2.0, 0, 0.0, 0.0, "Object1"));
+    objects.push_back(Object(63.0, 63.0, -2.0, 0, 0.0, 0.0, "Object2"));
     // objects.push_back(Object(64.0, 34.0, -1.0, 0, 0.0, 0.0, "Object2"));
     // objects.push_back(Object(94.0, 64.0, 0.0, 1.0, 0.0, 0.0, "Object3"));
     // objects.push_back(Object(64.0, 94.0, 0.0, -1.0, 0.0, 0.0, "Object4"));
 
-    int MaxTimestep = 100; // TODO: Dynamically calculate this for last timestep object will be in frame
+    int MaxTimestep = 25; // TODO: Dynamically calculate this for last timestep object will be in frame
     for (int i = 0; i < MaxTimestep; i++) {
         S = Eigen::MatrixXd::Zero(128, 128);
         std::cout << "Time Step: " << i << std::endl;

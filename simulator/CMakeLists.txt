@@ -40,6 +40,3 @@ target_include_directories(Simulator PUBLIC ${OpenCV_INCLUDE_DIRS})
 
 # Add the compile options
 target_compile_options(Simulator PUBLIC -std=c++17 -g)
-
-
-
