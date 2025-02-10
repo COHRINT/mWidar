@@ -74,6 +74,7 @@
         "random": "cpp",
         "type_traits": "cpp",
         "utility": "cpp",
+<<<<<<< HEAD
         "cinttypes": "cpp",
         "charconv": "cpp",
         "codecvt": "cpp",
@@ -88,5 +89,8 @@
         "stop_token": "cpp",
         "text_encoding": "cpp",
         "thread": "cpp"
+=======
+        "cinttypes": "cpp"
+>>>>>>> refs/remotes/upstream/main
     }
 }

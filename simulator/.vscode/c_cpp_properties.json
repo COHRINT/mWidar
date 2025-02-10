@@ -7,7 +7,11 @@
                 "/usr/local/include",
                 // "/usr/local/include/eigen3",
                 "/opt/homebrew/Cellar/eigen/3.4.0_1/include/eigen3",
+<<<<<<< HEAD
                 "/opt/homebrew/Cellar/opencv/4.10.0_15/include/opencv4"
+=======
+                "/opt/homebrew/Cellar/opencv/4.10.0_13/include/opencv4"
+>>>>>>> refs/remotes/upstream/main
             ],
             "defines": [],
             "macFrameworkPath": [

@@ -105,6 +105,7 @@
             },
             "showDisplayString": true,
             "targetArchitecture": "arm64"
+<<<<<<< HEAD
         },
         {
             "name": "Debug Test",
@@ -132,6 +133,8 @@
             },
             "showDisplayString": true,
             "targetArchitecture": "arm64"
+=======
+>>>>>>> refs/remotes/upstream/main
         }
     ]
 }
