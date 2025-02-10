@@ -1,7 +1,6 @@
 #include "../include/DataProcessor.h"
 #define IMG_SIZE 128
 using namespace cv;
-// using namespace Eigen;
 
 DataProcessor::DataProcessor(int imageSize, std::string filter = "kalman-filter")
 {

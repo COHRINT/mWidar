@@ -72,7 +72,7 @@ int main(int argc, char *argv[])
         cv::Mat img = VisionProcessor::readDataAsImage(image_ptr, image_sem, 128);
         for (auto &pair : truthPeaksWithID)
         {
-            std::cout << "Object " << pair.first << " at: " << pair.second << std::endl;
+            std::cout << "truth point " << pair.first << " at: " << pair.second << std::endl;
         }
 
         // find peaks and convert them to the mWidar frame for KF
@@ -91,28 +91,17 @@ int main(int argc, char *argv[])
         {
             Eigen::VectorXd measurement(2); // Initialize with size 2
             measurement << pairing.first.x, pairing.first.y; // Assign values
-            // std::cout << "truth:       (" << pairing.first.x << ", " << pairing.first.y << ")" << std::endl;
-            // std::cout << "object:      (" << pairing.second->getStateVector()(0) << ", " << pairing.second->getStateVector()(2) << ")" << std::endl;
-
             dp.propogateState(*pairing.second, measurement, "kalman-filter"); // propogateState(Object, Point, filter)
-            // std::cout << "xplus: " << pairing.second->getStateVector() << std::endl;
-            // std::cout << "z: " << pairing.second->getMeasurementState() << std::endl;
-            // std::cout << "pplus: " << pairing.second.getStateCovariance() << std::endl;
-            // gp.mapObjectToB(gp.b, pairing.second);
         }
 
         // graph the truth and KF estimations of the objects
         std::vector<Object> objects = dp.getObjects();
-        // for (auto &obj : objects)
-        // {
+        for (auto &obj : objects)
+        {
         // std::cout << "objects size: " << objects.size() << std::endl;
-        //     std::cout << "obj " << obj.getID() << " state:\n" << obj.getStateVector() << std::endl;
-        //     std::cout << "obj " << obj.getID() << " measurement:" << std::endl;
-        //     for (int i = 0; i < obj.getMeasurementState().size(); i++)
-        //     {
-        //         std::cout << obj.getMeasurementState()(i) << std::endl;
-        //     }
-        // }
+        std::cout << "obj " << obj.getID() << " at: " << obj.getPixelPosition()
+            << " with velocities [" << obj.getPixelVelocity().first << ", " << obj.getPixelVelocity().second << "]\n";
+        }
 
         // gp.img = gp.clearImage();
 
