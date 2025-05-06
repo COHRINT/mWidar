@@ -1,0 +1,5 @@
+# .gitignore for simulators 
+
+# Ignore all data files in the data directory 
+*.mat
+
