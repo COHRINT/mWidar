@@ -14,10 +14,13 @@
 % of indicies of the detected peaks and the binary matrix.
 % %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-function [detected_peaks] = max_peaks(signal)
+function [detected_peaks] = max_peaks(signal, min_val)
 
 % Find local maxima using the peaks2 function
-[pvs,peak_xind,peak_yind] = peaks2(signal,'MinPeakHeight',.7,'MinPeakDistance',5);
+
+% Min value is +3sigma above mean 
+% min_val = mean(signal(:)) + std(signal(:));
+[pvs,peak_xind,peak_yind] = peaks2(signal,'MinPeakHeight',min_val,'MinPeakDistance',4);
 
 detected_peaks = [peak_yind, peak_xind];
 

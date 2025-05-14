@@ -26,8 +26,8 @@ set(0, 'DefaultLegendInterpreter', 'latex');
 set(0, 'DefaultAxesTitleFontWeight', 'bold');
 
 % Set PLOT_FLAG to 1 to plot the simulation
-PLOT_FLAG = 0;
-SAVE_FLAG = 1;
+PLOT_FLAG = 1;
+SAVE_FLAG = 0;
 
 addpath("matlab_functions/")
 

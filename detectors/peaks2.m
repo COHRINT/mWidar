@@ -64,7 +64,7 @@ function [pks, locs_y, locs_x] = peaks2(data, varargin)
     ispeak = ispeak & ([true(1, size(data, 2)); (data(2:end, :) > data(1:end - 1, :))]); % once again, for this case, we can update the peak array directly.
     %
     % 4th neighbor at the top-right:
-    isgreater = true(size(data)); % rebuild a fresh array for comparison...
+    isgreater = true(size(data)); % rebuild a fresh arrfay for comparison...
     isgreater(2:end, 1:end - 1) = (data(2:end, 1:end - 1) > data(1:end - 1, 2:end));
     ispeak = ispeak & isgreater;
     %

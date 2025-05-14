@@ -43,7 +43,8 @@ PLOT_FLAG = 0;
 
 % % %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Load the simulation data -- Single, Double, Triple
-dataset = "Triple";
+scaling_string = "gaussian"; % Options: "tanh", "gaussian", "none", "linear"
+dataset = "Double";
 GT = load("../data_tracks/" + dataset + "_GT.mat").GT;
 sim_signal = load("../data_tracks/" + dataset + "_simulated_signal.mat").simulated_signal;
 GT_traj = load("../data_tracks/" + dataset + "_objects_traj.mat").objects_traj;
@@ -57,83 +58,379 @@ fprintf("Size of signal: %d x %d x %d\n", size(sim_signal));
 color_palette = [
                  0.3, 0.3, 0.7; % Darker blue/purple
                  0.7, 0.3, 0.3; % Darker red/maroon
-                 0.3, 0.6, 0.3  % Darker green
+                 0.3, 0.6, 0.3 % Darker green
                  ];
-detectors = containers.Map('KeyType', 'char', 'ValueType', 'any');
-detectors("Max Peak") = @max_peaks;
-detectors("H-maxima") = @h_maximas;
-% detectors("Time Dependent") = (@TDD, color_palette(3, :));
 
 % %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-figure(Position = [100, 100, 1800, 600])
-tile_sim = tiledlayout(1, 2, 'TileSpacing', 'Compact');
-ax1 = nexttile(tile_sim);
-ax2 = nexttile(tile_sim);
-hold(ax1, 'on')
-hold(ax2, 'on')
-xlim(ax2, [-1.1, 1.1])
-ylim(ax2, [0, 7])
-xlim(ax1, [0, 128])
-ylim(ax1, [0, 128])
+% figure(Position = [100, 100, 1800, 600])
+% tile_sim = tiledlayout(1, 2, 'TileSpacing', 'Compact');
+% ax1 = nexttile(tile_sim);
+% ax2 = nexttile(tile_sim);
+% hold(ax1, 'on')
+% hold(ax2, 'on')
+% xlim(ax2, [-1.1, 1.1])
+% ylim(ax2, [0, 7])
+% xlim(ax1, [0, 128])
+% ylim(ax1, [0, 128])
+method_strings = ["Local Peak", "CA\_CFAR", "Time Dependent"];
+
+num_methods = 3;
+num_thresholds = 100;
+global_TP_MP = zeros(num_methods, num_thresholds + 1);
+global_FP_MP = zeros(num_methods, num_thresholds + 1);
+global_FN_MP = zeros(num_methods, num_thresholds + 1);
+
+global_TPR_MP = zeros(num_methods, num_thresholds + 1); ;
+global_FPR_MP = zeros(num_methods, num_thresholds + 1); ;
+
+% Thresholds for Max Peak Detector and CA_CFAR Detector
+thresholds = 1 - exp(-linspace(0, 5, num_thresholds)); % Exponential spacing to increase density near 1
+thresholds = (thresholds - min(thresholds)) / (max(thresholds) - min(thresholds)); % Scale to [0, 1]
+thresholds = sort(thresholds); % Ensure thresholds are sorted in ascending order
+thresholds = [thresholds, 1];
+
+% Threshold for TDPF (range of "d_thresh" values)
+d_thresh = linspace(1, 10, 10); % Distance thresholds
 
 for t = 1:size(sim_signal, 3)
+    disp(t)
     % Iterate through detectors and find peaks
     % blur current signal
-    signal = imgaussfilt(sim_signal(:, :, t));
+    signal_orig = sim_signal(20:end, :, t);
     % Scale signal using hyperbolic tangent with scaling factor
     % Optionally scale to zero mean, unit variance
-    signal_std = (signal - mean(signal(:))) / std(signal(:));
-    signal = tanh(signal_std);
+    signal_std = (signal_orig - mean(signal_orig(:))) / std(signal_orig(:));
 
-    % Plot distribution of signal intensity
-    cla(ax2) % Clear previous histogram
-    histogram(ax2, signal(:), 'Normalization', 'pdf', 'BinWidth', 0.1, 'FaceColor', 'blue', 'EdgeColor', 'none');
-    xlim(ax2, [-1.1, 1.1])
-    ylabel(ax2, 'Probability Density Function')
-    xlabel(ax2, 'Signal Intensity')
+    % signal = imgaussfilt(tanh(signal_std), .8);
+    % signal = imgaussfilt(signal_orig, 1);
+    if strcmp(scaling_string, "tanh")
+        signal = (tanh(signal_std) + 1) / 2;
+    elseif strcmp(scaling_string, "gaussian")
+        signal = (imgaussfilt(signal_orig, 2) - min(imgaussfilt(signal_orig, 2), [], 'all')) / ...
+            (max(imgaussfilt(signal_orig, 2), [], 'all') - min(imgaussfilt(signal_orig, 2), [], 'all'));
+    elseif strcmp(scaling_string, "none")
+        signal = (signal_orig - min(signal_orig(:))) / (max(signal_orig(:)) - min(signal_orig(:)));
+    elseif strcmp(scaling_string, "linear")
+        signal = (signal_orig - min(signal_orig(:))) / (max(signal_orig(:)) - min(signal_orig(:)));
+    end
 
-    ylim(ax2, [0, 7])
+    TPR_MP = [];
+    FPR_MP = [];
+    d_thresh = 5;
 
-    % Plot surface
-    cla(ax1)
-    s = surface(ax1, signal, 'FaceAlpha', 0.5);
-    s.EdgeColor = 'none';
-    % colormap(ax1, 'parula');
-    colormap(ax1, 'gray');
-    colorbar(ax1)
-    axis equal
-    xlim(ax1, [1, 128])
-    ylim(ax1, [1, 128])
-    title(ax1, "Radar Signal at Time " + t, 'Interpreter', 'latex', 'FontSize', 14);
+    gt_points = squeeze(GT_traj(:, :, t)).'; % M×2
+    % Subtract 20 from all x-coordinates to account for the 20 pixel offset
+    gt_points(:, 2) = gt_points(:, 2) - 20;
 
-    % Process each detector with its corresponding color
-    detector_names = keys(detectors);
-    plots = [];
-    names = detector_names(:); % Ensure it's a column vector
+    % MAX PEAKS DETECTOR
+    for i = 1:length(thresholds)
 
-    for i = 1:length(detector_names)
-        detector_name = detector_names{i};
-        detector = detectors(detector_name);
-        detected_peaks = detector(signal);
+        % Max Peak Detector
+        th = thresholds(i);
+        [~, px, py] = peaks2(signal, 'MinPeakHeight', th, 'MinPeakDistance', 4);
+        peaks = [py, px];
 
-        % Use color from palette for each detector
-        color = color_palette(i, :);
+        % Match GT and detected peaks -- avoid double counting
+        matched_gt = false(size(gt_points, 1), 1);
+        matched_peaks = false(size(peaks, 1), 1);
 
-        % Plot detected peaks
-        if ~isempty(detected_peaks)
-            detector_plot = plot(ax1, detected_peaks(:, 1), detected_peaks(:, 2), '+', 'MarkerSize', 20, 'LineWidth', 5, 'MarkerFaceColor', color, 'MarkerEdgeColor', color);
-            plots = [plots; detector_plot]; % Store plot handles for legend
+        for j = 1:size(peaks, 1)
+            % If inside the image, find the closest GT point
+            dists = vecnorm(gt_points - peaks(j, :), 2, 2);
+            [min_dist, idx] = min(dists);
+
+            if min_dist < 5 && ~matched_gt(idx)
+                % If less than 5 pixels away and GT not matched, 'matched' GT and detected peak
+                matched_gt(idx) = true;
+                matched_peaks(j) = true;
+
+            elseif min_dist < 5 && matched_gt(idx)
+                % If less than 5 pixels away and GT matched, 'matched' detected peak
+                matched_peaks(j) = true;
+            end
+
+            % If outside the image, ignore (stays false)
+        end
+
+        TP = sum(matched_gt);
+        FP = sum(~matched_peaks);
+        FN = sum(~matched_gt);
+
+        global_TP_MP(1, i) = global_TP_MP(1, i) + TP;
+        global_FP_MP(1, i) = global_FP_MP(1, i) + FP;
+        global_FN_MP(1, i) = global_FN_MP(1, i) + FN;
+    end
+
+    % CA_CFAR DETECTOR
+    for i = 1:length(thresholds)
+
+        % CA_CFAR Detector
+        th = thresholds(i);
+        [~, px, py] = CA_CFAR(signal, th, 3, 10);
+        peaks = [py, px];
+
+        % Match GT and detected peaks -- avoid double counting
+        matched_gt = false(size(gt_points, 1), 1);
+        matched_peaks = false(size(peaks, 1), 1);
+
+        for j = 1:size(peaks, 1)
+            % If inside the image, find the closest GT point
+            dists = vecnorm(gt_points - peaks(j, :), 2, 2);
+            [min_dist, idx] = min(dists);
+
+            if min_dist < d_thresh && ~matched_gt(idx)
+                % If less than d_thresh pixels away and GT not matched, 'matched' GT and detected peak
+                matched_gt(idx) = true;
+                matched_peaks(j) = true;
+
+            elseif min_dist < d_thresh && matched_gt(idx)
+                % If less than d_thresh pixels away and GT matched, 'matched' detected peak
+                matched_peaks(j) = true;
+            end
+
+            % If outside the image, ignore (stays false)
+        end
+
+        TP = sum(matched_gt);
+        FP = sum(~matched_peaks);
+        FN = sum(~matched_gt);
+
+        global_TP_MP(2, i) = global_TP_MP(2, i) + TP;
+        global_FP_MP(2, i) = global_FP_MP(2, i) + FP;
+        global_FN_MP(2, i) = global_FN_MP(2, i) + FN;
+    end
+
+    % TDPF DETECTOR
+    % Initialize previous peak score as a struct
+    if t == 1
+        prev_peak_score_loop = struct();
+
+        for i = 1:length(d_thresh)
+            % Use the threshold as the field name
+            field_name = sprintf('thresh_%d', i);
+            prev_peak_score_loop.(field_name) = []; % Initialize with an empty array
         end
 
     end
 
-    % Plot ground truth
-    true_traj = plot(ax1, GT_traj(1, :, t), GT_traj(2, :, t), 'x', 'MarkerSize', 20, 'LineWidth', 4, 'Color', 'blue');
-    plots = [plots; true_traj]; % Store plot handles for legend
-    names = [names; "Ground Truth"];
+    for i = 1:length(d_thresh)
+        % CA_CFAR detector for current frame
+        % [~, px, py] = CA_CFAR(signal, .2, 3, 10);
 
-    legend(ax1, plots, names, 'Location', 'southeast', 'Interpreter', 'latex', 'FontSize', 14);
+        % MaxPeaks Detector
+        [~, px, py] = peaks2(signal, 'MinPeakHeight', .6, 'MinPeakDistance', 1);
+        peaks = [py, px];
 
-    pause(.2)
+        % TDPF Detector
+        d_thresh_value = d_thresh(i);
+        field_name = sprintf('thresh_%d', i);
+        prev_peak_score = prev_peak_score_loop.(field_name);
+
+        % Update prev_peak_score using TDPF
+        prev_peak_score = TDPF(peaks, prev_peak_score, d_thresh_value);
+
+        % Replace the previous peak score with the new one
+        prev_peak_score_loop.(field_name) = prev_peak_score;
+
+        % Match GT and detected peaks -- avoid double counting
+        matched_gt = false(size(gt_points, 1), 1);
+        matched_peaks = false(size(prev_peak_score, 1), 1);
+
+        for j = 1:size(prev_peak_score, 1)
+
+            if prev_peak_score(j, 3) <= 2
+                continue; % Skip if not persistent
+            end
+
+            % If inside the image, find the closest GT point
+            dists = vecnorm(gt_points - prev_peak_score(j, 1:2), 2, 2);
+            [min_dist, idx] = min(dists);
+
+            if min_dist < d_thresh_value && ~matched_gt(idx)
+                % If less than d_thresh pixels away and GT not matched, 'matched' GT and detected peak
+                matched_gt(idx) = true;
+                matched_peaks(j) = true;
+
+            elseif min_dist < d_thresh_value && matched_gt(idx)
+                % If less than d_thresh pixels away and GT matched, 'matched' detected peak
+                matched_peaks(j) = true;
+            end
+
+            % If outside the image, ignore (stays false)
+        end
+
+        TP = sum(matched_gt);
+        FP = sum(~matched_peaks);
+        FN = sum(~matched_gt);
+
+        global_TP_MP(3, i) = global_TP_MP(3, i) + TP;
+        global_FP_MP(3, i) = global_FP_MP(3, i) + FP;
+        global_FN_MP(3, i) = global_FN_MP(3, i) + FN;
+    end
+
+    % Create a single figure for animation at the beginning of the loop
+    if t == 1
+        fig_anim = figure('Position', [100, 100, 1800, 600]);
+    end
+
+    % Clear the figure but keep the window
+    clf(fig_anim);
+
+    % Create the tiled layout
+    tile_sim = tiledlayout(fig_anim, 1, 2, 'TileSpacing', 'Compact');
+
+    % First subplot - Surface plot
+    ax1 = nexttile(tile_sim);
+    hold(ax1, 'on')
+
+    % Plot the GT points on first axis
+    plot(ax1, GT_traj(1, :, t), GT_traj(2, :, t) - 20, 'd', 'MarkerSize', 10, 'LineWidth', 2, 'MarkerFaceColor', 'magenta', 'Color', 'magenta', 'DisplayName', 'Ground Truth');
+
+    % Plot text next to each GT point
+    for i = 1:size(gt_points, 1)
+        text(ax1, gt_points(i, 1), gt_points(i, 2), ['GT ' num2str(i)], 'Color', 'magenta', 'FontWeight', 'bold', 'HorizontalAlignment', 'left');
+    end
+
+    % Plot the signal surface
+    [X, Y] = meshgrid(1:size(signal, 2), 1:size(signal, 1));
+    s = surf(ax1, X, Y, signal, 'FaceAlpha', .5, 'EdgeAlpha', 0.5);
+    s.EdgeColor = 'none';
+    colormap(ax1, 'gray');
+    c = colorbar(ax1);
+    c.Label.String = 'Signal Intensity';
+    c.Label.Interpreter = 'latex';
+
+    % Plot the detected peaks
+    [~, px, py] = peaks2(signal, 'MinPeakHeight', 0.75, 'MinPeakDistance', 4);
+    peaks = [py, px];
+    plot(ax1, peaks(:, 1), peaks(:, 2), '+', 'MarkerSize', 10, 'LineWidth', 2, 'MarkerFaceColor', color_palette(1, :), 'Color', color_palette(1, :), 'DisplayName', 'Peaks2');
+
+    % Plot the CA_CFAR peaks
+    [~, px, py] = CA_CFAR(signal, .2, 3, 10);
+    peaks = [py, px];
+
+    if size(peaks, 1) > 0
+        % Plot the detected peaks
+        plot(ax1, peaks(:, 1), peaks(:, 2), 'x', 'MarkerSize', 10, 'LineWidth', 2, 'MarkerFaceColor', color_palette(2, :), 'Color', color_palette(2, :), 'DisplayName', 'CA_CFAR');
+    end
+
+    % Plot TDPF detected peaks
+    if t == 1
+        % Initialize previous peak score
+        prev_peak_score = [];
+    end
+
+    TDPF_String = ["New Target", "Existing Target", "Persistent Target"];
+    prev_peak_score = TDPF(peaks, prev_peak_score, 5);
+
+    if size(prev_peak_score, 1) > 0
+        color_small = ["#FF0000", "#00FF00", "#0000FF"];
+
+        for i = 1:3
+            plot_peaks = prev_peak_score(prev_peak_score(:, 3) == i, 1:2);
+
+            if size(plot_peaks, 1) > 0
+                plot(ax1, plot_peaks(:, 1), plot_peaks(:, 2), 'o', 'MarkerSize', 10, 'LineWidth', 2, 'MarkerFaceColor', color_small(i), 'Color', color_small(i), 'DisplayName', TDPF_String(i));
+            end
+
+        end
+
+    end
+
+    % Configure first subplot
+    axis(ax1, 'equal');
+    xlim(ax1, [1, size(signal, 2)]);
+    ylim(ax1, [1, size(signal, 1)]);
+    zlim(ax1, [min(signal(:)), max(signal(:))]);
+    view(ax1, 2); % Set the view to 2D
+    title(ax1, "Radar Signal at Time " + t, 'Interpreter', 'latex', 'FontSize', 14);
+    legend(ax1, 'Location', 'northeast', "Interpreter", "latex", 'FontSize', 12);
+
+    % Second subplot - Histogram
+    ax2 = nexttile(tile_sim);
+    hold(ax2, 'on')
+
+    % Plot histogram of signal values
+    histogram(ax2, signal(:), 'Normalization', 'pdf', 'BinWidth', 0.05, 'FaceColor', 'blue', 'EdgeColor', 'none');
+
+    % Add vertical lines for each GT point's signal intensity
+    for i = 1:size(gt_points, 1)
+        % Get coordinates of GT point (rounded to nearest integer)
+        gt_x = round(gt_points(i, 1));
+        gt_y = round(gt_points(i, 2));
+
+        % Make sure coordinates are within bounds
+        gt_x = max(1, min(gt_x, size(signal, 2)));
+        gt_y = max(1, min(gt_y, size(signal, 1)));
+
+        % Get signal value at GT position
+        gt_signal_val = signal(gt_y, gt_x);
+
+        % Get y-limits of current plot for line height
+        y_lims = ylim(ax2);
+
+        % Plot vertical line at the signal intensity with GT color
+        line(ax2, [gt_signal_val gt_signal_val], [0 y_lims(2) * 0.9], 'Color', 'magenta', 'LineWidth', 2, 'LineStyle', '--');
+
+        % Add text label with GT index
+        text(ax2, gt_signal_val, y_lims(2) * 0.95, ['GT ' num2str(i)], 'Color', 'magenta', 'FontWeight', 'bold', 'HorizontalAlignment', 'center');
+    end
+
+    xlim(ax2, [0, 1]);
+    ylabel(ax2, 'Probability Density', 'Interpreter', 'latex');
+    xlabel(ax2, 'Signal Intensity', 'Interpreter', 'latex');
+    title(ax2, "Signal Intensity Distribution", 'Interpreter', 'latex', 'FontSize', 14);
+    grid(ax2, 'on');
+    sgtitle("Radar Signal Analysis - Frame " + t, 'Interpreter', 'latex', 'FontSize', 16);
+
+    pause(0.1);
 
 end
+
+% global_TPR_MP = global_TP_MP ./ (global_TP_MP + global_FN_MP + eps);
+% global_FPR_MP = global_FP_MP ./ (global_FP_MP + global_TP_MP + eps);
+
+figure();
+hold('on')
+
+% Plot ROC curves
+for meth = 1:num_methods
+    global_TPR_MP(meth, :) = global_TP_MP(meth, :) ./ (global_TP_MP(meth, :) + global_FN_MP(meth, :) + eps);
+    global_FPR_MP(meth, :) = global_FP_MP(meth, :) ./ (global_FP_MP(meth, :) + global_TP_MP(meth, :) + eps);
+
+    % [~, sort_idx] = sort(global_FPR_MP(meth, :));
+    plot(global_FPR_MP(meth, :), global_TPR_MP(meth, :), '-o', 'Color', color_palette(meth, :), "DisplayName", method_strings(meth), 'LineWidth', 2, 'MarkerSize', 6);
+
+    fprintf("Method: %s\n", method_strings(meth));
+    fprintf("Number of datapoints: %d\n", length(global_TPR_MP(meth, :)));
+
+    % Every 10th point label with threshold
+    % if meth == 1
+
+    % for i = 1:10:length(thresholds)
+    %     text(global_FPR_MP(meth, i), global_TPR_MP(meth, i) - .05, sprintf('%.5f', thresholds(i)), 'FontSize', 8, 'Color', color_palette(meth, :));
+    % end
+
+    % end
+
+end
+
+% Plot "Random" line
+plot([0 1], [0 1], '--k', 'LineWidth', 1, "HandleVisibility", "off");
+
+% Axis
+axis('square')
+xlim([0 1])
+ylim([0 1])
+
+% Labels
+xlabel('False Positive Rate', 'Interpreter', 'latex')
+ylabel('True Positive Rate', 'Interpreter', 'latex')
+title(sprintf('ROC Curve - Dataset: %s - %s scaling', dataset, scaling_string), 'Interpreter', 'latex')
+
+% Legend + Grid
+grid('on')
+legend('Location', 'southeast', 'Interpreter', 'latex', 'FontSize', 14);
+
+% Save figure
+saveas(gcf, sprintf('../data_tracks/ROC_%s.png', dataset));
