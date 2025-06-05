@@ -52,20 +52,31 @@ load("recovery.mat");
 % Object appear from sides of screen and move across the screen 
 % Decreased dt by 4, so multiply velocity and acceleration by 4 for equivalent motion per timestep
 obj1 = [1; 60; 2; 0; 0; 0]; % [x;y;vx;vy;ax;ay]
-% obj2 = [127; 2; -16; 4; 0.64; 0];
 obj2 = [127; 127; -2; -1.7; 0; 0];
 obj3 = [2; 127; 2.5; -7; 0; 0.32];
 
 
 TARGET_STRING = "Triple";
-objects = [obj1, obj2, obj3];
+objects = [];
+
+if TARGET_STRING == "Single"
+    objects = [obj1];
+elseif TARGET_STRING == "Double"
+    objects = [obj1, obj2];
+elseif TARGET_STRING == "Triple"
+    objects = [obj1, obj2, obj3];
+else
+    error("TARGET_STRING must be Single, Double, or Triple");
+end
+
+% objects = [obj1, obj2, obj3];
 
 
 
 checkbounds = @(coordinate) coordinate > 0 && coordinate < 128;
 
 if PLOT_FLAG
-    figure()
+    figure("Position", [100, 100, 600, 300])
     tile_sim = tiledlayout(1, 2, 'TileSpacing', 'Compact');
 end
 
@@ -106,27 +117,72 @@ for a = 1:dt:timesteps
     simulated_signal(:,:,a) = sim_signal;
     objects_traj(:, :, a) = objects(1:2, :);
 
-    % surf(signal)
+    CUTSCALED = 1;
     if PLOT_FLAG
+        if CUTSCALED
+            PLOTSIGNAL = sim_signal(20:end, :);
+            % PLOTSIGNAL = imgaussfilt(PLOTSIGNAL, 2);
+            PLOTSIGNAL = (PLOTSIGNAL - min(PLOTSIGNAL(:))) / ...
+                       (max(PLOTSIGNAL(:)) - min(PLOTSIGNAL(:)));
+        else
+            PLOTSIGNAL = sim_signal;
+        end
+        
+        % PLOTSIGNAL = PLOTSIGNAL - 
         ax1 = nexttile(1);
         cla(ax1)
-        contourf(S');
-
-        xlim([0, 128])
-        ylim([0,128])
+        hold on
+        grid on
+        % contourf(S');
+        for obj = objects
+            if checkbounds(obj(1)) && checkbounds(obj(2))
+                % cast to int
+                obj(1) = int32(obj(1));
+                if CUTSCALED
+                    obj(2) = int32(obj(2)-20);
+                else
+                    obj(2) = int32(obj(2));
+                end
+                plot(obj(1), obj(2), 'ro', 'MarkerSize', 10, 'LineWidth', 2);
+            end
+        end
+        hold off
+        axis equal
+        xlim(ax1, [1, size(PLOTSIGNAL, 2)]);
+        ylim(ax1, [1, size(PLOTSIGNAL, 1)]);
         title("Ground Truth Object Locations")
 
         ax2 = nexttile(2);
+        grid(ax2, 'off')
         % Clear ax2 
         cla(ax2)
-        s = surface(sim_signal, 'FaceAlpha', 0.5);
+        % s = surface(sim_signal, 'FaceAlpha', 0.5);
+        [X, Y] = meshgrid(1:size(PLOTSIGNAL, 2), 1:size(PLOTSIGNAL, 1));
+        s = surf(ax2, X, Y, PLOTSIGNAL);
         s.EdgeColor = 'none';
-        colormap(ax2, 'jet')
-        xlim([0, 128])
-        ylim([0,128])
-        title("Simulated Radar Signal")
+        colormap(ax2, 'gray');
+        c = colorbar(ax2, 'eastoutside');
+        % s.EdgeColor = 'none';
+        % colormap(ax2, 'jet')
 
-        pause(.1)
+        %  c = colorbar(ax1);
+        c.Label.String = 'Signal Intensity';
+        c.Label.Interpreter = 'latex';
+        axis(ax2, 'equal');
+        xlim(ax2, [1, size(PLOTSIGNAL, 2)]);
+        ylim(ax2, [1, size(PLOTSIGNAL, 1)]);
+        zlim(ax2, [min(PLOTSIGNAL(:)), max(PLOTSIGNAL(:))]);
+        view(ax2, 2); % Set the view to 2D
+        % title(ax1, "Radar Signal at Time " + t, 'Interpreter', 'latex', 'FontSize', 14);
+        % legend(ax1, 'Location', 'northeast', "Interpreter", "latex", 'FontSize', 12);
+        % colorbar(ax2, 'eastoutside');
+        % axis equal
+        % xlim([0, 128])
+        % ylim([0,128])
+        
+        title("Simulated mWidar Signal")
+
+        pause(.5)
     end
 
     objects = update_objects(objects, dt);
@@ -147,7 +203,7 @@ end
 
 % Create diagram of the simulated signal
 
-figure(Position=[100, 100, 600, 600])
+figure(Position=[100, 100, 300, 300])
 % 3 colors for the 3 objects
 % Colorblind-friendly matte/pastel palette
 color_palette = [
