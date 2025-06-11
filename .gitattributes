@@ -1,4 +1,0 @@
-*.npy filter=lfs diff=lfs merge=lfs -text
-simulator/*.zip filter=lfs diff=lfs merge=lfs -text
-simulator/*.mat filter=lfs diff=lfs merge=lfs -text
-simulator/*.bin filter=lfs diff=lfs merge=lfs -text
