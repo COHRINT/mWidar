@@ -16,7 +16,7 @@ clc, clear, close all
 
 %% Environmental Variables
 % Control plotting and saving behavior
-PLOT_FLAG = 1; % Set to 1 to show plots, 0 to hide (but still create for saving)
+PLOT_FLAG = 0; % Set to 1 to show plots, 0 to hide (but still create for saving)
 SAVE_FLAG = 1; % Set to 1 to save figures, 0 to disable saving
 SAVE_PATH = '../../figures'; % Default save path for figures
 
@@ -190,7 +190,7 @@ dx = xgrid(2) - xgrid(1);
 dy = ygrid(2) - ygrid(1);
 
 %% Initialize Particle Filter
-N_particles = 10000; % Number of particles
+N_particles = 1000; % Number of particles
 state_dim = 6; % [x, y, vx, vy, ax, ay]
 
 % Initialize particles around first measurement with uncertainty
@@ -202,10 +202,10 @@ init_acc_std = 0.1; % Acceleration uncertainty
 particles = zeros(state_dim, N_particles);
 particles(1, :) = measurements(1, 1); %+ init_pos_std * randn(1, N_particles); % x
 particles(2, :) = measurements(2, 1); %+ init_pos_std * randn(1, N_particles); % y
-particles(3, :) = init_vel_std; %* randn(1, N_particles); % vx
-particles(4, :) = init_vel_std; %* randn(1, N_particles); % vy
-particles(5, :) = init_acc_std; %* randn(1, N_particles); % ax
-particles(6, :) = init_acc_std; %* randn(1, N_particles); % ay
+particles(3, :) = state_traj(3, 1); %+init_vel_std* randn(1, N_particles); % vx
+particles(4, :) = state_traj(4, 1); %+init_vel_std* randn(1, N_particles); % vy
+particles(5, :) = state_traj(5, 1); %+init_acc_std* randn(1, N_particles); % ax
+particles(6, :) = state_traj(6, 1); %+init_acc_std* randn(1, N_particles); % ay
 
 % Initialize weights (uniform)
 weights = ones(1, N_particles) / N_particles;
@@ -219,7 +219,7 @@ F = [1, 0, dt, 0, dt ^ 2/2, 0;
      0, 0, 0, 0, 0, 1]; % State transition matrix
 
 % Process noise covariance
-q_pos = 0.001; % Position process noise
+q_pos = 0.004; % Position process noise
 q_vel = 0.005; % Velocity process noise
 q_acc = 0.01; % Acceleration process noise
 
@@ -338,85 +338,85 @@ for kk = 1:num_steps
     %% ========== PLOTTING ==========
     % Plot particles and estimates (always create, but control visibility)
     figure(1); % Make sure we're on the right figure
-    
+
     % Subplot 1: Position with full scene view and inset zoom
-    ax1 = subplot(1,3,1); cla
+    ax1 = subplot(1, 3, 1); cla
     h_scatter = scatter(particles(1, :), particles(2, :), 20, weights, 'filled', 'MarkerFaceAlpha', 0.6);
     hold on
     plot(mean_state(1), mean_state(2), 'ro', 'MarkerSize', 10, 'LineWidth', 3)
     plot(state_traj(1, kk), state_traj(2, kk), 'o', 'Color', [0.7 0.7 0.7], 'MarkerSize', 6, 'LineWidth', 1.5, 'MarkerFaceColor', [0.7 0.7 0.7])
     plot(current_meas(1), current_meas(2), '+', 'Color', [0.5 0.5 0.5], 'MarkerSize', 6, 'LineWidth', 1.5)
-    
+
     % Draw rectangle indicating inset zoom region
-    zoom_rect = rectangle('Position', [current_meas(1)-0.3, current_meas(2)-0.3, 0.6, 0.6], ...
-                         'EdgeColor', 'k', 'LineWidth', 1, 'LineStyle', '--');
-    
+    zoom_rect = rectangle('Position', [current_meas(1) - 0.3, current_meas(2) - 0.3, 0.6, 0.6], ...
+        'EdgeColor', 'k', 'LineWidth', 1, 'LineStyle', '--');
+
     title(['Particles at $k=', num2str(kk), '$'])
     xlabel('$X$ (m)'), ylabel('$Y$ (m)')
-    xlim([-2, 2]), ylim([0, 4])  % Fixed bounds as requested
-    axis square  % Make subplot square
+    xlim([-2, 2]), ylim([0, 4]) % Fixed bounds as requested
+    axis square % Make subplot square
     legend('Particles', 'PF Estimate', 'True Position', 'Measurement', 'Location', 'northwest')
-    
+
     % Create inset zoom window positioned within the main subplot using data coordinates
     % Define inset location in data coordinates (within the main plot)
     inset_x_range = [0.6, 1.9]; % X position on the main plot where inset appears
     inset_y_range = [.5, 2.0]; % Y position on the main plot where inset appears
-    
+
     % Convert data coordinates to normalized figure coordinates
     ax1_pos = get(ax1, 'Position'); % [left, bottom, width, height] in figure units
-    
+
     % Map from data coordinates to axes coordinates (0 to 1)
     xlims = get(ax1, 'XLim'); % [-2, 2]
     ylims = get(ax1, 'YLim'); % [0, 4]
-    
+
     % Normalize inset position within the main subplot
     inset_left_norm = (inset_x_range(1) - xlims(1)) / (xlims(2) - xlims(1));
     inset_bottom_norm = (inset_y_range(1) - ylims(1)) / (ylims(2) - ylims(1));
     inset_width_norm = (inset_x_range(2) - inset_x_range(1)) / (xlims(2) - xlims(1));
     inset_height_norm = (inset_y_range(2) - inset_y_range(1)) / (ylims(2) - ylims(1));
-    
+
     % Convert to figure coordinates
-    inset_pos = [ax1_pos(1) + inset_left_norm * ax1_pos(3), ...    % Left edge
-                 ax1_pos(2) + inset_bottom_norm * ax1_pos(4), ...   % Bottom edge  
-                 inset_width_norm * ax1_pos(3), ...                 % Width
-                 inset_height_norm * ax1_pos(4)];                   % Height
-    
+    inset_pos = [ax1_pos(1) + inset_left_norm * ax1_pos(3), ... % Left edge
+                     ax1_pos(2) + inset_bottom_norm * ax1_pos(4), ... % Bottom edge
+                     inset_width_norm * ax1_pos(3), ... % Width
+                     inset_height_norm * ax1_pos(4)]; % Height
+
     inset_ax = axes('Position', inset_pos);
     scatter(particles(1, :), particles(2, :), 15, weights, 'filled', 'MarkerFaceAlpha', 0.7);
     hold on
     plot(mean_state(1), mean_state(2), 'ro', 'MarkerSize', 8, 'LineWidth', 2)
     plot(state_traj(1, kk), state_traj(2, kk), 'o', 'Color', [0.7 0.7 0.7], 'MarkerSize', 5, 'LineWidth', 1.5, 'MarkerFaceColor', [0.7 0.7 0.7])
     plot(current_meas(1), current_meas(2), '+', 'Color', [0.5 0.5 0.5], 'MarkerSize', 6, 'LineWidth', 2)
-    xlim([current_meas(1)-0.3, current_meas(1)+0.3])
-    ylim([current_meas(2)-0.3, current_meas(2)+0.3])
-    axis square  % Make inset square
+    xlim([current_meas(1) - 0.3, current_meas(1) + 0.3])
+    ylim([current_meas(2) - 0.3, current_meas(2) + 0.3])
+    axis square % Make inset square
     set(inset_ax, 'FontSize', 8, 'Box', 'on', 'XTick', [], 'YTick', [])
-    
+
     % Return focus to main subplot for proper legend placement
     axes(ax1);
-    
+
     % Subplot 2: Velocity estimates
-    subplot(1,3,2), cla
+    subplot(1, 3, 2), cla
     scatter(particles(3, :), particles(4, :), 20, weights, 'filled', 'MarkerFaceAlpha', 0.6)
     hold on
     plot(mean_state(3), mean_state(4), 'ro', 'MarkerSize', 10, 'LineWidth', 3)
     plot(state_traj(3, kk), state_traj(4, kk), 'o', 'Color', [0.7 0.7 0.7], 'MarkerSize', 6, 'LineWidth', 1.5, 'MarkerFaceColor', [0.7 0.7 0.7])
     title(['Velocity at $k=', num2str(kk), '$'])
     xlabel('$V_x$ (m/s)'), ylabel('$V_y$ (m/s)')
-    axis square  % Make subplot square
+    axis square % Make subplot square
     legend('Particles', 'PF Estimate', 'True Velocity', 'Location', 'northwest')
-    
-    % Subplot 3: Acceleration estimates  
-    subplot(1,3,3), cla
+
+    % Subplot 3: Acceleration estimates
+    subplot(1, 3, 3), cla
     scatter(particles(5, :), particles(6, :), 20, weights, 'filled', 'MarkerFaceAlpha', 0.6)
     hold on
     plot(mean_state(5), mean_state(6), 'ro', 'MarkerSize', 10, 'LineWidth', 3)
     plot(state_traj(5, kk), state_traj(6, kk), 'o', 'Color', [0.7 0.7 0.7], 'MarkerSize', 6, 'LineWidth', 1.5, 'MarkerFaceColor', [0.7 0.7 0.7])
     title(['Acceleration at $k=', num2str(kk), '$'])
     xlabel('$A_x$ (m/s$^2$)'), ylabel('$A_y$ (m/s$^2$)')
-    axis square  % Make subplot square
+    axis square % Make subplot square
     legend('Particles', 'PF Estimate', 'True Acceleration', 'Location', 'northwest')
-    
+
     % Add single colorbar on the right spanning full height
     cb = colorbar('Position', [0.92, 0.15, 0.02, 0.7]);
     cb.Label.String = 'Particle Weight';
@@ -438,7 +438,7 @@ for kk = 1:num_steps
 
     % Pause only if plots are visible
     if PLOT_FLAG
-        pause(0.1); % Small pause to see animation
+        pause(0.001); % Small pause to see animation
     end
 
     % Compute estimation errors
@@ -540,12 +540,13 @@ end
 fig3 = figure(3);
 set(fig3, 'Visible', fig_visible, 'Position', [300, 100, 1200, 600]);
 clf(3)
+idx = 1
 
 for state = [1, 3, 5, 2, 4, 6]
 
     covariance = cov_history(state, state, 1:num_steps);
     std2 = sqrt(squeeze(covariance));
-    subplot(2, 3, state)
+    subplot(2, 3, idx)
     hold on
     % Compute mean state for this variable
     mean_state_vec = mean_state_history(state, 1:num_steps);
@@ -560,7 +561,9 @@ for state = [1, 3, 5, 2, 4, 6]
 
     ylabel([STATE_STRING{state}, ' Error'])
     xlabel('Time step')
+    xlim([0, tvec(end)])
     grid on;
+    idx = idx + 1; % Increment index for next subplot
 
 end
 
@@ -589,6 +592,7 @@ for state = [1, 3, 5, 2, 4, 6]
     h_est(state) = plot(t, mean_state_history(state, :), 'b--', 'LineWidth', 2);
 
     xlabel('Time (s)')
+    xlim([0, t(end)])
     ylabel(STATE_STRING{state})
     title(['State: ', STATE_STRING{state}])
     grid on;
@@ -618,17 +622,18 @@ clf(5)
 subplot(2, 2, 1)
 % Weight distribution statistics over time
 weight_stats = zeros(5, num_steps + 1); % [min, 25th, median, 75th, max]
+
 for k = 1:num_steps + 1
     weight_stats(:, k) = prctile(weight_history(:, k), [0, 25, 50, 75, 100]);
 end
 
 fill([0:num_steps, fliplr(0:num_steps)], ...
-     [weight_stats(1, :), fliplr(weight_stats(5, :))], ...
-     [0.8 0.8 0.8], 'FaceAlpha', 0.3, 'EdgeColor', 'none');
+    [weight_stats(1, :), fliplr(weight_stats(5, :))], ...
+    [0.8 0.8 0.8], 'FaceAlpha', 0.3, 'EdgeColor', 'none');
 hold on
 fill([0:num_steps, fliplr(0:num_steps)], ...
-     [weight_stats(2, :), fliplr(weight_stats(4, :))], ...
-     [0.6 0.6 0.6], 'FaceAlpha', 0.5, 'EdgeColor', 'none');
+    [weight_stats(2, :), fliplr(weight_stats(4, :))], ...
+    [0.6 0.6 0.6], 'FaceAlpha', 0.5, 'EdgeColor', 'none');
 plot(0:num_steps, weight_stats(3, :), 'k-', 'LineWidth', 2);
 xlabel('Time step');
 ylabel('Particle weight');
@@ -651,11 +656,13 @@ ylim([0 N_particles]);
 subplot(2, 2, 3)
 % Weight concentration (entropy-based measure)
 weight_entropy = zeros(1, num_steps + 1);
+
 for k = 1:num_steps + 1
     w = weight_history(:, k);
     w = w(w > 0); % Remove zero weights for log calculation
     weight_entropy(k) = -sum(w .* log(w));
 end
+
 plot(0:num_steps, weight_entropy, 'g-', 'LineWidth', 2);
 xlabel('Time step');
 ylabel('Weight entropy');
