@@ -1,11 +1,32 @@
-%test_mWidarHMMtracker_perfectDA.m
-%%% Test HMM multi-target tracker with perfect data association using
-%%% mWidar simulation data provided by Wavesens.
-%%% Note that squared image peaks data and data association results
-%%% were already pre-processed and tagged to ground truth target trajectories in a
-%%% different script (tag_mWidarDataTruth.m), and HMM model parameters for
-%%% STM and likelihood observation functions were also pre-generated in
-%%% other scripts (hmm_2DTruncGaussSTM.m and test_mWidarLikelihoodModel.m).
+% TEST_MWIDARHMMTRACKER_PERFECTDA HMM multi-target tracker with perfect data association
+%   Tests HMM multi-target tracker using mWidar simulation data provided by Wavesens.
+%   Uses pre-processed squared image peaks data and perfect data association results
+%   that were already tagged to ground truth target trajectories.
+%
+%   PREPROCESSING REQUIREMENTS:
+%   - Squared image peaks data and data association results pre-processed
+%   - Ground truth target trajectories tagged (tag_mWidarDataTruth.m)
+%   - HMM model parameters pre-generated:
+%     * STM parameters (hmm_2DTruncGaussSTM.m)
+%     * Likelihood observation functions (test_mWidarLikelihoodModel.m)
+%
+%   DATA REQUIREMENTS:
+%   - data.mat: Simulated mWidar imaging data
+%   - truetargtrajs.mat: Ground truth target trajectories
+%   - precalc_imagepeaktargetdataassoc.mat: Peak extraction and data association
+%   - precalc_imagegridHMMSTMn15.mat: Slow motion model parameters
+%   - precalc_imagegridHMMSTMn30.mat: Fast motion model parameters
+%   - precalc_imagegridHMMEmLike.mat: Likelihood model parameters
+%
+%   ASSUMPTIONS:
+%   - Perfect data association (no false alarms, no missed detections)
+%   - Known target entry and exit times
+%   - Multi-target tracking with separate HMM filters per target
+%
+%   See also TEST_HMM, TEST_HYBRID_PF
+
+% Author: Nisar Ahmed, Anthony La Barca (minor revisions)
+% Updated: 2025-06-17
 
 clc, clear, close all
 

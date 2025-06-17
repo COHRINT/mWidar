@@ -1,20 +1,35 @@
-% test_hybrid_PF.m
-%%% Hybrid Particle Filter (PF) for Single Target Tracking
-%%% Combines continuous state space (Kalman dynamics) with discrete HMM likelihood
-%%%
-%%% FILTER STRUCTURE:
-%%% 1. Particles represent continuous state [x, y, vx, vy, ax, ay]
-%%% 2. PREDICTION: Kalman filter dynamics with process noise
-%%% 3. MEASUREMENT UPDATE: HMM likelihood on discretized position
-%%% 4. RESAMPLING: Bootstrap resampling at beginning of each time step
-%%%
-%%% ASSUMPTIONS:
-%%% - Measurements are from data association algorithm
-%%% - Bootstrap particle filter (sample from prior, weight by likelihood)
-%%% - Position measurements only (velocity/acceleration not observed)
+% TEST_HYBRID_PF Hybrid Particle Filter for Single Target Tracking
+%   Combines continuous state space (Kalman dynamics) with discrete HMM likelihood
+%
+%   FILTER STRUCTURE:
+%   1. Particles represent continuous state [x, y, vx, vy, ax, ay]
+%   2. PREDICTION: Kalman filter dynamics with process noise
+%   3. MEASUREMENT UPDATE: HMM likelihood on discretized position
+%   4. RESAMPLING: Bootstrap resampling at beginning of each time step
+%
+%   ASSUMPTIONS:
+%   - Measurements are from data association algorithm
+%   - Bootstrap particle filter (sample from prior, weight by likelihood)
+%   - Position measurements only (velocity/acceleration not observed)
+%
+%   STATE REPRESENTATION:
+%   - Continuous particle states [x, y, vx, vy, ax, ay]
+%   - Enhanced S-curve trajectory with analytical derivatives
+%   - Kalman dynamics with process noise
+%
+%   ENVIRONMENTAL VARIABLES:
+%   - PLOT_FLAG: Set to 1 to show plots, 0 to hide
+%   - SAVE_FLAG: Set to 1 to save figures, 0 to disable saving
+%   - SAVE_PATH: Directory path for saving figures
+%
+%   See also TEST_HMM, PFRESAMPLE
+
+% Author: Anthony La Barca
+% Date: 2025-06-17
 clc, clear, close all
 
 %% Environmental Variables
+
 % Control plotting and saving behavior
 PLOT_FLAG = 0; % Set to 1 to show plots, 0 to hide (but still create for saving)
 SAVE_FLAG = 1; % Set to 1 to save figures, 0 to disable saving
@@ -49,6 +64,7 @@ end
 fprintf('Configuration: PLOT_FLAG=%d, SAVE_FLAG=%d, SAVE_PATH=%s\n', PLOT_FLAG, SAVE_FLAG, SAVE_PATH);
 
 %% Plotting settings
+
 % LaTeX interpreter for text
 set(0, 'DefaultTextInterpreter', 'latex');
 set(0, 'DefaultAxesTickLabelInterpreter', 'latex');
@@ -72,17 +88,20 @@ set(0, 'DefaultColorbarFontSize', 16);
 set(0, 'DefaultAxesTitleFontSizeMultiplier', 1.3); % Larger title font
 
 %% Define State Space
+
 STATE_STRING = {'x', 'y', 'vx', 'vy', 'ax', 'ay'}; % State variables
 STATE_DIM = length(STATE_STRING); % Number of state variables
 fprintf('State space defined with %d dimensions: %s\n', STATE_DIM, strjoin(STATE_STRING, ', '));
 
 %% Define scene parameters
+
 Xbounds = [-2 2]; %X bounds of scene
 Ybounds = [0 4]; %Y bounds of scene
 Xblind = []; %no blind zone
 Yblind = []; %no blind zone
 
 %% Generate enhanced S-curve trajectory with position, velocity, and acceleration
+
 % Time parameters
 num_steps = 50;
 dt = 0.1; % Time step in seconds
@@ -149,6 +168,7 @@ fprintf('Max speeds: Vx=%.2f m/s, Vy=%.2f m/s\n', max(abs(vx_traj)), max(abs(vy_
 fprintf('Max accelerations: Ax=%.2f m/s², Ay=%.2f m/s²\n', max(abs(ax_traj)), max(abs(ay_traj)));
 
 %% Generate simulated measurements with noise (position only)
+
 % Add measurement noise to the true position trajectory
 meas_noise_std = 0.01; % Standard deviation of measurement noise
 measurements = state_traj(1:2, 1:end - 1) + meas_noise_std * randn(2, num_steps);
@@ -156,6 +176,7 @@ measurements = state_traj(1:2, 1:end - 1) + meas_noise_std * randn(2, num_steps)
 fprintf('Generated %d noisy position measurements\n', num_steps);
 
 %% Load HMM model parameters
+ 
 load('../data/precalc_imagegridHMMSTMn15.mat', 'A');
 A_slow = A; clear A
 load('../data/precalc_imagegridHMMSTMn30.mat', 'A');
@@ -165,6 +186,7 @@ A_fast = A; clear A
 load('../data/precalc_imagegridHMMEmLike.mat', 'pointlikelihood_image');
 
 %% Validate loaded parameters
+
 if size(A_slow, 1) ~= 128 ^ 2 || size(A_fast, 1) ~= 128 ^ 2
     error('Transition matrix dimensions (%dx%d) do not match grid size (%d)', ...
         size(A_slow, 1), size(A_slow, 2), 128 ^ 2);
@@ -178,6 +200,7 @@ end
 fprintf('Successfully loaded HMM matrices and validated dimensions.\n');
 
 %% Define spatial grid
+
 Lscene = 4; %physical length of scene in m (square shape)
 npx = 128; %number of pixels in image (same in x&y dims)
 npx2 = npx ^ 2;
@@ -190,6 +213,7 @@ dx = xgrid(2) - xgrid(1);
 dy = ygrid(2) - ygrid(1);
 
 %% Initialize Particle Filter
+
 N_particles = 1000; % Number of particles
 state_dim = 6; % [x, y, vx, vy, ax, ay]
 
@@ -239,6 +263,7 @@ mean_state_history(:, 1) = particles * weights';
 fprintf('Initialized %d particles for hybrid PF\n', N_particles);
 
 %% Setup visualization
+
 fig = figure(1);
 set(fig, 'Visible', fig_visible, 'Position', [100, 100, 1400, 500]);
 hold on
@@ -248,17 +273,18 @@ if SAVE_FLAG
     gif_filename = fullfile(SAVE_PATH, 'hybrid_pf_animation.gif');
 end
 
-%%Apply Hybrid Particle Filter Updates
+%% Apply Hybrid Particle Filter Updates
+
 for kk = 1:num_steps
     fprintf('Processing time step %d/%d\n', kk, num_steps);
 
-    %% ========== RESAMPLING STEP (at beginning of each timestep) ==========
+    % ========== RESAMPLING STEP (at beginning of each timestep) ==========
     if kk > 1 % Skip resampling at first step
         fprintf('\t-> Resampling step\n');
-        [particles, weights] = PFResample(particles, weights);
+        [particles, ~] = PFResample(particles, weights); % Weights are uniform at initialization
     end
 
-    %% ========== PREDICTION STEP (Kalman dynamics) ==========
+    % ========== PREDICTION STEP (Kalman dynamics) ==========
     fprintf('\t-> Prediction step (Kalman dynamics)\n');
 
     % Apply Kalman dynamics to each particle
@@ -274,7 +300,7 @@ for kk = 1:num_steps
         particles(2, p) = max(Ybounds(1), min(Ybounds(2), particles(2, p))); % y
     end
 
-    %% ========== MEASUREMENT UPDATE STEP (HMM likelihood) ==========
+    % ========== MEASUREMENT UPDATE STEP (HMM likelihood) ==========
     fprintf('\t-> Measurement update step (HMM likelihood)\n');
 
     % Get current measurement (assuming data association already done)
@@ -336,6 +362,7 @@ for kk = 1:num_steps
     cov_history(:, :, kk + 1) = cov_weighted;
 
     %% ========== PLOTTING ==========
+
     % Plot particles and estimates (always create, but control visibility)
     figure(1); % Make sure we're on the right figure
 
@@ -452,6 +479,7 @@ for kk = 1:num_steps
 end
 
 %% Plot results summary
+
 fig2 = figure(2);
 set(fig2, 'Visible', fig_visible, 'Position', [200, 100, 1200, 800]);
 clf(2)
@@ -537,10 +565,11 @@ if SAVE_FLAG
 end
 
 %% Estimation Error Visualization
+
 fig3 = figure(3);
 set(fig3, 'Visible', fig_visible, 'Position', [300, 100, 1200, 600]);
 clf(3)
-idx = 1
+idx = 1;
 
 for state = [1, 3, 5, 2, 4, 6]
 
@@ -575,6 +604,7 @@ if SAVE_FLAG
 end
 
 %% State Trajectory Visualization
+
 fig4 = figure(4);
 set(fig4, 'Visible', fig_visible, 'Position', [500, 100, 1200, 600]);
 clf(4)
@@ -612,6 +642,7 @@ if SAVE_FLAG
 end
 
 %% Weight history visualization
+
 % Weight history plot can be useful to see how particle weights evolve
 % Not useful because all information is encapsulated in effective sample size
 fig5 = figure(5); % Always hidden since it's for analysis only
@@ -683,6 +714,7 @@ if SAVE_FLAG
 end
 
 %% Print performance summary
+
 final_rmse_pos = sqrt(mean(pos_errors(1, :) .^ 2 + pos_errors(2, :) .^ 2));
 final_rmse_vel = sqrt(mean(vel_errors(1, :) .^ 2 + vel_errors(2, :) .^ 2));
 final_rmse_acc = sqrt(mean(acc_errors(1, :) .^ 2 + acc_errors(2, :) .^ 2));

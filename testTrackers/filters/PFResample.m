@@ -1,24 +1,30 @@
-% function [sampsOut, wtsOut] = PFResample(sampsIn, wtsIn)
-%     nsampsIn = size(sampsIn, 2);
-
-%     % Compute cumulative sum of weights
-%     sampcdf = cumsum(wtsIn)';
-%     sampcdf = sampcdf / sampcdf(end);  % Normalize to ensure sum is 1
-
-%     % Draw uniform random numbers
-%     urands = rand(1, nsampsIn);
-
-%     % Find resampled indices
-%     [~, indsampsout] = histc(urands, [0; sampcdf]);
-
-%     % Select resampled particles
-%     sampsOut = sampsIn(:, indsampsout);
-
-%     % Set uniform weights
-%     wtsOut = (1/nsampsIn) * ones(size(wtsIn));
-% end
-
 function [sampsOut, wtsOut] = PFResample(sampsIn, wtsIn)
+% PFRESAMPLE Bootstrap resampling for particle filter
+%   Implements systematic resampling to reduce particle degeneracy by
+%   selecting particles with replacement according to their weights.
+%
+%   Inputs:
+%     sampsIn - Input particles (state_dim x N_particles matrix)
+%     wtsIn   - Input particle weights (1 x N_particles vector)
+%
+%   Outputs:
+%     sampsOut - Resampled particles (same size as sampsIn)
+%     wtsOut   - Uniform weights after resampling (1 x N_particles vector)
+%
+%   Algorithm:
+%     1. Normalizes input weights to sum to 1
+%     2. Computes cumulative distribution function
+%     3. Draws uniform random samples
+%     4. Selects particles based on inverse CDF sampling
+%     5. Returns resampled particles with uniform weights
+%
+%   Example:
+%     [particles_new, weights_new] = PFResample(particles, weights)
+%
+%   See also TEST_HYBRID_PF
+
+% Author: Anthony La Barca
+% Date: 2025-06-17
     nsampsIn = size(sampsIn, 2);
     
     % First, check if weights are valid

@@ -1,22 +1,31 @@
-% test_HMM.m
-%%% Hidden Markov Model (HMM) for Single Target Tracking
-%%% Discrete state space Bayesian filter using pre-computed transition and likelihood models
-%%%
-%%% FILTER STRUCTURE:
-%%% 1. PREDICTION STEP: Apply state transition model P(x_k | x_{k-1})
-%%% 2. MEASUREMENT UPDATE STEP: Apply likelihood P(z_k | x_k) to get posterior
-%%% 3. STATE ESTIMATION: Compute MMSE and MAP estimates from posterior distribution
-%%%
-%%% ASSUMPTIONS:
-%%% - Measurements are already from a data association algorithm
-%%% - Each measurement corresponds to the single target at each time step
-%%% - No clutter measurements or missed detections
-%%% - State space is discretized on a regular grid
-%%%
-%%% STATE REPRESENTATION:
-%%% - Discrete probability distribution over 128x128 spatial grid
-%%% - Position-only tracking (no velocity/acceleration states)
-%%% - Grid covers scene bounds: X∈[-2,2]m, Y∈[0,4]m
+% TEST_HMM Hidden Markov Model for Single Target Tracking
+%   Discrete state space Bayesian filter using pre-computed transition and likelihood models
+%
+%   FILTER STRUCTURE:
+%   1. PREDICTION STEP: Apply state transition model P(x_k | x_{k-1})
+%   2. MEASUREMENT UPDATE STEP: Apply likelihood P(z_k | x_k) to get posterior
+%   3. STATE ESTIMATION: Compute MMSE and MAP estimates from posterior distribution
+%
+%   ASSUMPTIONS:
+%   - Measurements are already from a data association algorithm
+%   - Each measurement corresponds to the single target at each time step
+%   - No clutter measurements or missed detections
+%   - State space is discretized on a regular grid
+%
+%   STATE REPRESENTATION:
+%   - Discrete probability distribution over 128x128 spatial grid
+%   - Position-only tracking (no velocity/acceleration states)
+%   - Grid covers scene bounds: X∈[-2,2]m, Y∈[0,4]m
+%
+%   ENVIRONMENTAL VARIABLES:
+%   - PLOT_FLAG: Set to 1 to show plots, 0 to hide
+%   - SAVE_FLAG: Set to 1 to save figures, 0 to disable saving
+%   - SAVE_PATH: Directory path for saving figures
+%
+%   See also TEST_HYBRID_PF
+
+% Author: Anthony La Barca
+% Date: 2025-06-17
 
 clc, clear, close all
 
@@ -206,65 +215,65 @@ end
 %% Apply HMM Bayesian Filter Updates
 for kk = 1:num_steps
     fprintf('Processing time step %d/%d\n', kk, num_steps);
-    
+
     %% ========== PREDICTION STEP (TIME UPDATE) ==========
     fprintf('\t-> Prediction step\n');
-    
+
     % Get previous posterior
     ptargetkkm1 = ptarget_Hist{kk};
-    
+
     % Apply state transition model (dynamics)
     ptargetkk_pred = A_slow * ptargetkkm1; % Use slow model for demonstration
     % ptargetkk_pred = A_fast * ptargetkkm1; % Use fast model for demonstration
-    
+
     %% ========== MEASUREMENT UPDATE STEP ==========
     fprintf('\t-> Measurement update step\n');
-    
+
     % Get current measurement (assuming data association already done)
     current_meas = measurements(:, kk);
     fprintf('\t  Measurement: [%.3f, %.3f]\n', current_meas(1), current_meas(2));
-    
+
     % Find closest grid point to measurement for likelihood lookup
     [~, meas_x_idx] = min(abs(xgrid - current_meas(1)));
     [~, meas_y_idx] = min(abs(ygrid - current_meas(2)));
     meas_linear_idx = sub2ind([npx, npx], meas_y_idx, meas_x_idx);
-    
+
     % Get likelihood function from pre-computed model
     likeframekk_raw = pointlikelihood_image(meas_linear_idx, :)';
-    
+
     % Apply Gaussian mask around measurement for improved localization
     sf = 0.15; % scaling factor for Gaussian mask
     meas_pos = [current_meas(1), current_meas(2)];
     gaussmask = mvnpdf(pxyvec, meas_pos, sf * eye(2));
     gaussmask(gaussmask < 0.1 * max(gaussmask)) = 0; % threshold small values
     likeframekk = likeframekk_raw .* gaussmask;
-    
+
     % Compute posterior: P(x_k | z_1:k) ∝ P(z_k | x_k) * P(x_k | z_1:k-1)
     ptargetkk_post = ptargetkk_pred .* likeframekk;
     ptargetkk_post = ptargetkk_post / sum(ptargetkk_post); % normalize
-    
+
     % Store posterior for next iteration
     ptarget_Hist{kk+1} = ptargetkk_post;
-    
+
     %% ========== COMPUTE STATISTICS ==========
     % Compute MMSE estimate (mean of posterior)
     mutarget_Hist(:, kk) = sum(pxyvec .* repmat(ptarget_Hist{kk+1}, [1, 2]), 1)';
-    
+
     % Compute posterior covariance
     sig2target_Hist(:, :, kk) = reshape(sum([pxyvec(:, 1).^2, pxyvec(:, 1).*pxyvec(:, 2), ...
-                                              pxyvec(:, 2).*pxyvec(:, 1), pxyvec(:, 2).^2] .* ...
-                                              repmat(ptarget_Hist{kk+1}, [1, 4]), 1), [2 2]) ...
+        pxyvec(:, 2).*pxyvec(:, 1), pxyvec(:, 2).^2] .* ...
+        repmat(ptarget_Hist{kk+1}, [1, 4]), 1), [2 2]) ...
         - mutarget_Hist(:, kk) * (mutarget_Hist(:, kk))';
-    
+
     % Compute estimation errors w.r.t. ground truth
     mmse_errtarget_Hist(:, kk) = mutarget_Hist(:, kk) - pttraj(:, kk);
     [~, indmapxy] = max(ptarget_Hist{kk+1});
     map_errtarget_Hist(:, kk) = pxyvec(indmapxy, :)' - pttraj(:, kk);
-    
+
     %% ========== PLOTTING ==========
     % Plot HMM states and estimates (always create, but control visibility)
     figure(1); % Make sure we're on the right figure
-    
+
     % Subplot 1: Prediction
     subplot(1,3,1), cla
     surf(xgrid, ygrid, reshape(ptargetkk_pred, [npx, npx]), 'EdgeColor', 'none'), view(2)
@@ -274,7 +283,7 @@ for kk = 1:num_steps
     axis square  % Make subplot square
 
     colorbar
-    
+
     % Subplot 2: Likelihood
     subplot(1,3,2), cla
     surf(xgrid, ygrid, reshape(likeframekk, [npx, npx]), 'EdgeColor', 'none'), view(2)
@@ -286,7 +295,7 @@ for kk = 1:num_steps
     axis square  % Make subplot square
 
     colorbar
-    
+
     % Subplot 3: Posterior
     subplot(1,3,3), cla
     surf(xgrid, ygrid, reshape(ptargetkk_post, [npx, npx]), 'EdgeColor', 'none'), view(2)
@@ -301,25 +310,25 @@ for kk = 1:num_steps
 
     legend('Posterior', 'True position', 'Measurement', 'HMM estimate', 'Location', 'northwest')
     colorbar
-    
+
     % Save frame to GIF if requested
     if SAVE_FLAG
         frame = getframe(gcf);
         im = frame2im(frame);
         [imind, cm] = rgb2ind(im, 256);
-        
+
         if kk == 1
             imwrite(imind, cm, gif_filename, 'gif', 'Loopcount', inf, 'DelayTime', 0.2);
         else
             imwrite(imind, cm, gif_filename, 'gif', 'WriteMode', 'append', 'DelayTime', 0.2);
         end
     end
-    
+
     % Pause only if plots are visible
     if PLOT_FLAG
         pause(0.2); % Small pause to see animation
     end
-    
+
     fprintf('\t  MMSE error: [%.3f, %.3f] m\n', mmse_errtarget_Hist(1, kk), mmse_errtarget_Hist(2, kk));
 end
 
@@ -398,7 +407,7 @@ sig2_x_row = sig2_x_valid(:)';
 upper_bound = 2*sqrt(sig2_x_row);
 lower_bound = -2*sqrt(sig2_x_row);
 fill([tvec_row, fliplr(tvec_row)], [upper_bound, fliplr(lower_bound)], ...
-     'r', 'FaceAlpha', 0.1, 'EdgeColor', 'none');
+    'r', 'FaceAlpha', 0.1, 'EdgeColor', 'none');
 hold on
 plot(tvec, mmse_x_valid, 'r-', 'LineWidth', 2)
 plot(tvec, map_x_valid, 'b--', 'LineWidth', 2)
@@ -414,7 +423,7 @@ sig2_y_row = sig2_y_valid(:)';
 upper_bound_y = 2*sqrt(sig2_y_row);
 lower_bound_y = -2*sqrt(sig2_y_row);
 fill([tvec_row, fliplr(tvec_row)], [upper_bound_y, fliplr(lower_bound_y)], ...
-     'r', 'FaceAlpha', 0.1, 'EdgeColor', 'none');
+    'r', 'FaceAlpha', 0.1, 'EdgeColor', 'none');
 hold on
 plot(tvec, mmse_y_valid, 'r-', 'LineWidth', 2)
 plot(tvec, map_y_valid, 'b--', 'LineWidth', 2)
