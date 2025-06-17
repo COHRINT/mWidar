@@ -89,10 +89,10 @@ for i = 1:n_t
     signal_flat = G' * signal_flat;
     sim_signal = reshape(signal_flat, 128, 128)';
     
-    blurred = imgaussfilt(sim_signal,2);
+    blurred = imgaussfilt(sim_signal,5);
     signal = (blurred - min(blurred(:))) / (max(blurred(:)) - min(blurred(:)));
     %[~,peak_y,peak_x] = peaks2(sim_signal','MinPeakHeight',100,'MinPeakDistance',15);
-    [~,peak_x, peak_y] = CA_CFAR(signal,0.4,3,10);
+    [~,peak_y, peak_x] = CA_CFAR(signal,0.8,3,7);
     pvinds = sub2ind([npx npx],peak_x,peak_y);
     
     if to_plot

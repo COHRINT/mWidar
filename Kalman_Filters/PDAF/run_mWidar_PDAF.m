@@ -4,8 +4,8 @@ load tracks/linear_const_v_mWidarsim.mat xplus
 load tracks/linear_const_v_mWidarsim2.mat xplus2
 load tracks/cv_mWidarSim_2obj_15.mat Data -mat
 
-load recovery.mat
-load sampling.mat
+load ../recovery.mat
+load ../sampling.mat
 
 %% For the following PDAF implementation, save all KF matrices as a struct
 

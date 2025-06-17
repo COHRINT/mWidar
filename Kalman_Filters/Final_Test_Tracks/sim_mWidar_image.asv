@@ -1,35 +1,14 @@
-clear;close all; clc
-
-load("../sampling.mat");
-load("../recovery.mat");
-load tracks/linear_const_v_mWidarsim.mat xplus
-load tracks/linear_const_v_mWidarsim2.mat xplus2
-
-% Length of timevector
-n_k = length(xplus);
-
-% Simulate measurments with mWidar Sim
-to_plot = 1;
-
-GT = cell(1,2);
-GT{1} = xplus;
-GT{2} = xplus2;
-[y, signal] = sim_mWidar_image(n_k,GT,M,G,to_plot);
-
-Data.y = y;
-Data.signal = signal;
-
-%save tracks/cv_mWidarSim_2obj_15.mat Data -mat
-%% mWidar Sim Function
-
-function [y, Signal] = sim_mWidar_image(n_t,GT,M,G,to_plot)
+function [y, Signal] = sim_mWidar_image(n_t,GT,M,G,detector)
+% Inputs:
 % n_t -> Number of timesteps
-% GT -> Cell array of object Ground Truth positions (x,y). Each cell
-% corresponds to a different objects GT
-% y -> Output of all peaks2 detections
+% GT -> Array/Matrix of objects GT
+% y -> Output of all peaks2/CFAR detections
 % M -> Sampling Matrix
 % G -> Recovery Matrix
-% to_plot -> Boolean, true to plot, false to not plot
+% detector -> string to indicate which detector to use. 
+% "peaks2" will use peaks2, "CFAR" will use CA-CFAR
+% Outputs:
+% y
 
 n_GT = size(GT,2);
 
@@ -91,11 +70,18 @@ for i = 1:n_t
     
     blurred = imgaussfilt(sim_signal,2);
     signal = (blurred - min(blurred(:))) / (max(blurred(:)) - min(blurred(:)));
-    %[~,peak_y,peak_x] = peaks2(sim_signal','MinPeakHeight',100,'MinPeakDistance',15);
-    [~,peak_x, peak_y] = CA_CFAR(signal,0.4,3,10);
+    if detector == "peaks2"
+        [~,peak_y,peak_x] = peaks2(sim_signal','MinPeakHeight',100,'MinPeakDistance',15);
+    elseif detector == "CFAR"
+            [~,peak_x, peak_y] = CA_CFAR(signal,0.4,3,10);
+    else
+        fprintf("Improper detector input, defaulting to peaks2")
+        [~,peak_y,peak_x] = peaks2(sim_signal','MinPeakHeight',100,'MinPeakDistance',15);
+    end
+
     pvinds = sub2ind([npx npx],peak_x,peak_y);
     
-    if to_plot
+    if false
         figure(99), clf, hold on, view(2)
         for j = 1:n_GT
             
