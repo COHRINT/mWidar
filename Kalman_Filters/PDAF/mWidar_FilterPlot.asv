@@ -101,44 +101,16 @@ end
 E = rmse(X,GT);
 
 figure(77); hold on; grid on
-plot(tvec,E,'k-.',LineWidth=1)
-title('RMSE over time')
-xlabel('Time [s]')
-ylabel('RMSE')
+plot(t_vec,E,'k-.',LineWidth=1)
 
 %% Normal error plot
 err = X - GT;
 
 figure(88); hold on; grid on
-subplot(3,2,1); hold on; grid on
-plot(tvec,err(1,:),'b',LineWidth=1)
-plot(tvec,std_xp,'b--',LineWidth=1)
-plot(tvec,-std_xp,'b--',LineWidth=1)
+subpl(3,2)
+nexttile
 
-subplot(3,2,2); hold on; grid on
-plot(tvec,err(4,:),'b',LineWidth=1)
-plot(tvec,std_yp,'b--',LineWidth=1)
-plot(tvec,-std_yp,'b--',LineWidth=1)
 
-subplot(3,2,3); hold on; grid on
-plot(tvec,err(2,:),'b',LineWidth=1)
-plot(tvec,std_xv,'b--',LineWidth=1)
-plot(tvec,-std_xv,'b--',LineWidth=1)
-
-subplot(3,2,4); hold on; grid on
-plot(tvec,err(5,:),'b',LineWidth=1)
-plot(tvec,std_yv,'b--',LineWidth=1)
-plot(tvec,-std_yv,'b--',LineWidth=1)
-
-subplot(3,2,5); hold on; grid on
-plot(tvec,err(3,:),'b',LineWidth=1)
-plot(tvec,std_xa,'b--',LineWidth=1)
-plot(tvec,-std_xa,'b--',LineWidth=1)
-
-subplot(3,2,6); hold on; grid on
-plot(tvec,err(6,:),'b',LineWidth=1)
-plot(tvec,std_ya,'b--',LineWidth=1)
-plot(tvec,-std_ya,'b--',LineWidth=1)
 
 end
 %% More Functions for plotting

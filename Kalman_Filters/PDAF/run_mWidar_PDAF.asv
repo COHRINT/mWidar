@@ -13,7 +13,7 @@ y = Data.y;
 sim_signal = Data.signal;
 
 dt = 0.1;
-t_vec = 0:dt:10;
+t_vec = 0:dt:20;
 
 to_plot = 0;
 
@@ -56,11 +56,25 @@ for i = 1:n_k
     KF{i}.innov = [0;0];
 end
 
+% PDAF 2
 %% Call PDAF
 
 [KF] = mWidar_PDAF(KF);
 
 %% Plot Results
 
-mWidar_FilterPlot(KF,Data,t_vec)
+% Which results to plots/save
+plot_traj = 1;
+plot_mWidarimg = 1;
+plot_error = 1;
+plot_innov = 0;
+save_traj = 1;
+save_error = 1;
+save_innov = 0;
+states = ["X Position [m]","X Velocity [m/s]","X Acceleration [m/s^2]","Y Position [m]","Y Velocity [m/s]","Y Acceleration [m/s^2]"];
+color = ['k','b'];
 
+% Call plotting function
+KF_plot = {KF};
+GT = {GT};
+mWidar_FilterPlot(KF_plot,GT,t_vec,sim_signal,plot_traj,plot_mWidarimg,plot_error,plot_innov,save_traj,save_error,save_innov,1,4,states,color)
