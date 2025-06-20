@@ -176,21 +176,11 @@ measurements = state_traj(1:2, 1:end - 1) + meas_noise_std * randn(2, num_steps)
 fprintf('Generated %d noisy position measurements\n', num_steps);
 
 %% Load HMM model parameters
- 
-load('../data/precalc_imagegridHMMSTMn15.mat', 'A');
-A_slow = A; clear A
-load('../data/precalc_imagegridHMMSTMn30.mat', 'A');
-A_fast = A; clear A
 
 % Load likelihood model
 load('../data/precalc_imagegridHMMEmLike.mat', 'pointlikelihood_image');
 
 %% Validate loaded parameters
-
-if size(A_slow, 1) ~= 128 ^ 2 || size(A_fast, 1) ~= 128 ^ 2
-    error('Transition matrix dimensions (%dx%d) do not match grid size (%d)', ...
-        size(A_slow, 1), size(A_slow, 2), 128 ^ 2);
-end
 
 if size(pointlikelihood_image, 1) ~= 128 ^ 2 || size(pointlikelihood_image, 2) ~= 128 ^ 2
     error('Likelihood model dimensions (%dx%d) do not match grid size (%d)', ...
@@ -214,7 +204,7 @@ dy = ygrid(2) - ygrid(1);
 
 %% Initialize Particle Filter
 
-N_particles = 1000; % Number of particles
+N_particles = 10000; % Number of particles
 state_dim = 6; % [x, y, vx, vy, ax, ay]
 
 % Initialize particles around first measurement with uncertainty
