@@ -63,7 +63,7 @@ Function is a mess I will fix it later
         % covariance to visualize gating
         innovCov = [P{k}(1, 1) P{k}(1, 2); P{k}(2, 1) P{k}(2, 2)];
         % Innovation mean is predicted meas at time k
-        muin = Filter{k}.H * X(:, k); % This may not work for all filters, as they likely don't have same meas fxn
+        muin = X(:, k); % This may not work for all filters, as they likely don't have same meas fxn
         [Xellip, Yellip] = calc_gsigma_ellipse_plotpoints(muin, innovCov, 1, 100);
 
         %%%% NOTE: This assumes obj positions are at index 1 and 4

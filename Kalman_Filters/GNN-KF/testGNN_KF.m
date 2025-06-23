@@ -1,7 +1,6 @@
 clear; close all; clear
 
-load tracks / linear_const_v_mWidarsim.mat xplus
-load tracks / cv_mWidarSim_25.mat Data -mat
+load Kalman_Filters\Final_Test_Tracks\SingleObj\T4_parab.mat
 
 y = Data.y;
 sim_signal = Data.signal;
@@ -11,7 +10,8 @@ t_vec = 0:dt:20;
 
 to_plot = 0;
 
-GT = xplus;
+GT = Data.GT;
+xplus = GT;
 x0 = xplus(:, 1);
 
 n_k = size(xplus, 2); % # of timesteps

@@ -40,7 +40,7 @@ for i = 1:n_t
     X = GT;
 
     px = X(1,i);
-    py = X(4,i);
+    py = X(2,i);
 
 
     % Convert object positions to matrix coordinates
