@@ -1,4 +1,4 @@
-function [y, Signal] = sim_mWidar_image(n_t,GT,M,G,detector)
+function [y, Signal] = sim_mWidar_image(n_t,GT,M,G,detector,NOISE_FLAG)
 % Inputs:
 % n_t -> Number of timesteps
 % GT -> Array/Matrix of objects GT
@@ -10,6 +10,8 @@ function [y, Signal] = sim_mWidar_image(n_t,GT,M,G,detector)
 % Outputs:
 % y -> Every detection at each timestep, stored in a cell array
 % Signal -> mWidar image at each tstep, also stored in cell array
+
+rng(100)
 
 n_GT = size(GT,2);
 
@@ -64,6 +66,10 @@ for i = 1:n_t
     signal_flat = M * signal_flat;
     signal_flat = G' * signal_flat;
     sim_signal = reshape(signal_flat, 128, 128)';
+
+    if NOISE_FLAG
+        sim_signal = sim_signal + randn(128);
+    end
     
     blurred = imgaussfilt(sim_signal,2); % Blur
     signal = (blurred - min(blurred(:))) / (max(blurred(:)) - min(blurred(:))); % Normalize

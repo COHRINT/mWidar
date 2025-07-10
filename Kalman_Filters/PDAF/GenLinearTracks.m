@@ -118,9 +118,16 @@ save NL_circle.mat xplus -mat
 
 Q = 0.000001*eye(6);
 
+A = [0 0 1 0 0 0;
+    0 0 0 1 0 0;
+    0 0 0 0 1 0;
+    0 0 0 0 0 1;
+    0 0 0 0 0 0;
+    0 0 0 0 0 0];
+
 % Initial state, x0 -> starts from rest
 xplus = zeros(6,length(t_vec));
-xplus(:,1) = [0;0.05;0;1;0.05;0];
+xplus(:,1) = [0;1;0.05;0.05;0;0];
 
 % Generate GT a constant velocity trajectory
 for k = 2:length(t_vec)
@@ -153,7 +160,7 @@ save linear_const_v_mWidarsim.mat xplus -mat
 
 % Initial state, x0 -> starts from rest
 xplus2 = zeros(6,length(t_vec));
-xplus2(:,1) = [-1;0.1;0;3;-0.1;0];
+xplus2(:,1) = [-1;3;0.1;-0.1;0;0];
 
 % Generate GT a constant velocity trajectory
 for k = 2:length(t_vec)
@@ -178,10 +185,11 @@ nexttile
 plot(t_vec,xplus2(6,:),'k',LineWidth=1)
 
 figure(); hold on; grid on
-plot(xplus(1,:),xplus(4,:),'k',LineWidth=1)
-plot(xplus2(1,:),xplus2(4,:),'r',LineWidth=1)
+plot(xplus(1,:),xplus(2,:),'k',LineWidth=1)
+plot(xplus2(1,:),xplus2(2,:),'r',LineWidth=1)
 
 save linear_const_v_mWidarsim2.mat xplus2 -mat
+
 function xdot = NL_Dyn(t,x)
 
 vx = x(2);

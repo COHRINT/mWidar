@@ -3,9 +3,13 @@ clear; clc; close all
 % Do the main we discussed
 addpath('matlab_src\DA_Track')
 addpath('matlab_src\supplemental')
-addpath('Kalman_Filters\Final_Test_Tracks\SingleObj')
+addpath('matlab_src\supplemental\Final_Test_Tracks')
+addpath('matlab_src\supplemental\Final_Test_Tracks\SingleObj')
 
-load T4_parab.mat
+load recovery.mat
+load sampling.mat
+
+load T5_parab_noise.mat
 
 %% This can all be temporary, change/clean up as needed
 
@@ -30,7 +34,7 @@ A = [0 0 1 0 0 0;
 
 F = expm(A*dt);
 
-Q = diag([0.001 0.001 0.01 0.01 0.1 0.1]);
+Q = 1e-2*eye(6);
 
 R = 0.1*eye(2);
 
@@ -59,6 +63,11 @@ end
 
 %% Plotting
 
+initial_state.x0 = GT(:,1);
+initial_state.P0 = P0;
+
+
 if PLOT
     mWidar_FilterPlot(performance,Data,0:dt:10) % Basic plotting function for now, should be able to work for all types of filters for basic trajectory/error plots
+    NEES(current_class,initial_state,A,10,M,G)
 end
