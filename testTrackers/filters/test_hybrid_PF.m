@@ -80,12 +80,12 @@ set(0, 'DefaultAxesGridAlpha', 0.5); % Grid transparency
 set(0, 'DefaultAxesMinorGridAlpha', 0.3); % Minor grid transparency
 set(0, 'DefaultAxesMinorGridLineStyle', ':'); % Dotted minor grid lines
 % Text Size - Increased for better visibility
-set(0, 'DefaultAxesFontSize', 18);
-set(0, 'DefaultTextFontSize', 18);
-set(0, 'DefaultAxesLineWidth', 1.5);
-set(0, 'DefaultLegendFontSize', 16);
-set(0, 'DefaultColorbarFontSize', 16);
-set(0, 'DefaultAxesTitleFontSizeMultiplier', 1.3); % Larger title font
+set(0, 'DefaultAxesFontSize', 14);
+set(0, 'DefaultTextFontSize', 14);
+set(0, 'DefaultAxesLineWidth', 1.2);
+set(0, 'DefaultLegendFontSize', 12);
+set(0, 'DefaultColorbarFontSize', 12);
+set(0, 'DefaultAxesTitleFontSizeMultiplier', 1.1); % Smaller title font
 
 %% Define State Space
 
@@ -255,7 +255,7 @@ fprintf('Initialized %d particles for hybrid PF\n', N_particles);
 %% Setup visualization
 
 fig = figure(1);
-set(fig, 'Visible', fig_visible, 'Position', [100, 100, 1400, 500]);
+set(fig, 'Visible', fig_visible, 'Position', [100, 100, 800, 1400]);
 hold on
 
 % Initialize GIF saving if requested
@@ -357,7 +357,7 @@ for kk = 1:num_steps
     figure(1); % Make sure we're on the right figure
 
     % Subplot 1: Position with full scene view and inset zoom
-    ax1 = subplot(1, 3, 1); cla
+    ax1 = subplot(3, 1, 1); cla
     h_scatter = scatter(particles(1, :), particles(2, :), 20, weights, 'filled', 'MarkerFaceAlpha', 0.6);
     hold on
     plot(mean_state(1), mean_state(2), 'ro', 'MarkerSize', 10, 'LineWidth', 3)
@@ -376,8 +376,8 @@ for kk = 1:num_steps
 
     % Create inset zoom window positioned within the main subplot using data coordinates
     % Define inset location in data coordinates (within the main plot)
-    inset_x_range = [0.6, 1.9]; % X position on the main plot where inset appears
-    inset_y_range = [.5, 2.0]; % Y position on the main plot where inset appears
+    inset_x_range = [-.5, 1.3]; % X position on the main plot where inset appears
+    inset_y_range = [.1, 1.3]; % Y position on the main plot where inset appears
 
     % Convert data coordinates to normalized figure coordinates
     ax1_pos = get(ax1, 'Position'); % [left, bottom, width, height] in figure units
@@ -413,7 +413,7 @@ for kk = 1:num_steps
     axes(ax1);
 
     % Subplot 2: Velocity estimates
-    subplot(1, 3, 2), cla
+    subplot(3, 1, 2), cla
     scatter(particles(3, :), particles(4, :), 20, weights, 'filled', 'MarkerFaceAlpha', 0.6)
     hold on
     plot(mean_state(3), mean_state(4), 'ro', 'MarkerSize', 10, 'LineWidth', 3)
@@ -424,7 +424,7 @@ for kk = 1:num_steps
     legend('Particles', 'PF Estimate', 'True Velocity', 'Location', 'northwest')
 
     % Subplot 3: Acceleration estimates
-    subplot(1, 3, 3), cla
+    subplot(3, 1, 3), cla
     scatter(particles(5, :), particles(6, :), 20, weights, 'filled', 'MarkerFaceAlpha', 0.6)
     hold on
     plot(mean_state(5), mean_state(6), 'ro', 'MarkerSize', 10, 'LineWidth', 3)
@@ -435,7 +435,7 @@ for kk = 1:num_steps
     legend('Particles', 'PF Estimate', 'True Acceleration', 'Location', 'northwest')
 
     % Add single colorbar on the right spanning full height
-    cb = colorbar('Position', [0.92, 0.15, 0.02, 0.7]);
+    cb = colorbar('Position', [0.7, 0.15, 0.02, 0.7]);
     cb.Label.String = 'Particle Weight';
     cb.Label.Interpreter = 'latex';
 
@@ -467,7 +467,7 @@ for kk = 1:num_steps
     fprintf('\t  Velocity error: [%.3f, %.3f] m/s\n', vel_error(1), vel_error(2));
     fprintf('\t  Acceleration error: [%.3f, %.3f] m/s²\n', acc_error(1), acc_error(2));
 end
-
+return
 %% Plot results summary
 
 fig2 = figure(2);
