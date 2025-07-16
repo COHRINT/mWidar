@@ -16,7 +16,7 @@ function GT = generate_track(x0,A,tvec)
 
     end
 
-    GT = normalized_track(GT);
+    %GT = normalized_track(GT);
 end
 
 function GT_norm = normalized_track(GT)
@@ -35,8 +35,17 @@ current_y_range = max(y_pos) - min(y_pos);
 desired_x_range = 3.8;
 desired_y_range = 3.8;
 
-x_scale = desired_x_range/current_x_range;
-y_scale = desired_y_range/current_y_range;
+if current_x_range == 0
+    x_scale = 1;
+else
+    x_scale = desired_x_range/current_x_range;
+end
+
+if current_y_range == 0
+    y_scale = 1;
+else
+    y_scale = desired_y_range/current_y_range;
+end
 
 GT_norm = GT; % Initialize
 
