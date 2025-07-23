@@ -1,20 +1,21 @@
 clear; clc; close all
 
-% Do the main we discussed
-addpath('matlab_src\DA_Track')
-addpath('matlab_src\supplemental')
-addpath('matlab_src\supplemental\Final_Test_Tracks')
-addpath('matlab_src\supplemental\Final_Test_Tracks\SingleObj')
+% Add paths for MATLAB functions
+addpath(fullfile('DA_Track'))
+addpath(fullfile('supplemental'))
+addpath(fullfile('supplemental', 'Final_Test_Tracks'))
+addpath(fullfile('supplemental', 'Final_Test_Tracks', 'SingleObj'))
 
-load recovery.mat
-load sampling.mat
+load(fullfile('supplemental', 'recovery.mat'))
+load(fullfile('supplemental', 'sampling.mat'))
 
-load T5_parab_noise.mat
+load(fullfile('supplemental', 'Final_Test_Tracks', 'SingleObj', 'T5_parab_noise.mat'))
 
 %% This can all be temporary, change/clean up as needed
 
 PLOT = 1;
 GT = Data.GT;
+GT_meas = GT(1:2, :);
 z = Data.y;
 signal = Data.signal;
 
@@ -47,13 +48,17 @@ performance{1}.P = P0; % Initial State Covaraince
 
 %current_class = GNN_KF(performance{1}.x, performance{1}.P, F, Q, R, H);
 current_class = PDAF(performance{1}.x, performance{1}.P, F, Q, R, H);
-% current_class = GNN_HMM(X, P0, Q, R, H, F);
+
+
 
 %% State Estimation
 
 for i = 2:n_k
-    
-    [X,P] = current_class.timestep(performance{i-1}.x, performance{i-1}.P,z{i});
+    % Get current measurements
+    % current_meas = z{i};
+    current_meas = GT_meas(:, i);
+
+    [X,P] = current_class.timestep(performance{i-1}.x, performance{i-1}.P,current_meas);
 
     % update performance
     performance{i}.x = X;
@@ -68,6 +73,9 @@ initial_state.P0 = P0;
 
 
 if PLOT
-    mWidar_FilterPlot(performance,Data,0:dt:10) % Basic plotting function for now, should be able to work for all types of filters for basic trajectory/error plots
-    NEES(current_class,initial_state,A,10,M,G)
+    mWidar_FilterPlot_Distribution(performance, Data, 0:dt:10, 'KF'); % Plotting function for distribution
+    % mWidar_FilterPlot(performance,Data,0:dt:10) % Basic plotting function for now, should be able to work for all types of filters for basic trajectory/error plots
+    % NEES(current_class,initial_state,A,10,M,G)
+
+    pause(.1)
 end

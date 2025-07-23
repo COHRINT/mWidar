@@ -1,7 +1,7 @@
 clear; clc; close all
 
-load ..\recovery.mat
-load ..\sampling.mat
+load ../recovery.mat
+load ../sampling.mat
 
 
 dt = 0.1; % [sec]
@@ -43,5 +43,5 @@ Data.GT = X;
 Data.y = y;
 Data.signal = Signal;
 
-save MultObj\JPDAF_test_traj.mat Data -mat
+save MultObj/JPDAF_test_traj.mat Data -mat
 

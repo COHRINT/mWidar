@@ -90,7 +90,7 @@ Function is a mess I will fix it later
         %         end
         %
         %     end
-
+        pause(0.1)
     end
 
     %% RMSE

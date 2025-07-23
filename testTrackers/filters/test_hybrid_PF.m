@@ -33,7 +33,7 @@ clc, clear, close all
 % Control plotting and saving behavior
 PLOT_FLAG = 0; % Set to 1 to show plots, 0 to hide (but still create for saving)
 SAVE_FLAG = 1; % Set to 1 to save figures, 0 to disable saving
-SAVE_PATH = '../../figures'; % Default save path for figures
+SAVE_PATH = fullfile('..', '..', 'figures'); % Default save path for figures
 
 % Override with environment variables if they exist
 if exist('PLOT_FLAG_ENV', 'var')
@@ -178,7 +178,7 @@ fprintf('Generated %d noisy position measurements\n', num_steps);
 %% Load HMM model parameters
 
 % Load likelihood model
-load('../data/precalc_imagegridHMMEmLike.mat', 'pointlikelihood_image');
+load(fullfile('..', 'data', 'precalc_imagegridHMMEmLike.mat'), 'pointlikelihood_image');
 
 %% Validate loaded parameters
 
@@ -212,17 +212,17 @@ init_pos_std = 0.2; % Position uncertainty
 init_vel_std = 0.5; % Velocity uncertainty
 init_acc_std = 0.1; % Acceleration uncertainty
 
-% Initialize particle states
+% Initialize particle states (N_states x N_particles format)
 particles = zeros(state_dim, N_particles);
-particles(1, :) = measurements(1, 1); %+ init_pos_std * randn(1, N_particles); % x
-particles(2, :) = measurements(2, 1); %+ init_pos_std * randn(1, N_particles); % y
-particles(3, :) = state_traj(3, 1); %+init_vel_std* randn(1, N_particles); % vx
-particles(4, :) = state_traj(4, 1); %+init_vel_std* randn(1, N_particles); % vy
-particles(5, :) = state_traj(5, 1); %+init_acc_std* randn(1, N_particles); % ax
-particles(6, :) = state_traj(6, 1); %+init_acc_std* randn(1, N_particles); % ay
+particles(1, :) = measurements(1, 1); %+ init_pos_std * randn(N_particles, 1); % x
+particles(2, :) = measurements(2, 1); %+ init_pos_std * randn(N_particles, 1); % y
+particles(3, :) = state_traj(3, 1); %+init_vel_std* randn(N_particles, 1); % vx
+particles(4, :) = state_traj(4, 1); %+init_vel_std* randn(N_particles, 1); % vy
+particles(5, :) = state_traj(5, 1); %+init_acc_std* randn(N_particles, 1); % ax
+particles(6, :) = state_traj(6, 1); %+init_acc_std* randn(N_particles, 1); % ay
 
-% Initialize weights (uniform)
-weights = ones(1, N_particles) / N_particles;
+% Initialize weights (uniform) - column vector
+weights = ones(N_particles, 1) / N_particles;
 
 % Kalman dynamics matrices for each particle
 F = [1, 0, dt, 0, dt ^ 2/2, 0;
@@ -233,22 +233,23 @@ F = [1, 0, dt, 0, dt ^ 2/2, 0;
      0, 0, 0, 0, 0, 1]; % State transition matrix
 
 % Process noise covariance
-q_pos = 0.004; % Position process noise
-q_vel = 0.005; % Velocity process noise
-q_acc = 0.01; % Acceleration process noise
+% q_pos = 0.004; % Position process noise
+% q_vel = 0.005; % Velocity process noise
+% q_acc = 0.01; % Acceleration process noise
 
-Q = diag([q_pos, q_pos, q_vel, q_vel, q_acc, q_acc]); % Process noise covariance
+% Q = diag([q_pos, q_pos, q_vel, q_vel, q_acc, q_acc]); % Process noise covariance
+Q = 1e-2*eye(6); % Default process noise covariance
 
-% Storage for results
-particle_history = zeros(state_dim, N_particles, num_steps + 1);
-weight_history = zeros(N_particles, num_steps + 1);
+% Storage for results using cell arrays
+particle_history = cell(1, num_steps + 1);
+weight_history = cell(1, num_steps + 1);
 mean_state_history = zeros(state_dim, num_steps + 1);
 cov_history = zeros(state_dim, state_dim, num_steps + 1);
 
 % Store initial state
-particle_history(:, :, 1) = particles;
-weight_history(:, 1) = weights;
-mean_state_history(:, 1) = particles * weights';
+particle_history{1} = particles;
+weight_history{1} = weights;
+mean_state_history(:, 1) = particles * weights;  % Weighted mean: [state_dim x 1]
 
 fprintf('Initialized %d particles for hybrid PF\n', N_particles);
 
@@ -271,24 +272,24 @@ for kk = 1:num_steps
     % ========== RESAMPLING STEP (at beginning of each timestep) ==========
     if kk > 1 % Skip resampling at first step
         fprintf('\t-> Resampling step\n');
-        [particles, ~] = PFResample(particles, weights); % Weights are uniform at initialization
+        % PFResample expects [state_dim x N_particles], which matches our format
+        [particles, ~] = PFResample(particles, weights); 
     end
 
     % ========== PREDICTION STEP (Kalman dynamics) ==========
     fprintf('\t-> Prediction step (Kalman dynamics)\n');
 
-    % Apply Kalman dynamics to each particle
-    for p = 1:N_particles
-        % Deterministic dynamics
-        particles(:, p) = F * particles(:, p);
-
-        % Add process noise
-        particles(:, p) = particles(:, p) + mvnrnd(zeros(state_dim, 1), Q)';
-
-        % Enforce bounds on position
-        particles(1, p) = max(Xbounds(1), min(Xbounds(2), particles(1, p))); % x
-        particles(2, p) = max(Ybounds(1), min(Ybounds(2), particles(2, p))); % y
-    end
+    % Vectorized Kalman dynamics for all particles at once
+    % Apply deterministic dynamics: particles = F * particles 
+    particles = F * particles;
+    
+    % Add process noise to all particles at once
+    process_noise = mvnrnd(zeros(1, state_dim), Q, N_particles)'; % [state_dim x N_particles]
+    particles = particles + process_noise;
+    
+    % Vectorized bounds enforcement for position (rows 1 and 2)
+    particles(1, :) = max(Xbounds(1), min(Xbounds(2), particles(1, :))); % x bounds
+    particles(2, :) = max(Ybounds(1), min(Ybounds(2), particles(2, :))); % y bounds
 
     % ========== MEASUREMENT UPDATE STEP (HMM likelihood) ==========
     fprintf('\t-> Measurement update step (HMM likelihood)\n');
@@ -297,57 +298,61 @@ for kk = 1:num_steps
     current_meas = measurements(:, kk);
     fprintf('\t  Measurement: [%.3f, %.3f]\n', current_meas(1), current_meas(2));
 
-    % Compute likelihood for each particle using HMM model
-    new_weights = zeros(1, N_particles);
-
-    for p = 1:N_particles
-        % Extract position from particle state
-        particle_pos = particles(1:2, p);
-
-        % Find closest grid point for likelihood lookup
-        [~, px_idx] = min(abs(xgrid - particle_pos(1)));
-        [~, py_idx] = min(abs(ygrid - particle_pos(2)));
-
-        % Handle boundary cases
-        px_idx = max(1, min(npx, px_idx));
-        py_idx = max(1, min(npx, py_idx));
-
-        particle_linear_idx = sub2ind([npx, npx], py_idx, px_idx);
-
-        % Find measurement grid point
-        [~, meas_x_idx] = min(abs(xgrid - current_meas(1)));
-        [~, meas_y_idx] = min(abs(ygrid - current_meas(2)));
-        meas_linear_idx = sub2ind([npx, npx], meas_y_idx, meas_x_idx);
-
-        % Get likelihood from pre-computed model
-        likelihood_raw = pointlikelihood_image(meas_linear_idx, particle_linear_idx);
-
-        % Apply Gaussian mask for improved localization
-        sf = 0.15;
-        dist_sq = (particle_pos(1) - current_meas(1)) ^ 2 + (particle_pos(2) - current_meas(2)) ^ 2;
-        gauss_weight = exp(-dist_sq / (2 * sf ^ 2));
-
-        new_weights(p) = likelihood_raw * gauss_weight + eps; % Add small epsilon
+    % Vectorized likelihood computation for all particles
+    
+    % Find measurement grid point (computed once, used for all particles)
+    [~, meas_x_idx] = min(abs(xgrid - current_meas(1)));
+    [~, meas_y_idx] = min(abs(ygrid - current_meas(2)));
+    meas_linear_idx = sub2ind([npx, npx], meas_y_idx, meas_x_idx);
+    
+    % Vectorized grid point finding for all particles
+    % Find closest x-grid indices for all particles at once
+    % Use explicit broadcasting: particles(1,:) is [1 x N_particles], xgrid is [1 x npx]
+    [~, px_indices] = min(abs(particles(1, :)' - xgrid), [], 2); % [N_particles x 1]
+    [~, py_indices] = min(abs(particles(2, :)' - ygrid), [], 2); % [N_particles x 1]
+    
+    % Enforce boundary constraints vectorized
+    px_indices = max(1, min(npx, px_indices));
+    py_indices = max(1, min(npx, py_indices));
+    
+    % Convert to linear indices for all particles at once
+    particle_linear_indices = sub2ind([npx, npx], py_indices, px_indices); % [N_particles x 1]
+    
+    % Vectorized likelihood lookup from pre-computed model
+    likelihood_raw = pointlikelihood_image(meas_linear_idx, particle_linear_indices); % Should be [N_particles x 1]
+    
+    % Ensure likelihood_raw is a column vector
+    if size(likelihood_raw, 1) == 1 && size(likelihood_raw, 2) == N_particles
+        likelihood_raw = likelihood_raw'; % Transpose to column vector
     end
-
-    % Normalize weights
+    
+    % Vectorized Gaussian weighting for improved localization
+    sf = 0.15;
+    % Compute squared distances for all particles at once
+    dx = particles(1, :) - current_meas(1); % [1 x N_particles] 
+    dy = particles(2, :) - current_meas(2); % [1 x N_particles]
+    dist_sq = dx.^2 + dy.^2; % [1 x N_particles]
+    gauss_weights = exp(-dist_sq / (2 * sf^2)); % [1 x N_particles]
+    
+    % Combine likelihoods and normalize
+    new_weights = (likelihood_raw .* gauss_weights') + eps; % Add small epsilon
     weights = new_weights / sum(new_weights);
 
-    % Store results
-    particle_history(:, :, kk + 1) = particles;
-    weight_history(:, kk + 1) = weights;
+    % Store results in cell arrays
+    particle_history{kk + 1} = particles;
+    weight_history{kk + 1} = weights;
 
     % Compute weighted statistics
-    mean_state = particles * weights';
+    mean_state = particles * weights;  % [state_dim x 1] = [state_dim x N_particles] * [N_particles x 1]
     mean_state_history(:, kk + 1) = mean_state;
 
-    % Compute weighted covariance
-    particles_centered = particles - mean_state;
-    cov_weighted = zeros(state_dim, state_dim);
-
-    for p = 1:N_particles
-        cov_weighted = cov_weighted + weights(p) * (particles_centered(:, p) * particles_centered(:, p)');
-    end
+    % Vectorized weighted covariance computation
+    particles_centered = particles - mean_state;  % Center particles around mean: [state_dim x N_particles] - [state_dim x 1]
+    
+    % Efficient vectorized covariance: C = (particles_centered * diag(weights) * particles_centered')
+    % This is equivalent to: sum over p of weights(p) * particles_centered(:,p) * particles_centered(:,p)'
+    weighted_particles = particles_centered .* sqrt(weights');  % [state_dim x N_particles]
+    cov_weighted = weighted_particles * weighted_particles';   % [state_dim x state_dim]
 
     cov_history(:, :, kk + 1) = cov_weighted;
 
@@ -376,7 +381,7 @@ for kk = 1:num_steps
 
     % Create inset zoom window positioned within the main subplot using data coordinates
     % Define inset location in data coordinates (within the main plot)
-    inset_x_range = [-.5, 1.3]; % X position on the main plot where inset appears
+    inset_x_range = [- .5, 1.3]; % X position on the main plot where inset appears
     inset_y_range = [.1, 1.3]; % Y position on the main plot where inset appears
 
     % Convert data coordinates to normalized figure coordinates
@@ -467,6 +472,7 @@ for kk = 1:num_steps
     fprintf('\t  Velocity error: [%.3f, %.3f] m/s\n', vel_error(1), vel_error(2));
     fprintf('\t  Acceleration error: [%.3f, %.3f] m/s²\n', acc_error(1), acc_error(2));
 end
+
 return
 %% Plot results summary
 
@@ -525,7 +531,7 @@ subplot(2, 3, 5)
 Neff = zeros(1, num_steps + 1);
 
 for k = 1:num_steps + 1
-    Neff(k) = 1 / sum(weight_history(:, k) .^ 2);
+    Neff(k) = 1 / sum(weight_history{k} .^ 2);
 end
 
 plot(0:num_steps, Neff, 'k-', 'LineWidth', 2)
@@ -645,7 +651,7 @@ subplot(2, 2, 1)
 weight_stats = zeros(5, num_steps + 1); % [min, 25th, median, 75th, max]
 
 for k = 1:num_steps + 1
-    weight_stats(:, k) = prctile(weight_history(:, k), [0, 25, 50, 75, 100]);
+    weight_stats(:, k) = prctile(weight_history{k}, [0, 25, 50, 75, 100]);
 end
 
 fill([0:num_steps, fliplr(0:num_steps)], ...
@@ -679,7 +685,7 @@ subplot(2, 2, 3)
 weight_entropy = zeros(1, num_steps + 1);
 
 for k = 1:num_steps + 1
-    w = weight_history(:, k);
+    w = weight_history{k};
     w = w(w > 0); % Remove zero weights for log calculation
     weight_entropy(k) = -sum(w .* log(w));
 end
@@ -692,7 +698,7 @@ grid on
 
 subplot(2, 2, 4)
 % Histogram of final weights
-histogram(weight_history(:, end), 50, 'FaceColor', [0.7 0.7 0.9], 'EdgeColor', 'k');
+histogram(weight_history{end}, 50, 'FaceColor', [0.7 0.7 0.9], 'EdgeColor', 'k');
 xlabel('Final particle weight');
 ylabel('Number of particles');
 title('Final Weight Distribution');

@@ -1,7 +1,7 @@
 clear; clc; close all
 
-load ..\recovery.mat
-load ..\sampling.mat
+load(fullfile('..', 'recovery.mat'))
+load(fullfile('..', 'sampling.mat'))
 
 %{
     Script to generate/save mWidar images for the following 4 single object trajectories:
@@ -46,7 +46,7 @@ Data.GT = X_1;
 Data.y = y_1;
 Data.signal = Signal_1;
 
-save Kalman_Filters/Final_Test_Tracks/SingleObj/T1_near.mat Data -mat
+save(fullfile('Kalman_Filters', 'Final_Test_Tracks', 'SingleObj', 'T1_near.mat'), 'Data', '-mat')
 %% Traj 2: Far from array
 
 X_2 = zeros(6,n_t); % Preallocate
@@ -64,7 +64,7 @@ Data.GT = X_2;
 Data.y = y_2;
 Data.signal = Signal_2;
 
-save Kalman_Filters/Final_Test_Tracks/SingleObj/T2_far.mat Data -mat
+save(fullfile('Kalman_Filters', 'Final_Test_Tracks', 'SingleObj', 'T2_far.mat'), 'Data', '-mat')
 %% Traj 3: Along Border (deaccelerate)
 
 X_3 = zeros(6,n_t); % Preallocate
@@ -83,7 +83,7 @@ Data.GT = X_3;
 Data.y = y_3;
 Data.signal = Signal_3;
 
-save Kalman_Filters/Final_Test_Tracks/SingleObj/T3_border.mat Data -mat
+save(fullfile('Kalman_Filters', 'Final_Test_Tracks', 'SingleObj', 'T3_border.mat'), 'Data', '-mat')
 
 %% Traj 4: Parabolic traj
 
@@ -100,7 +100,7 @@ Data.GT = X_4;
 Data.y = y_4;
 Data.signal = Signal_4;
 
-save Kalman_Filters/Final_Test_Tracks/SingleObj/T4_parab.mat Data -mat
+save(fullfile('Kalman_Filters', 'Final_Test_Tracks', 'SingleObj', 'T4_parab.mat'), 'Data', '-mat')
 
 %% Track 5: Increased noise onto mWidar signal
 
@@ -115,7 +115,7 @@ Data.GT = X_5;
 Data.y = y_5;
 Data.signal = Signal_5;
 
-save Kalman_Filters/Final_Test_Tracks/SingleObj/T5_parab_noise.mat Data -mat
+save(fullfile('Kalman_Filters', 'Final_Test_Tracks', 'SingleObj', 'T5_parab_noise.mat'), 'Data', '-mat')
 
 %% Plot mWidar image for each traj along w detections and GT
 npx = 128;

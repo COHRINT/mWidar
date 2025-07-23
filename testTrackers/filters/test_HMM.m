@@ -33,7 +33,7 @@ clc, clear, close all
 % Control plotting and saving behavior
 PLOT_FLAG = 1; % Set to 1 to show plots, 0 to hide (but still create for saving)
 SAVE_FLAG = 1; % Set to 1 to save figures, 0 to disable saving
-SAVE_PATH = '../../figures'; % Default save path for figures
+SAVE_PATH = fullfile('..', '..', 'figures'); % Default save path for figures
 
 % Override with environment variables if they exist
 if exist('PLOT_FLAG_ENV', 'var')
@@ -138,13 +138,13 @@ measurements = pttraj(:, 1:end-1) + meas_noise_std * randn(2, num_steps);
 fprintf('Generated %d noisy position measurements\n', num_steps);
 
 %% load HMM model params
-load('../data/precalc_imagegridHMMSTMn15.mat', 'A');
+load(fullfile('..', 'data', 'precalc_imagegridHMMSTMn15.mat'), 'A');
 A_slow = A; clear A
-load('../data/precalc_imagegridHMMSTMn30.mat', 'A');
+load(fullfile('..', 'data', 'precalc_imagegridHMMSTMn30.mat'), 'A');
 A_fast = A; clear A
 
 % load precalc_imagegrid
-load('../data/precalc_imagegridHMMEmLike.mat', 'pointlikelihood_image');
+load(fullfile('..', 'data', 'precalc_imagegridHMMEmLike.mat'), 'pointlikelihood_image');
 
 %% Validate loaded parameteres
 if size(A_slow, 1) ~= 128 ^ 2 || size(A_fast, 1) ~= 128 ^ 2
