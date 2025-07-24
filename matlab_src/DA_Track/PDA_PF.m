@@ -165,6 +165,9 @@ classdef PDA_PF < handle
             %    1) This is the first timestep (weights are uniform by default)
             %    2) The weights are already uniform (no measurement updates yet)
             if any(obj.weights ~= 1 / length(obj.weights))
+                % print effective sample size
+                ESS = 1 / sum(obj.weights .^ 2);
+                fprintf('Effective Sample Size: %.2f\n', ESS);
                 obj.resample();
             end
 
@@ -189,7 +192,7 @@ classdef PDA_PF < handle
                 S = P_est(1:2, 1:2); % Use position covariance only
                 
                 % Compute 2-sigma bounds for gating
-                sigma_bounds = 2 * sqrt(diag(S));
+                sigma_bounds = 3 * sqrt(diag(S));
                 lower_bound = z_hat - sigma_bounds;
                 upper_bound = z_hat + sigma_bounds;
                 

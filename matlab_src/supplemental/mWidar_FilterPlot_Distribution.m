@@ -128,7 +128,7 @@ RIGHT SUBPLOT: Filter-specific distribution:
         % Plot the mWidar signal as 2D image instead of 3D surf
         imagesc(xgrid, ygrid, sim_signal{k} / (max(max(sim_signal{k}))));
         set(gca, 'YDir', 'normal');
-        colormap('hot');
+        colormap('parula');
         
         % Plot true target location (2D)
         plot(GT(1, k), GT(2, k), 'mx', 'MarkerSize', 10, 'LineWidth', 3);
@@ -221,7 +221,7 @@ RIGHT SUBPLOT: Filter-specific distribution:
                 % Plot as heatmap
                 imagesc(xgrid, ygrid, gaussian_2d);
                 set(gca, 'YDir', 'normal');
-                colormap('hot');
+                colormap('parula');
                 colorbar;
                 
                 % Overlay mean estimate
@@ -250,7 +250,7 @@ RIGHT SUBPLOT: Filter-specific distribution:
                 
                 imagesc(xgrid, ygrid, prob_2d);
                 set(gca, 'YDir', 'normal');
-                colormap('hot');
+                colormap('parula');
                 colorbar;
                 
                 % Overlay mean estimate
@@ -271,7 +271,7 @@ RIGHT SUBPLOT: Filter-specific distribution:
                 
                 % Plot particles using weights directly (no normalization)
                 h1 = scatter(particles(1, :), particles(2, :), 20, weights, 'filled', 'MarkerFaceAlpha', 0.6);
-                colormap('parula');
+                colormap('jet');
                 colorbar;
                 
                 % Overlay mean estimate

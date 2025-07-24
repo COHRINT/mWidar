@@ -365,7 +365,7 @@ RIGHT SUBPLOT: Filter-specific distribution:
                 % Plot as heatmap
                 imagesc(xgrid, ygrid, gaussian_2d);
                 set(gca, 'YDir', 'normal');
-                colormap('hot');
+                colormap('parula');
                 colorbar;
                 
                 % Overlay mean estimate
@@ -394,7 +394,7 @@ RIGHT SUBPLOT: Filter-specific distribution:
                 
                 imagesc(xgrid, ygrid, prob_2d);
                 set(gca, 'YDir', 'normal');
-                colormap('hot');
+                colormap('parula');
                 colorbar;
                 
                 % Overlay mean estimate
@@ -415,7 +415,7 @@ RIGHT SUBPLOT: Filter-specific distribution:
                 
                 % Plot particles using weights directly (no normalization)
                 h1 = scatter(particles(1, :), particles(2, :), 20, weights, 'filled', 'MarkerFaceAlpha', 0.6);
-                colormap('parula');
+                colormap('jet');
                 colorbar;
                 
                 % Overlay mean estimate
