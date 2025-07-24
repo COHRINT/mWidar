@@ -75,7 +75,7 @@ Function is a mess I will fix it later
 
         xlim([-2 2])
         ylim([0 4])
-        title(['Object @ k=', num2str(k)])
+        title(['Object @ k=', num2str(k)], 'Interpreter', 'latex')
 
         %     if save_traj
         %         %%Turn fig into a gif
@@ -99,9 +99,9 @@ Function is a mess I will fix it later
 
     figure(77); hold on; grid on
     plot(tvec, E, 'k-.', LineWidth = 1)
-    title('RMSE over time')
-    xlabel('Time [s]')
-    ylabel('RMSE')
+    title('RMSE over time', 'Interpreter', 'latex')
+    xlabel('Time [s]', 'Interpreter', 'latex')
+    ylabel('RMSE', 'Interpreter', 'latex')
 
     %% Normal error plot
     err = X - GT;

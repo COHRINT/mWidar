@@ -43,7 +43,7 @@ for k = 1:n_k
 
     xlim([min(GT(1,:))-1 max(GT(1,:))+1]);
     ylim([min(GT(4,:))-1 max(GT(4,:))+1]);
-    title(['Object @ k=',num2str(k)])
+    title(['Object @ k=',num2str(k)], 'Interpreter', 'latex')
 
     stdx(k) = sqrt(P{k}(1,1));
     stdy(k) = sqrt(P{k}(4,4));
@@ -62,42 +62,42 @@ hold on; grid on
 plot(t_vec,err(1,:),'k',LineWidth=1);
 plot(t_vec,2*stdx,'k--',LineWidth=1)
 plot(t_vec,-2*stdx,'k--',LineWidth=1)
-title('X Position [m]')
+title('X Position [m]', 'Interpreter', 'latex')
 
 nexttile
 hold on; grid on
 plot(t_vec,err(2,:),'k',LineWidth=1);
 plot(t_vec,2*stdvx,'k--',LineWidth=1)
 plot(t_vec,-2*stdvx,'k--',LineWidth=1)
-title('X Velocity [m/s]')
+title('X Velocity [m/s]', 'Interpreter', 'latex')
 
 nexttile
 hold on; grid on
 plot(t_vec,err(3,:),'k',LineWidth=1);
 plot(t_vec,2*stdax,'k--',LineWidth=1)
 plot(t_vec,-2*stdax,'k--',LineWidth=1)
-title('X Acceleration [m/s^2]')
+title('X Acceleration [m/s$^2$]', 'Interpreter', 'latex')
 
 nexttile
 hold on; grid on
 plot(t_vec,err(4,:),'k',LineWidth=1);
 plot(t_vec,2*stdy,'k--',LineWidth=1)
 plot(t_vec,-2*stdy,'k--',LineWidth=1)
-title('Y Position [m]')
+title('Y Position [m]', 'Interpreter', 'latex')
 
 nexttile
 hold on; grid on
 plot(t_vec,err(5,:),'k',LineWidth=1);
 plot(t_vec,2*stdvy,'k--',LineWidth=1)
 plot(t_vec,-2*stdvy,'k--',LineWidth=1)
-title('Y Velocity [m/s]')
+title('Y Velocity [m/s]', 'Interpreter', 'latex')
 
 nexttile
 hold on; grid on
 plot(t_vec,err(5,:),'k',LineWidth=1);
 plot(t_vec,2*stday,'k--',LineWidth=1)
 plot(t_vec,-2*stday,'k--',LineWidth=1)
-title('Y Acceleration [m/s^2]')
+title('Y Acceleration [m/s$^2$]', 'Interpreter', 'latex')
 
 figure(); hold on; grid on
 tiledlayout(2,1)
@@ -106,14 +106,14 @@ hold on; grid on
 plot(t_vec,innov(1,:),'k',LineWidth=1);
 plot(t_vec,2*std_xinnov,'k--',LineWidth=1)
 plot(t_vec,-2*std_xinnov,'k--',LineWidth=1)
-title('x innovations')
+title('x innovations', 'Interpreter', 'latex')
 
 nexttile
 hold on; grid on
 plot(t_vec,innov(2,:),'k',LineWidth=1);
 plot(t_vec,2*std_yinnov,'k--',LineWidth=1)
 plot(t_vec,-2*std_yinnov,'k--',LineWidth=1)
-title('y innovations')
+title('y innovations', 'Interpreter', 'latex')
 end
 
 %% More Functions for plotting
