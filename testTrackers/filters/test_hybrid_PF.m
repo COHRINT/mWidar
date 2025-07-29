@@ -256,7 +256,7 @@ fprintf('Initialized %d particles for hybrid PF\n', N_particles);
 %% Setup visualization
 
 fig = figure(1);
-set(fig, 'Visible', fig_visible, 'Position', [100, 100, 800, 1400]);
+set(fig, 'Visible', fig_visible, 'Position', [100, 100, 1400, 600]);
 hold on
 
 % Initialize GIF saving if requested
@@ -362,7 +362,7 @@ for kk = 1:num_steps
     figure(1); % Make sure we're on the right figure
 
     % Subplot 1: Position with full scene view and inset zoom
-    ax1 = subplot(3, 1, 1); cla
+    ax1 = subplot(1, 3, 1); cla
     h_scatter = scatter(particles(1, :), particles(2, :), 20, weights, 'filled', 'MarkerFaceAlpha', 0.6);
     hold on
     plot(mean_state(1), mean_state(2), 'ro', 'MarkerSize', 10, 'LineWidth', 3)
@@ -418,7 +418,7 @@ for kk = 1:num_steps
     axes(ax1);
 
     % Subplot 2: Velocity estimates
-    subplot(3, 1, 2), cla
+    subplot(1, 3, 2), cla
     scatter(particles(3, :), particles(4, :), 20, weights, 'filled', 'MarkerFaceAlpha', 0.6)
     hold on
     plot(mean_state(3), mean_state(4), 'ro', 'MarkerSize', 10, 'LineWidth', 3)
@@ -429,7 +429,7 @@ for kk = 1:num_steps
     legend('Particles', 'PF Estimate', 'True Velocity', 'Location', 'northwest')
 
     % Subplot 3: Acceleration estimates
-    subplot(3, 1, 3), cla
+    subplot(1, 3, 3), cla
     scatter(particles(5, :), particles(6, :), 20, weights, 'filled', 'MarkerFaceAlpha', 0.6)
     hold on
     plot(mean_state(5), mean_state(6), 'ro', 'MarkerSize', 10, 'LineWidth', 3)
@@ -440,7 +440,7 @@ for kk = 1:num_steps
     legend('Particles', 'PF Estimate', 'True Acceleration', 'Location', 'northwest')
 
     % Add single colorbar on the right spanning full height
-    cb = colorbar('Position', [0.7, 0.15, 0.02, 0.7]);
+    cb = colorbar('Position', [0.92, 0.15, 0.02, 0.7]);
     cb.Label.String = 'Particle Weight';
     cb.Label.Interpreter = 'latex';
 

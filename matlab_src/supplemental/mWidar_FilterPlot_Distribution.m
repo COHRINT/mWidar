@@ -271,7 +271,7 @@ RIGHT SUBPLOT: Filter-specific distribution:
                 
                 % Plot particles using weights directly (no normalization)
                 h1 = scatter(particles(1, :), particles(2, :), 20, weights, 'filled', 'MarkerFaceAlpha', 0.6);
-                colormap('jet');
+                colormap('parula');
                 colorbar;
                 
                 % Overlay mean estimate

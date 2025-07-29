@@ -1,64 +1,135 @@
 function main(varargin)
-% main - Run mWidar tracking analysis
-% Usage: 
-%   main()                    % Uses default dataset "T1_near"
-%   main('T2_far')           % Uses specified dataset
-%   main('T3_border', 'KF')  % Uses specified dataset and filter type
+    % MAIN - Run mWidar tracking analysis
+    % Usage:
+    %   main()                                    % Uses all defaults
+    %   main('T2_far')                           % Uses specified dataset
+    %   main('T3_border', 'KF')                  % Uses dataset and filter type
+    %   main('T4_parab', 'HybridPF', 'DA', 'GNN', 'FinalPlot', 'interactive', 'Debug', true)
+    %
+    % Parameters:
+    %   DATASET (positional 1)    - Dataset name (default: "T4_parab")
+    %   FILTER_TYPE (positional 2) - Filter type: "KF", "HybridPF", or "HMM" (default: "HybridPF")
+    %   DA (name-value)           - Data association: "PDA" or "GNN" (default: "PDA")
+    %   FinalPlot (name-value)    - Plot mode: "interactive", "animation", or "none" (default: "none")
+    %   Debug (name-value)        - Enable debug output: true or false (default: false)
 
-% Parse input arguments BEFORE clearing variables
-if nargin >= 1
-    DATASET = string(varargin{1});
-else
-    DATASET = "T1_near"; % Default dataset
-end
+    %% ========== COMMAND LINE ARGUMENT PARSING ==========
 
-% Validate dataset
-valid_datasets = ["T1_near", "T2_far", "T3_border", "T4_parab", "T5_parab_noise"];
-if ~ismember(DATASET, valid_datasets)
-    error('Invalid dataset. Options: %s', strjoin(valid_datasets, ', '));
-end
+    %% --- Parse Positional Arguments ---
+    % Parse positional arguments first
+    if nargin >= 1 && ~ischar(varargin{1}) && ~isstring(varargin{1})
+        error('First argument (DATASET) must be a string');
+    elseif nargin >= 1 && ~startsWith(varargin{1}, {'DA', 'FinalPlot', 'Debug'})
+        DATASET = string(varargin{1});
+        start_named_args = 2;
+    else
+        DATASET = "T4_parab"; % Default dataset
+        start_named_args = 1;
+    end
 
-% Parse filter type argument
-if nargin >= 2
-    filter_type = string(varargin{2});
-else
-    filter_type = "HybridPF"; % Default filter type
-end
+    %% --- Parse Filter Type Argument ---
+    % Parse second positional argument (filter type)
+    if nargin >= start_named_args && ~startsWith(varargin{start_named_args}, {'DA', 'FinalPlot', 'Debug'})
+        filter_type = string(varargin{start_named_args});
+        start_named_args = start_named_args + 1;
+    else
+        filter_type = "HybridPF"; % Default filter type
+    end
 
-% Validate filter type
-valid_filters = ["KF", "HybridPF"];
-if ~ismember(filter_type, valid_filters)
-    error('Invalid filter type. Options: %s', strjoin(valid_filters, ', '));
-end
+    %% --- Parse Name-Value Pairs ---
+    % Parse name-value pairs
+    remaining_args = varargin(start_named_args:end);
 
-fprintf('Using dataset: %s\n', DATASET);
-fprintf('Using filter type: %s\n', filter_type);
+    %% --- Parameter Defaults ---
+    DA = "PDA";
+    FinalPlot = "none";
+    DEBUG = false;
 
-% Clear workspace but preserve function arguments
-clc; close all
+    %% --- Process Name-Value Pairs ---
+    % Parse name-value pairs
+    for i = 1:2:length(remaining_args)
 
-% Add paths for MATLAB functions
-addpath(fullfile('DA_Track'))
-addpath(fullfile('supplemental'))
-addpath(fullfile('supplemental', 'Final_Test_Tracks'))
-addpath(fullfile('supplemental', 'Final_Test_Tracks', 'SingleObj'))
+        if i + 1 > length(remaining_args)
+            error('Name-value pairs must come in pairs. Missing value for "%s"', remaining_args{i});
+        end
 
-load(fullfile('supplemental', 'recovery.mat'))
-load(fullfile('supplemental', 'sampling.mat'))
+        param_name = remaining_args{i};
+        param_value = remaining_args{i + 1};
 
-load(fullfile('supplemental', 'Final_Test_Tracks', 'SingleObj', DATASET + '.mat'), 'Data');
-% load(fullfile('supplemental', 'Final_Test_Tracks', 'SingleObj', 'T1_near.mat')
-% load(fullfile('supplemental', 'Final_Test_Tracks', 'SingleObj', 'T2_far.mat')
-% load(fullfile('supplemental', 'Final_Test_Tracks', 'SingleObj', 'T3_border.mat')
-% load(fullfile('supplemental', 'Final_Test_Tracks', 'SingleObj', 'T4_parab.mat'))
-% load(fullfile('supplemental', 'Final_Test_Tracks', 'SingleObj', 'T5_parab_noise.mat'))
+        switch lower(param_name)
+            case 'da'
+                DA = string(param_value);
+            case 'finalplot'
+                FinalPlot = string(param_value);
+            case 'debug'
+                DEBUG = logical(param_value);
+            otherwise
+                error('Unknown parameter: %s', param_name);
+        end
 
-INTERACTIVE = false; % Set to true for interactive plotting
-DISTRIBUTION = ~INTERACTIVE; % Set to true for distribution plotting
-DEBUG = false; % Set to true to enable debug output
+    end
 
-DA = "PDA"; % Data Association: "PDA", "GNN"
+    %% --- Parameter Validation ---
+    % Validate dataset
+    valid_datasets = ["T1_near", "T2_far", "T3_border", "T4_parab", "T5_parab_noise"];
 
+    if ~ismember(DATASET, valid_datasets)
+        error('Invalid dataset. Options: %s', strjoin(valid_datasets, ', '));
+    end
+
+    % Validate filter type
+    valid_filters = ["KF", "HybridPF", "HMM"];
+
+    if ~ismember(filter_type, valid_filters)
+        error('Invalid filter type. Options: %s', strjoin(valid_filters, ', '));
+    end
+
+    % Validate DA method
+    valid_da_methods = ["PDA", "GNN"];
+
+    if ~ismember(DA, valid_da_methods)
+        error('Invalid DA method. Options: %s', strjoin(valid_da_methods, ', '));
+    end
+
+    % Validate FinalPlot mode
+    valid_plot_modes = ["interactive", "animation", "none"];
+
+    if ~ismember(FinalPlot, valid_plot_modes)
+        error('Invalid FinalPlot mode. Options: %s', strjoin(valid_plot_modes, ', '));
+    end
+
+    %% --- Display Configuration ---
+    fprintf('Using dataset: %s\n', DATASET);
+    fprintf('Using filter type: %s\n', filter_type);
+    fprintf('Using DA method: %s\n', DA);
+    fprintf('Using plot mode: %s\n', FinalPlot);
+    fprintf('Debug enabled: %s\n', string(DEBUG));
+
+    %% ========== WORKSPACE SETUP ==========
+    %% --- Environment Configuration ---
+    clc; close all
+    % Add paths for MATLAB functions
+    addpath(fullfile('DA_Track'))
+    addpath(fullfile('supplemental'))
+    addpath(fullfile('supplemental', 'Final_Test_Tracks'))
+    addpath(fullfile('supplemental', 'Final_Test_Tracks', 'SingleObj'))
+
+    %% --- Load Supplemental Data ---
+    % Load necessary supplemental data
+    load(fullfile('supplemental', 'recovery.mat'))
+    load(fullfile('supplemental', 'sampling.mat'))
+    load(fullfile('supplemental', 'Final_Test_Tracks', 'SingleObj', DATASET + '.mat'), 'Data');
+
+    %% --- Configure Plotting Environment ---
+    % Set default plotting settings -- in startup.m now
+    % setDefaultPlotSettings();
+
+    % Set plotting flags based on FinalPlot parameter
+    INTERACTIVE = (FinalPlot == "interactive");
+    ANIMATION = (FinalPlot == "animation");
+
+    %% --- Initialize Variables ---
+    % Load Data
     GT = Data.GT;
     GT_meas = GT(1:2, :);
     z = Data.y;
@@ -67,68 +138,73 @@ DA = "PDA"; % Data Association: "PDA", "GNN"
     n_k = size(GT, 2);
     performance = cell(1, n_k);
 
+    %% ========== FILTER PARAMETERS SETUP ==========
+    %% --- Basic Parameters ---
     dt = 0.1; % sec
+
+    %% --- Define Kalman Filter Matrices ---
     % Define KF Matrices state vector - {x,y,vx,vy,ax,ay}
+    A = [0 0 1 0 0 0;
+         0 0 0 1 0 0;
+         0 0 0 0 1 0;
+         0 0 0 0 0 1;
+         0 0 0 0 0 0;
+         0 0 0 0 0 0];
 
-    % A = [0 0 1 0 0 0;
-    %     0 0 0 1 0 0;
-    %     0 0 0 0 1 0;
-    %     0 0 0 0 0 1;
-    %     0 0 0 0 0 0;
-    %     0 0 0 0 0 0];
-    %
-    % F = expm(A*dt);
+    F_KF = expm(A * dt);
 
+    %% --- Define Particle Filter Matrices ---
     % Use the direct discrete-time formulation (matches test_hybrid_PF)
-    F = [1, 0, dt, 0, dt ^ 2/2, 0;
-         0, 1, 0, dt, 0, dt ^ 2/2;
-         0, 0, 1, 0, dt, 0;
-         0, 0, 0, 1, 0, dt;
-         0, 0, 0, 0, 1, 0;
-         0, 0, 0, 0, 0, 1];
+    F_PF = [1, 0, dt, 0, dt ^ 2/2, 0;
+            0, 1, 0, dt, 0, dt ^ 2/2;
+            0, 0, 1, 0, dt, 0;
+            0, 0, 0, 1, 0, dt;
+            0, 0, 0, 0, 1, 0;
+            0, 0, 0, 0, 0, 1];
 
+    %% --- Define Noise Matrices ---
     Q = 1e-2 * eye(6);
-
     R = 0.1 * eye(2);
 
+    %% --- Define Observation Matrix ---
     H = [1 0 0 0 0 0;
          0 1 0 0 0 0];
 
+    %% --- Define Initial Covariance ---
     P0 = diag([0.1 0.1 0.25 0.25 0.5 0.5]);
-    % performance{1}.x = GT(:,1); % Initial State
-    % performance{1}.P = P0; % Initial State Covaraince
 
-    % Load likelihood lookup table for PDA_PF
-
-    %current_class = GNN_KF(performance{1}.x, performance{1}.P, F, Q, R, H);
-    % current_class = PDAF(performance{1}.x, performance{1}.P, F, Q, R, H);
-
+    %% ========== FILTER INITIALIZATION ==========
     switch filter_type
 
         case "KF"
+            %% --- Kalman Filter Setup ---
             fprintf("Using Kalman Filter ")
 
             if DA == "PDA"
-                current_class = PDAF(GT(:, 1), P0, F, Q, R, H);
+                current_class = PDA_KF(GT(:, 1), P0, F_KF, Q, R, H, 'Debug', DEBUG);
 
             elseif DA == "GNN"
-                current_class = GNN_KF(GT(:, 1), P0, F, Q, R, H);
+                current_class = GNN_KF(GT(:, 1), P0, F_KF, Q, R, H);
             else
                 error('Unknown data association method: %s', DA);
             end
 
-            performance{1}.x = GT(:, 1); % Initial State
-            performance{1}.P = P0; % Initial State Covariance
+            %% --- Initialize Performance Storage ---
+            [performance{1}.x, performance{1}.P] = current_class.getGaussianEstimate(); % Initial Gaussian estimate
 
         case 'HybridPF'
+            %% --- Hybrid Particle Filter Setup ---
             fprintf("Using Hybrid Particle Filter ")
             load(fullfile('supplemental', 'precalc_imagegridHMMEmLike.mat'), 'pointlikelihood_image');
 
             if DA == "PDA"
                 fprintf("with PDA data association\n");
-                current_class = PDA_PF(GT(:, 1), 10000, F, .5*Q, H, pointlikelihood_image);
-                current_class.debug = DEBUG;
 
+                Q_PF = Q;
+                Q_PF(1:2, 1:2) = .02 * eye(2); % Adjust process noise for position
+                current_class = PDA_PF(GT(:, 1), 10000, F_PF, Q_PF, H, pointlikelihood_image, "Debug", DEBUG, "DynamicPlot", true, "ValidationSigma", 3);
+
+                %% --- Optional: Challenging Initialization ---
                 % Harder test for the HybridPF... set all particles to uniform over the state space
                 % x in -2,2... y in 0,4... vx,vy = [-1, 1] m/s, ax,ay = [-0.5, 0.5] m/s^2
                 % This is a more challenging test for the HybridPF, as it requires the filter to
@@ -143,71 +219,120 @@ DA = "PDA"; % Data Association: "PDA", "GNN"
 
             elseif DA == "GNN"
                 fprintf("with GNN data association\n");
-                current_class = GNN_PF(GT(:, 1), 10000, F, Q, H, pointlikelihood_image);
-                current_class.debug = DEBUG;
+                current_class = GNN_PF(GT(:, 1), 10000, F_PF, Q, H, pointlikelihood_image, "Debug", DEBUG, "DynamicPlot", true);
+                % current_class.debug = DEBUG;
 
             else
                 error('Unknown data association method: %s', DA);
             end
 
+            %% --- Initialize Performance Storage ---
             performance{1}.particles = current_class.particles; % Store initial particles
             performance{1}.weights = current_class.weights; % Store initial weights
             [performance{1}.x, performance{1}.P] = current_class.getGaussianEstimate(); % Initial Gaussian estimate
+
+        case 'HMM'
+            %% --- Hidden Markov Model Setup ---
+            fprintf("Using HMM Filter ")
+            load(fullfile('supplemental', 'precalc_imagegridHMMEmLike.mat'), 'pointlikelihood_image');
+            load(fullfile('supplemental', 'precalc_imagegridHMMSTMn15.mat'), 'A');
+            A_slow = A; clear A; % Clear A to avoid confusion with the next load
+            load(fullfile('supplemental', 'precalc_imagegridHMMSTMn30.mat'), 'A');
+            A_fast = A; clear A; % Clear A to avoid confusion with the next load
+
+            if DA == "PDA"
+                fprintf("with PDA data association\n");
+                current_class = PDA_HMM(GT(1:2, 1), A_slow, pointlikelihood_image, "Debug", DEBUG, "DynamicPlot", true);
+
+            elseif DA == "GNN"
+                fprintf("with GNN data association\n");
+                % Note: GNN_HMM would need to be implemented if desired
+                error('GNN data association not implemented for HMM filter yet');
+                % current_class = GNN_HMM(GT(1:2, 1), A_transition, pointlikelihood_image, "Debug", DEBUG, "DynamicPlot", true);
+
+            else
+                error('Unknown data association method: %s', DA);
+            end
+
+            %% --- Initialize Performance Storage ---
+            [performance{1}.x, performance{1}.P] = current_class.getGaussianEstimate(); % Initial Gaussian estimate
+            performance{1}.prior_prob = current_class.ptarget_prob; % Store initial distribution
+            performance{1}.likelihood_prob = []; % No likelihood at initialization
+            performance{1}.posterior_prob = current_class.ptarget_prob; % Same as initial distribution
+
         otherwise
             error('Unknown filter type: %s', filter_type);
             exit(1);
 
     end
 
-    %% State Estimation
+    %% ========== STATE ESTIMATION LOOP ==========
     for i = 2:n_k
         fprintf('Processing time step %d/%d\n', i, n_k);
 
+        %% --- Filter-Specific Timestep Processing ---
         switch filter_type
             case "KF"
+                %% --- Kalman Filter Timestep ---
                 current_meas = z{i}; % Use original measurements
 
-                [X, P] = current_class.timestep(performance{i - 1}.x, performance{i - 1}.P, current_meas);
+                % Perform Timestep Update using new standardized API
+                current_class.timestep(current_meas, GT(:, i)); % Pass ground truth for visualization
 
-                % update performance
-                performance{i}.x = X;
-                performance{i}.P = P;
+                %% --- Update Performance Metrics ---
+                [performance{i}.x, performance{i}.P] = current_class.getGaussianEstimate();
+
             case 'HybridPF'
+                %% --- Hybrid Particle Filter Timestep ---
+                % current_meas = GT_meas(:, i); % Use ground truth measurements for testing
                 current_meas = z{i}; % Use original measurements
 
-                % [X,P] = current_class.timestep(performance{i-1}.x, performance{i-1}.P,current_meas);
-                current_class.timestep(current_meas);
+                % Perform Timestep Update (includes dynamic plotting if enabled)
+                current_class.timestep(current_meas, GT(:, i)); % Pass ground truth for visualization
 
-                % Update performance
+                %% --- Update Performance Metrics ---
                 performance{i}.particles = current_class.particles; % Store particles
                 performance{i}.weights = current_class.weights; % Store weights
 
-                % update performance
+                % Update Gaussian estimate
                 [performance{i}.x, performance{i}.P] = current_class.getGaussianEstimate();
+
+            case 'HMM'
+                %% --- Hidden Markov Model Timestep ---
+                current_meas = GT_meas(:, i); % Use ground truth measurements for testing
+                % current_meas = z{i}; % Use original measurements
+
+                % Perform Timestep Update (includes dynamic plotting if enabled)
+                current_class.timestep(current_meas, GT(1:2, i)); % Pass ground truth for visualization
+
+                %% --- Update Performance Metrics ---
+                [performance{i}.x, performance{i}.P] = current_class.getGaussianEstimate();
+                performance{i}.prior_prob = current_class.prior_prob; % Store prior distribution
+                performance{i}.likelihood_prob = current_class.likelihood_prob; % Store likelihood distribution
+                performance{i}.posterior_prob = current_class.posterior_prob; % Store posterior distribution
 
             otherwise
                 error('Unknown filter type in timestep loop: %s', filter_type);
         end
 
-    end
+        %% ========== FINAL PLOTTING AND VISUALIZATION ==========
+        if INTERACTIVE
+            %% --- Interactive Plotting ---
+            fprintf('Generating interactive plot...\n');
+            mWidar_FilterPlot_Interactive(performance, Data, 0:dt:10, filter_type); % Interactive plotting function with slider
+            fprintf('Interactive plot is ready! Use the slider and controls to navigate through timesteps.\n');
+            fprintf('Close the figure window when you are done.\n');
+        elseif ANIMATION
+            %% --- Animation Plotting ---
+            fprintf('Generating animation plot...\n');
+            saveString = filter_type + "_" + DATASET + ".gif";
+            mWidar_FilterPlot_Distribution(performance, Data, 0:dt:10, filter_type, fullfile("..", "figures", "DA_Track", saveString)); % Animation plotting function
+        else
+            %% --- No Plotting Mode ---
+            fprintf('No final plotting requested (FinalPlot = "none").\n');
+        end
 
-    %% Plotting
+        %% --- Future Enhancements ---
+        % NEES(current_class,initial_state,A,10,M,G)
 
-    % initial_state.x0 = GT(:,1);
-    % initial_state.P0 = P0;
-    if INTERACTIVE
-        mWidar_FilterPlot_Interactive(performance, Data, 0:dt:10, filter_type); % Interactive plotting function with slider
-        fprintf('Interactive plot is ready! Use the slider and controls to navigate through timesteps.\n');
-        fprintf('Close the figure window when you are done.\n');
-    elseif DISTRIBUTION
-        saveString = filter_type + "_" + DATASET + ".gif";
-        mWidar_FilterPlot_Distribution(performance, Data, 0:dt:10, filter_type, fullfile("..", "figures", "DA_Track", saveString)); % Original plotting function for distribution
-    else
-        fprintf('No plotting mode selected. Set INTERACTIVE or DISTRIBUTION to true.\n');
-    end
-
-    % NEES(current_class,initial_state,A,10,M,G)
-
-    % Keep the figure open for interaction
-
-end % End of main function
+    end % End of main function

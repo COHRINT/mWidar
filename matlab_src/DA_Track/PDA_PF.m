@@ -1,4 +1,4 @@
-classdef PDA_PF < handle
+classdef PDA_PF < DA_Filter
     % PDA_PF Probabilistic Data Association Particle Filter
     %
     % DESCRIPTION:
@@ -21,10 +21,11 @@ classdef PDA_PF < handle
     %   resample            - Bootstrap particle resampling
     %
     % EXAMPLE:
-    %   pf = PDA_PF(x0, 1000, F, Q, H);
-    %   [x_est, P_est] = pf.timestep(x_prior, P_prior, measurements);
+    %   pf = PDA_PF(x0, 1000, F, Q, H, pointlikelihood_image, 'Debug', true, 'DynamicPlot', true);
+    %   pf.timestep(measurements);
+    %   [x_est, P_est] = pf.getGaussianEstimate();
     %
-    % See also particleFilter, trackingPF
+    % See also DA_Filter, PDA_HMM, particleFilter, trackingPF
 
     properties
         % Filter Parameters
@@ -44,19 +45,27 @@ classdef PDA_PF < handle
         % Likelihood Model
         pointlikelihood_image % Precomputed likelihood lookup table [128^2 x 128^2]
 
-        % Control Flags
+        % Control Flags (inherited from DA_Filter)
         debug = false % Enable debug output and validation
         validate = false % Enable input/output validation checks
+        DynamicPlot = false % Enable real-time visualization during timesteps
+
+        % Validation Parameters
+        validation_sigma_bounds = 2 % Number of sigma bounds for measurement gating (default: 2)
+
+        % Dynamic Plotting (inherited from DA_Filter)
+        dynamic_figure_handle % Figure handle for dynamic plotting
     end
 
     methods
 
-        function obj = PDA_PF(x0, N_particles, F, Q, H, pointlikelihood_image)
+        function obj = PDA_PF(x0, N_particles, F, Q, H, pointlikelihood_image, varargin)
             % PDA_PF Constructor for Probabilistic Data Association Particle Filter
             %
             % SYNTAX:
             %   obj = PDA_PF(x0, N_particles, F, Q, H)
             %   obj = PDA_PF(x0, N_particles, F, Q, H, pointlikelihood_image)
+            %   obj = PDA_PF(..., 'Debug', true, 'DynamicPlot', true, 'ValidationSigma', 3)
             %
             % INPUTS:
             %   x0                  - Initial state estimate [N_x x 1]
@@ -65,6 +74,7 @@ classdef PDA_PF < handle
             %   Q                   - Process noise covariance [N_x x N_x]
             %   H                   - Measurement matrix [N_z x N_x]
             %   pointlikelihood_image - (optional) Precomputed likelihood lookup table [128^2 x 128^2]
+            %   varargin            - Name-value pairs: 'Debug', true/false, 'DynamicPlot', true/false, 'ValidationSigma', numeric
             %
             % OUTPUTS:
             %   obj - Initialized PDA_PF object
@@ -90,19 +100,25 @@ classdef PDA_PF < handle
                 pointlikelihood_image = [];
             end
 
+            % Parse options using parent class utility
+            options = DA_Filter.parseFilterOptions(varargin{:});
+            obj.debug = options.Debug;
+            obj.DynamicPlot = options.DynamicPlot;
+            obj.validation_sigma_bounds = options.ValidationSigma;
+
             % Initialize basic properties
             obj.N_p = N_particles;
             obj.N_x = size(x0, 1);
             obj.N_z = size(H, 1);
 
             % Initialize particles with small spread around initial guess
-            init_spread = [0.1, 0.1, 0.25, 0.25, 0.5, 0.5]; % Position, velocity, acceleration spreads
+            % init_spread = [0.1, 0.1, 0.25, 0.25, 0.5, 0.5]; % Position, velocity, acceleration spreads
             obj.particles = repmat(x0(:), 1, N_particles);
 
             % Add Gaussian noise to each state component
-            for i = 1:obj.N_x
-                obj.particles(i, :) = obj.particles(i, :) + init_spread(i) * randn(1, N_particles);
-            end
+            % for i = 1:obj.N_x
+            %     obj.particles(i, :) = obj.particles(i, :);% + init_spread(i) * randn(1, N_particles);
+            % end
 
             obj.weights = ones(N_particles, 1) / N_particles;
 
@@ -120,8 +136,10 @@ classdef PDA_PF < handle
                 [rows, cols] = size(obj.pointlikelihood_image);
 
                 if obj.debug
-                    fprintf('Debug: Loaded likelihood table - Rows: %d, Cols: %d\n', rows, cols);
-                    fprintf('Debug: Expected dimensions: %d x %d\n', expected_dim, expected_dim);
+                    fprintf('\n=== PDA_PF INITIALIZATION ===\n');
+                    fprintf('Particles: %d, States: %d, Measurements: %d\n', N_particles, obj.N_x, obj.N_z);
+                    fprintf('Likelihood table: %dx%d (expected: %dx%d)\n', rows, cols, expected_dim, expected_dim);
+                    fprintf('============================\n\n');
                 end
 
                 if rows ~= expected_dim || cols ~= expected_dim
@@ -132,32 +150,53 @@ classdef PDA_PF < handle
 
             end
 
+            % Initialize dynamic plotting if enabled with shorter height for 1x3 square axes
+            obj.initializeDynamicPlot('PDA-PF Dynamic Tracking', [100, 100, 1400, 600]);
+
         end
 
-        % timestep: Iterate PDA_PF through a single timestep
-        %{
-            args:
-                obj -> class object
-                ? -> prior distribution
-                z -> measurement
-            outputs:
-                ? -> posterior distribution
-        %}
-        function timestep(obj, z)
-            %{
-             PDA_PF Timestep function -- Implements the PDA-PF algorithm for a single timestep
-             0. Initialization -- Resample the particles (only if weights are not uniform)
-             1. Prediction Step -- Particles are propogated through the dynamics model (weights unchanged)
-             2. Validation Step -- Validate the particles against the measurements (gating)
-                -- This step is optional, but can be used to reduce the number of measurement updates
-             3. Data Association Step -- Compute the probability of each measurement being a true detection
-                -- This step is optional given optimizations present for PDA, and is built into step 4
-                -- HOWEVER, this MUST be done for GNN_PF as the maximum beta weight will be used to update the particles
-              4. State Estimation Step -- Update the particle weights based on the measurements and associations
-                 -- This step is required for both PDA and GNN, and is the final step in the algorithm
-                 -- For PDA, all measurements will be passed through the state estimation step and mixed accordingly
-                 -- For GNN and one-measurement-at-a-time, only one measurement will be passed through the state estimation step
-            %}
+        %% ========== TIMESTEP ==========
+        function timestep(obj, z, varargin)
+            % TIMESTEP Implements the PDA-PF algorithm for a single timestep
+            %
+            % SYNTAX:
+            %   obj.timestep(z)
+            %   obj.timestep(z, true_state)
+            %
+            % INPUTS:
+            %   z          - Measurements [2 x N_measurements]
+            %   true_state - (optional) True state for visualization
+            %
+            % DESCRIPTION:
+            %   Executes one timestep of the PDA-PF algorithm including:
+            %   0. Initialization - Resample particles if weights are non-uniform
+            %   1. Prediction Step - Propagate particles through dynamics model
+            %   2. Validation Step - Gate measurements using particle estimate
+            %   3. Measurement Update - Update particle weights using all measurements
+            %   4. Visualization - Update dynamic plot if enabled
+            %
+            % ALGORITHM NOTES:
+            %   - Resampling only occurs if weights are non-uniform
+            %   - Gating uses configurable sigma bounds based on current state estimate
+            %   - PDA combines all measurements for weight updates
+            %   - Supports optional real-time visualization
+            %
+            % See also prediction, measurement_update, resample
+
+            if obj.debug
+                fprintf('\n=== PDA-PF TIMESTEP START ===\n');
+                fprintf('Input: %d measurements\n', size(z, 2));
+
+                if ~isempty(z)
+
+                    for i = 1:size(z, 2)
+                        fprintf('  Meas %d: [%.3f, %.3f]\n', i, z(1, i), z(2, i));
+                    end
+
+                end
+
+                fprintf('------------------------------\n');
+            end
 
             % Step 0: Initialization
             % Resample the particles if necessary (only if weights are not uniform)
@@ -167,70 +206,62 @@ classdef PDA_PF < handle
             if any(obj.weights ~= 1 / length(obj.weights))
                 % print effective sample size
                 ESS = 1 / sum(obj.weights .^ 2);
-                fprintf('Effective Sample Size: %.2f\n', ESS);
+
+                if obj.debug
+                    fprintf('[RESAMPLING] ESS: %.2f, resampling particles...\n', ESS);
+                end
+
                 obj.resample();
             end
 
             % Step 1: Prediction Step
             % Particles are propagated through the dynamics model (weights unchanged)
             if obj.debug
-                obj.printState('Before Prediction');
+                fprintf('[PREDICTION] Applying dynamics model...\n');
             end
 
             obj.prediction();
 
             if obj.debug
-                obj.printState('After Prediction');
+                fprintf('[PREDICTION] Complete.\n');
             end
 
             % Step 2: Validation step - Gate measurements using particle filter estimate
-            % COMMENT OUT THIS ENTIRE BLOCK TO DISABLE GATING
-            if ~isempty(z)
-                % Get current particle filter estimate for gating
-                [x_est, P_est] = obj.getGaussianEstimate();
-                z_hat = x_est(1:2); % Predicted measurement (only position)
-                S = P_est(1:2, 1:2); % Use position covariance only
-                
-                % Compute 2-sigma bounds for gating
-                sigma_bounds = 3 * sqrt(diag(S));
-                lower_bound = z_hat - sigma_bounds;
-                upper_bound = z_hat + sigma_bounds;
-                
-                % Apply gating: Keep measurements within 2-sigma bounds
-                in_bounds = all(z >= lower_bound & z <= upper_bound, 1);
-                z_valid = z(:, in_bounds);
-                has_valid_meas = ~isempty(z_valid);
-                
-                % if obj.debug
-                    fprintf('Debug: Gating - Input: %d measurements, Output: %d valid measurements\n', ...
-                        size(z, 2), size(z_valid, 2));
-                % end
-                
-                % Use gated measurements for state estimation
-                if has_valid_meas
-                    z_to_process = z_valid;
-                else
-                    z_to_process = []; % No valid measurements - missed detection
-                end
-            else
-                z_to_process = z; % No measurements to gate
-            end
+            % COMMENT OUT THIS BLOCK TO DISABLE GATING
+            [z_to_process, has_valid_meas] = obj.Validation(z);
+
             % END GATING BLOCK - COMMENT OUT TO HERE TO DISABLE GATING
-            
+
             % UNCOMMENT THIS LINE TO DISABLE GATING (and comment out the block above)
             % z_to_process = z; % Use all measurements without gating
 
             % Step 3: Data Association Step -- Simplified, no beta computation needed
 
-            % Step 4: State Estimation Step
-            obj.state_Estimation(z_to_process);
+            % Step 4: Measurement Update Step
+            obj.measurement_update(z_to_process);
 
             if obj.debug
-                obj.printState('After Measurement Update');
+                [x_est, P_est] = obj.getGaussianEstimate();
+                fprintf('\nOutput: State estimate [%.4f, %.4f] m\n', x_est(1), x_est(2));
+                fprintf('        Covariance trace: %.6f\n', trace(P_est));
+                fprintf('=== PDA-PF TIMESTEP END ===\n\n');
+            end
+
+            % Update dynamic plot if enabled
+            if obj.DynamicPlot
+
+                if nargin > 2
+                    true_state = varargin{1};
+                    obj.updateDynamicPlot(z_to_process, true_state);
+                else
+                    obj.updateDynamicPlot(z_to_process);
+                end
+
             end
 
         end
 
+        %% ========== PREDICTION STEP ==========
         function prediction(obj)
             % PREDICTION Propagate particles through system dynamics
             %
@@ -252,7 +283,7 @@ classdef PDA_PF < handle
             % See also timestep, resample
 
             if obj.debug
-                fprintf('Debug: F matrix [%dx%d], particles [%dx%d]\n', ...
+                fprintf('[PREDICTION] F matrix [%dx%d], particles [%dx%d]\n', ...
                     size(obj.F, 1), size(obj.F, 2), size(obj.particles, 1), size(obj.particles, 2));
             end
 
@@ -265,55 +296,99 @@ classdef PDA_PF < handle
 
         end
 
-        % Validation (Gating) Step: Trims down detections to a set of detections that pass through the validation ellipse
-        %{
-            % TODO: Decide if we want gating in these classes
-            args:
-                S -> innovation covariance
-                z_hat -> predicted measurment
-                z -> set of all detections
-            outputs:
-                valid_z -> set of detections that pass through validation ellipse
-                meas -> boolean, set to false if no measurments pass through the ellipse (missed detection)
+        %% ========== MEASUREMENT VALIDATION ==========
+        function [z_valid, has_valid_meas] = Validation(obj, z)
+            % VALIDATION Gate measurements using particle filter state estimate
+            %
+            % SYNTAX:
+            %   [z_valid, has_valid_meas] = obj.Validation(z)
+            %
+            % INPUTS:
+            %   z - Raw measurements [N_z x N_meas]
+            %
+            % OUTPUTS:
+            %   z_valid        - Validated measurements [N_z x N_valid]
+            %   has_valid_meas - Boolean flag indicating if any measurements passed validation
+            %
+            % DESCRIPTION:
+            %   Applies configurable sigma gating to filter measurements that fall within
+            %   bounds around the current particle filter state estimate. Uses position-only
+            %   gating based on current state covariance and obj.validation_sigma_bounds.
+            %
+            % ALGORITHM:
+            %   1. Get current particle filter estimate (mean and covariance)
+            %   2. Compute sigma bounds based on obj.validation_sigma_bounds and position uncertainty
+            %   3. Accept measurements within bounds: lower_bound <= z <= upper_bound
+            %
+            % See also timestep, measurement_update
 
-                %}
+            % Handle empty measurement case
+            if isempty(z)
+                z_valid = [];
+                has_valid_meas = false;
 
-            function [valid_z, meas] = Validation(obj, S, z_hat, z)
-                meas = true; % default
-                gamma = chi2inv(0.05/2, 2); % Threshold
-                valid_z = [];
-
-                for j = 1:size(z, 2)
-                    detection = z(:, j);
-                    Nu = (detection - z_hat)' / S * (detection - z_hat); % Validation ellipse (NIS statistic)
-
-                    if Nu < gamma % Validation gate
-                        valid_z = [valid_z detection]; % Append new measurment onto validated list
-                    end
-
+                if obj.debug
+                    fprintf('[GATING] No measurements to validate\n');
                 end
 
-                if isempty(valid_z)
-                    fprintf('No Valid Measurments \n')
-                    meas = false; % missed detection
+                return;
+            end
+
+            % Get current particle filter estimate for gating
+            [x_est, P_est] = obj.getGaussianEstimate();
+            z_hat = x_est(1:2); % Predicted measurement (only position)
+            S = P_est(1:2, 1:2); % Use position covariance only
+
+            % Compute sigma bounds for gating using configurable parameter
+            sigma_bounds = obj.validation_sigma_bounds * sqrt(diag(S));
+            lower_bound = z_hat - sigma_bounds;
+            upper_bound = z_hat + sigma_bounds;
+
+            % Apply gating: Keep measurements within sigma bounds
+            in_bounds = all(z >= lower_bound & z <= upper_bound, 1);
+            z_valid = z(:, in_bounds);
+            has_valid_meas = ~isempty(z_valid);
+
+            if obj.debug
+                fprintf('[GATING] Input: %d measurements, Output: %d valid measurements\n', ...
+                    size(z, 2), size(z_valid, 2));
+
+                if obj.debug && size(z, 2) > 0
+                    fprintf('[GATING] Using %.1f-sigma bounds: x=[%.3f, %.3f], y=[%.3f, %.3f]\n', ...
+                        obj.validation_sigma_bounds, lower_bound(1), upper_bound(1), lower_bound(2), upper_bound(2));
                 end
 
             end
-        
 
-        % PDA: Standard Probabilistic Data Association algorithm
-        %{
-            args:
-                ? -> prior distribution
-                O -> set of valid measurments
+        end
 
-            outputs:
-                beta -> probability of data association (size len(O)+1 x 1)
-                    beta(0) = P(all clutter | z_hat)
-                    beta(i) = P(i NOT clutter | z_hat)
-
-        %}
+        %% ========== PROBABILISTIC DATA ASSOCIATION ==========
         function [beta] = Data_Association(obj, z_hat, O, S)
+            % DATA_ASSOCIATION Compute association probabilities for validated measurements
+            %
+            % SYNTAX:
+            %   beta = obj.Data_Association(z_hat, O, S)
+            %
+            % INPUTS:
+            %   z_hat - Predicted measurement [N_z x 1]
+            %   O     - Validated measurements [N_z x N_valid]
+            %   S     - Innovation covariance matrix [N_z x N_z]
+            %
+            % OUTPUTS:
+            %   beta  - Association probabilities [N_valid+1 x 1]
+            %           beta(1) = P(all clutter)
+            %           beta(i+1) = P(measurement i is target-originated)
+            %
+            % DESCRIPTION:
+            %   This function is currently not implemented. The PDA-PF uses
+            %   a simplified approach where all measurements contribute to
+            %   the weight update in the measurement_update function.
+            %
+            % NOTE:
+            %   Implementation would compute beta weights using detection
+            %   probability (PD), gate probability (PG), and clutter density.
+            %
+            % See also measurement_update, Validation
 
             % % Tuning parameters
             % lambda = 2.5;
@@ -339,22 +414,12 @@ classdef PDA_PF < handle
 
         end
 
-        % state_Estimation: Hybrid_PF weight update and state estimation
-        %{
-            args:
-                beta -> probability of detection i being the true target
-                weights -> weights of particles
-                O -> set of validated measurments
-
-            outputs:
-                posterior -> posterior weights
-
-        %}
-        function state_Estimation(obj, z)
-            % STATE_ESTIMATION Update particle weights based on measurement likelihood (PDA)
+        %% ========== MEASUREMENT UPDATE ==========
+        function measurement_update(obj, z)
+            % MEASUREMENT_UPDATE Update particle weights based on measurement likelihood (PDA)
             %
             % SYNTAX:
-            %   obj.state_Estimation(z)
+            %   obj.measurement_update(z)
             %
             % INPUTS:
             %   z    - Current measurements [N_z x N_measurements] (after gating)
@@ -371,9 +436,11 @@ classdef PDA_PF < handle
 
             % Handle missed detection case (no valid measurements after gating)
             if isempty(z)
+
                 if obj.debug
-                    fprintf('Debug: Missed detection - no valid measurements after gating\n');
+                    fprintf('[MEASUREMENT UPDATE] No measurements - missed detection case\n');
                 end
+
                 % Keep weights unchanged for missed detection
                 return;
             end
@@ -386,12 +453,7 @@ classdef PDA_PF < handle
 
             % Debug: Print measurement info
             if obj.debug
-                fprintf('Debug: Processing %d valid measurements after gating\n', size(z, 2));
-
-                for i = 1:size(z, 2)
-                    fprintf('Debug: Valid measurement %d: [%.4f, %.4f]\n', i, z(1, i), z(2, i));
-                end
-
+                fprintf('[MEASUREMENT UPDATE] Processing %d measurements:\n', size(z, 2));
             end
 
             % Initialize total likelihood accumulator
@@ -399,24 +461,29 @@ classdef PDA_PF < handle
 
             % Add contribution from clutter (uniform over all particles)
             PD = .95; % Probability of detection
+            % FIXME: Consider PFA larger (significantly)
             PFA = 0.05; % Probability of false alarm
             clutter_likelihood = (1 - PD) * PFA / (obj.N_p);
 
             % Likelihood total starts with clutter contribution
             likelihood_total = clutter_likelihood * ones(obj.N_p, 1);
 
+            if obj.debug
+                fprintf('[CLUTTER] Added clutter contribution: %.8f per particle\n', clutter_likelihood);
+            end
+
             % Add contribution from each measurement
             for i = 1:size(z, 2)
+
+                if obj.debug
+                    fprintf('  Meas %d: [%.3f, %.3f] -> ', i, z(1, i), z(2, i));
+                end
+
                 % Get likelihood for this measurement
                 likelihood_i = obj.likelihoodLookup(z(:, i));
 
                 % Add contribution (no beta weighting in simplified version)
                 likelihood_total = likelihood_total + likelihood_i;
-
-                if obj.debug
-                    fprintf('Debug: Measurement %d likelihood range: [%.6f, %.6f]\n', ...
-                        i, min(likelihood_i), max(likelihood_i));
-                end
 
             end
 
@@ -431,6 +498,12 @@ classdef PDA_PF < handle
 
                 % Apply Gaussian weighting
                 likelihood_total = likelihood_total .* gauss_weights';
+
+                if obj.debug
+                    fprintf('[GAUSSIAN MASK] Applied around centroid [%.3f, %.3f]\n', ...
+                        z_centroid(1), z_centroid(2));
+                end
+
             end
 
             % Final weight update and normalization
@@ -439,7 +512,7 @@ classdef PDA_PF < handle
 
             % Debug: Print final weight stats
             if obj.debug
-                fprintf('Debug: Final weights - min: %.6f, max: %.6f, sum: %.6f\n', ...
+                fprintf('[MEASUREMENT UPDATE] Complete. Weights: min=%.6f, max=%.6f, sum=%.6f\n', ...
                     min(obj.weights), max(obj.weights), sum(obj.weights));
             end
 
@@ -464,7 +537,7 @@ classdef PDA_PF < handle
             %   Used by GNN algorithm to compare and select the best measurement association.
             %   Each weight update includes both likelihood lookup and Gaussian weighting.
             %
-            % See also state_Estimation, likelihoodLookup
+            % See also measurement_update, likelihoodLookup
 
             % Check if likelihood image is available
             if isempty(obj.pointlikelihood_image)
@@ -494,7 +567,7 @@ classdef PDA_PF < handle
                 weight_updates{i} = combined_weights / sum(combined_weights);
 
                 if obj.debug
-                    fprintf('Debug: Measurement %d individual weights - min: %.6f, max: %.6f\n', ...
+                    fprintf('[GNN] Measurement %d individual weights: min=%.6f, max=%.6f\n', ...
                         i, min(weight_updates{i}), max(weight_updates{i}));
                 end
 
@@ -505,12 +578,13 @@ classdef PDA_PF < handle
             weight_updates{end} = clutter_weights;
 
             if obj.debug
-                fprintf('Debug: Computed %d individual weight updates (%d measurements + clutter)\n', ...
+                fprintf('[GNN] Computed %d individual weight updates (%d measurements + clutter)\n', ...
                     length(weight_updates), N_measurements);
             end
 
         end
 
+        %% ========== LIKELIHOOD COMPUTATION ==========
         function likelihood_raw = likelihoodLookup(obj, z)
             % LIKELIHOODLOOKUP Get likelihood values for particles given measurement
             %
@@ -540,7 +614,7 @@ classdef PDA_PF < handle
 
             % Debug: Print measurement indices
             if obj.debug
-                fprintf('Debug: Measurement indices - x_idx: %d, y_idx: %d, linear_idx: %d\n', ...
+                fprintf('    Grid indices: x=%d, y=%d, linear=%d\n', ...
                     meas_x_idx, meas_y_idx, meas_linear_idx);
             end
 
@@ -578,6 +652,7 @@ classdef PDA_PF < handle
 
         end
 
+        %% ========== STATE ESTIMATION ==========
         function [state_est, state_est_covariance] = getGaussianEstimate(obj)
             % GETGAUSSIANESTIMATE Compute Gaussian state estimate from particles
             %
@@ -665,6 +740,11 @@ classdef PDA_PF < handle
             %
             % See also PDA_PF, prediction, resample
 
+            if obj.debug
+                fprintf('\n=== LOADING LIKELIHOOD DATA ===\n');
+                fprintf('Loading from: %s\n', likelihood_file_path);
+            end
+
             try
                 % Check if file exists
                 if ~exist(likelihood_file_path, 'file')
@@ -688,10 +768,9 @@ classdef PDA_PF < handle
                 expected_dim = 128 ^ 2;
                 [rows, cols] = size(obj.pointlikelihood_image);
 
-                % Debug: Print detailed dimension info
                 if obj.debug
-                    fprintf('Debug: Loaded likelihood table - Rows: %d, Cols: %d\n', rows, cols);
-                    fprintf('Debug: Expected dimensions: %d x %d\n', expected_dim, expected_dim);
+                    fprintf('[VALIDATION] Loaded table dimensions: %dx%d\n', rows, cols);
+                    fprintf('[VALIDATION] Expected dimensions: %dx%d\n', expected_dim, expected_dim);
                 end
 
                 if rows ~= expected_dim || cols ~= expected_dim
@@ -701,17 +780,24 @@ classdef PDA_PF < handle
                 end
 
                 if obj.debug
-                    fprintf('Successfully loaded likelihood lookup table from: %s\n', likelihood_file_path);
-                    fprintf('Likelihood table dimensions: %dx%d\n', rows, cols);
+                    fprintf('[SUCCESS] Likelihood lookup table loaded successfully\n');
+                    fprintf('================================\n\n');
                 end
 
             catch ME
+
+                if obj.debug
+                    fprintf('[ERROR] Failed to load likelihood data: %s\n', ME.message);
+                    fprintf('===============================\n\n');
+                end
+
                 error('PDA_PF:LoadError', ...
                     'Failed to load likelihood data: %s', ME.message);
             end
 
         end
 
+        %% ========== PARTICLE RESAMPLING ==========
         function resample(obj)
             % RESAMPLE Bootstrap resampling for particle filter
             %
@@ -730,8 +816,19 @@ classdef PDA_PF < handle
             %
             % See also PDA_PF, prediction, timestep
 
+            if obj.debug
+                fprintf('\n=== RESAMPLING ===\n');
+                fprintf('[WEIGHTS] Pre-resample: min=%.6f, max=%.6f, sum=%.6f\n', ...
+                    min(obj.weights), max(obj.weights), sum(obj.weights));
+            end
+
             % First, check if weights are valid
             if any(isnan(obj.weights)) || any(isinf(obj.weights))
+
+                if obj.debug
+                    fprintf('[WARNING] Invalid weights detected, replacing with epsilon\n');
+                end
+
                 warning('Invalid weights detected before processing');
                 % Replace invalid weights with small values
                 obj.weights(isnan(obj.weights) | isinf(obj.weights)) = eps;
@@ -741,6 +838,10 @@ classdef PDA_PF < handle
             epsilon = eps; % Using MATLAB's eps
             obj.weights = obj.weights + epsilon;
             obj.weights = obj.weights / sum(obj.weights); % Renormalize after adding epsilon
+
+            if obj.debug
+                fprintf('[NORMALIZATION] Post-normalization: sum=%.6f\n', sum(obj.weights));
+            end
 
             % Compute cumulative sum of weights
             sampcdf = cumsum(obj.weights);
@@ -765,11 +866,328 @@ classdef PDA_PF < handle
 
             % Set uniform weights
             obj.weights = (1 / obj.N_p) * ones(size(obj.weights));
+
+            if obj.debug
+                fprintf('[PARTICLES] Resampled particles, weights now uniform\n');
+                fprintf('[RESULT] New weights: min=%.6f, max=%.6f, sum=%.6f\n', ...
+                    min(obj.weights), max(obj.weights), sum(obj.weights));
+                fprintf('==================\n\n');
+            end
+
         end
 
-        % Setter methods for properties - REMOVED because they cause issues with direct assignment
-        % MATLAB allows direct property assignment for handle classes
-        % Use: obj.debug = true; instead of custom setters
+        %% ========== VISUALIZATION ==========
+        function visualize(obj, figure_handle, title_str, measurements, true_state)
+            % VISUALIZE Plot current particle distribution and state estimates
+            %
+            % SYNTAX:
+            %   obj.visualize()
+            %   obj.visualize(figure_handle)
+            %   obj.visualize(figure_handle, title_str)
+            %   obj.visualize(figure_handle, title_str, measurements)
+            %   obj.visualize(figure_handle, title_str, measurements, true_state)
+            %
+            % INPUTS:
+            %   figure_handle - (optional) Figure handle to plot in
+            %   title_str     - (optional) Title string for plot
+            %   measurements  - (optional) Current measurements [N_z x N_meas]
+            %   true_state    - (optional) True state for comparison [N_x x 1]
+            %
+            % DESCRIPTION:
+            %   Creates visualization of particle filter state with subplots for:
+            %   1. Position particles with zoom inset
+            %   2. Velocity particles
+            %   3. Acceleration particles
+            %   Based on visualization style from test_hybrid_PF.m
+
+            if nargin < 2 || isempty(figure_handle)
+                figure;
+                % Set default figure size and position optimized for 1x3 layout
+                % Only set position for new figures, preserve user resizing
+                current_pos = get(gcf, 'Position');
+
+                if current_pos(3) == 560 && current_pos(4) == 420 % Default MATLAB size
+                    set(gcf, 'Position', [100, 100, 1200, 400]);
+                end
+
+            else
+                figure(figure_handle);
+            end
+
+            if nargin < 3 || isempty(title_str)
+                title_str = 'PDA-PF Particle Distribution';
+            end
+
+            if nargin < 4
+                measurements = [];
+            end
+
+            if nargin < 5
+                true_state = [];
+            end
+
+            % Get current state estimate
+            [mean_state, state_cov] = obj.getGaussianEstimate();
+
+            % Compute effective sample size for main title
+            eff_sample_size = 1 / sum(obj.weights .^ 2);
+
+            % Define spatial bounds (matching test_hybrid_PF)
+            Xbounds = [-2, 2];
+            Ybounds = [0, 4];
+
+            % Subplot 1: Position with full scene view and inset zoom
+            ax1 = subplot(1, 3, 1);
+            cla;
+
+            % Scatter plot of particle positions colored by weights
+            h_scatter = scatter(obj.particles(1, :), obj.particles(2, :), 20, obj.weights, ...
+                'filled', 'MarkerFaceAlpha', 0.6);
+            hold on
+
+            % Plot particle filter estimate
+            plot(mean_state(1), mean_state(2), 'ro', 'MarkerSize', 10, 'LineWidth', 3, ...
+                'DisplayName', 'PF Estimate');
+
+            % Plot covariance ellipses (1σ and 3σ)
+            pos_cov = state_cov(1:2, 1:2); % Position covariance only
+
+            % 1σ covariance ellipse (solid white)
+            ellipse_1sigma = obj.computeCovarianceEllipse(mean_state(1:2), pos_cov, 1);
+            plot(ellipse_1sigma(1, :), ellipse_1sigma(2, :), 'w-', 'LineWidth', 2, ...
+                'DisplayName', '1\sigma Covariance');
+
+            % 3σ covariance ellipse (dotted white)
+            ellipse_validation = obj.computeCovarianceEllipse(mean_state(1:2), pos_cov, obj.validation_sigma_bounds);
+            plot(ellipse_validation(1, :), ellipse_validation(2, :), 'w:', 'LineWidth', 2, ...
+                'DisplayName', 'Validation');
+
+            % Plot true state if provided
+            if ~isempty(true_state)
+                plot(true_state(1), true_state(2), 'd', 'Color', 'm', ...
+                    'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'm', ...
+                    'DisplayName', 'True Position');
+            end
+
+            % Plot measurements if provided
+            if ~isempty(measurements)
+                % Plot all measurements with a single legend entry in bright orange
+                plot(measurements(1, :), measurements(2, :), '+', 'Color', [1 0.5 0], ...
+                    'MarkerSize', 8, 'LineWidth', 2, 'DisplayName', 'Measurements');
+
+                % Draw rectangle indicating inset zoom region around first measurement
+                if size(measurements, 2) > 0
+                    current_meas = measurements(:, 1);
+                    zoom_rect = rectangle('Position', [current_meas(1) - 0.3, current_meas(2) - 0.3, 0.6, 0.6], ...
+                        'EdgeColor', 'k', 'LineWidth', 1, 'LineStyle', '--');
+                end
+
+            end
+
+            title('Position', 'Interpreter', 'latex');
+            xlabel('X (m)'), ylabel('Y (m)');
+            xlim(Xbounds), ylim(Ybounds);
+            axis square;
+            legend('Location', 'northwest');
+
+            % Create inset zoom window if measurements are provided
+            if ~isempty(measurements) && size(measurements, 2) > 0
+                current_meas = measurements(:, 1);
+
+                % Define inset location in data coordinates (positioned in upper right)
+                inset_x_range = [0.5, 1.8];
+                inset_y_range = [2.7, 3.9];
+
+                % Convert data coordinates to normalized figure coordinates
+                ax1_pos = get(ax1, 'Position');
+                xlims = get(ax1, 'XLim');
+                ylims = get(ax1, 'YLim');
+
+                % Normalize inset position within the main subplot
+                inset_left_norm = (inset_x_range(1) - xlims(1)) / (xlims(2) - xlims(1));
+                inset_bottom_norm = (inset_y_range(1) - ylims(1)) / (ylims(2) - ylims(1));
+                inset_width_norm = (inset_x_range(2) - inset_x_range(1)) / (xlims(2) - xlims(1));
+                inset_height_norm = (inset_y_range(2) - inset_y_range(1)) / (ylims(2) - ylims(1));
+
+                % Convert to figure coordinates
+                inset_pos = [ax1_pos(1) + inset_left_norm * ax1_pos(3), ...
+                                 ax1_pos(2) + inset_bottom_norm * ax1_pos(4), ...
+                                 inset_width_norm * ax1_pos(3), ...
+                                 inset_height_norm * ax1_pos(4)];
+
+                inset_ax = axes('Position', inset_pos);
+                scatter(obj.particles(1, :), obj.particles(2, :), 15, obj.weights, ...
+                    'filled', 'MarkerFaceAlpha', 0.7);
+                hold on
+                plot(mean_state(1), mean_state(2), 'ro', 'MarkerSize', 8, 'LineWidth', 2);
+
+                % Add covariance ellipses to inset
+                ellipse_1sigma = obj.computeCovarianceEllipse(mean_state(1:2), pos_cov, 1);
+                plot(ellipse_1sigma(1, :), ellipse_1sigma(2, :), 'w-', 'LineWidth', 1.5);
+
+                ellipse_3sigma = obj.computeCovarianceEllipse(mean_state(1:2), pos_cov, 3);
+                plot(ellipse_3sigma(1, :), ellipse_3sigma(2, :), 'w:', 'LineWidth', 1.5);
+
+                if ~isempty(true_state)
+                    plot(true_state(1), true_state(2), 'd', 'Color', 'm', ...
+                        'MarkerSize', 6, 'LineWidth', 1.5, 'MarkerFaceColor', 'm');
+                end
+
+                plot(current_meas(1), current_meas(2), '+', 'Color', [1 0.5 0], ...
+                    'MarkerSize', 8, 'LineWidth', 2);
+
+                xlim([current_meas(1) - 0.3, current_meas(1) + 0.3]);
+                ylim([current_meas(2) - 0.3, current_meas(2) + 0.3]);
+                axis square;
+                set(inset_ax, 'FontSize', 8, 'Box', 'on', 'XTick', [], 'YTick', []);
+
+                % Store inset handle for later use
+                inset_handle = inset_ax;
+
+                % Return focus to main subplot
+                axes(ax1);
+            end
+
+            % Subplot 2: Velocity estimates (if state dimension >= 4)
+            if obj.N_x >= 4
+                subplot(1, 3, 2);
+                cla;
+
+                scatter(obj.particles(3, :), obj.particles(4, :), 20, obj.weights, ...
+                    'filled', 'MarkerFaceAlpha', 0.6);
+                hold on
+                plot(mean_state(3), mean_state(4), 'ro', 'MarkerSize', 10, 'LineWidth', 3, ...
+                    'DisplayName', 'PF Estimate');
+
+                % Plot velocity covariance ellipses
+                vel_cov = state_cov(3:4, 3:4); % Velocity covariance
+                ellipse_1sigma_vel = obj.computeCovarianceEllipse(mean_state(3:4), vel_cov, 1);
+                plot(ellipse_1sigma_vel(1, :), ellipse_1sigma_vel(2, :), 'w-', 'LineWidth', 2, ...
+                    'DisplayName', '1\sigma Covariance');
+
+                ellipse_3sigma_vel = obj.computeCovarianceEllipse(mean_state(3:4), vel_cov, 3);
+                plot(ellipse_3sigma_vel(1, :), ellipse_3sigma_vel(2, :), 'w:', 'LineWidth', 2, ...
+                    'DisplayName', '3\sigma Covariance');
+
+                if ~isempty(true_state) && length(true_state) >= 4
+                    plot(true_state(3), true_state(4), 'd', 'Color', 'm', ...
+                        'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'm', ...
+                        'DisplayName', 'True Velocity');
+                end
+
+                title('Velocity', 'Interpreter', 'latex');
+                xlabel('V_x (m/s)'), ylabel('V_y (m/s)');
+                axis square;
+                legend('Location', 'northwest');
+            end
+
+            % Subplot 3: Acceleration estimates (if state dimension >= 6)
+            if obj.N_x >= 6
+                subplot(1, 3, 3);
+                cla;
+
+                scatter(obj.particles(5, :), obj.particles(6, :), 20, obj.weights, ...
+                    'filled', 'MarkerFaceAlpha', 0.6);
+                hold on
+                plot(mean_state(5), mean_state(6), 'ro', 'MarkerSize', 10, 'LineWidth', 3, ...
+                    'DisplayName', 'PF Estimate');
+
+                % Plot acceleration covariance ellipses
+                acc_cov = state_cov(5:6, 5:6); % Acceleration covariance
+                ellipse_1sigma_acc = obj.computeCovarianceEllipse(mean_state(5:6), acc_cov, 1);
+                plot(ellipse_1sigma_acc(1, :), ellipse_1sigma_acc(2, :), 'w-', 'LineWidth', 2, ...
+                    'DisplayName', '1\sigma Covariance');
+
+                ellipse_3sigma_acc = obj.computeCovarianceEllipse(mean_state(5:6), acc_cov, 3);
+                plot(ellipse_3sigma_acc(1, :), ellipse_3sigma_acc(2, :), 'w:', 'LineWidth', 2, ...
+                    'DisplayName', '3\sigma Covariance');
+
+                if ~isempty(true_state) && length(true_state) >= 6
+                    plot(true_state(5), true_state(6), 'd', 'Color', 'm', ...
+                        'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'm', ...
+                        'DisplayName', 'True Acceleration');
+                end
+
+                title('Acceleration', 'Interpreter', 'latex');
+                xlabel('A_x (m/s^2)'), ylabel('A_y (m/s^2)');
+                axis square;
+                legend('Location', 'northwest');
+            end
+
+            % Add main title with filter name, timestep, and effective sample size
+            filter_name = strrep(class(obj), '_', '\_'); % Fix LaTeX typesetting
+
+            if contains(title_str, 'Step')
+                % Extract step number from title_str
+                step_match = regexp(title_str, 'Step (\d+)', 'tokens');
+
+                if ~isempty(step_match)
+                    step_num = step_match{1}{1};
+                    main_title = sprintf('%s - Timestep %s (ESS: %.1f)', filter_name, step_num, eff_sample_size);
+                else
+                    main_title = sprintf('%s (ESS: %.1f)', filter_name, eff_sample_size);
+                end
+
+            else
+                main_title = sprintf('%s (ESS: %.1f)', filter_name, eff_sample_size);
+            end
+
+            sgtitle(main_title, 'FontSize', 14, 'FontWeight', 'bold', 'Interpreter', 'latex');
+
+            % Add colorbar spanning reduced height on the right
+            if obj.N_x >= 4 % Only add colorbar if we have multiple subplots
+                cb = colorbar('Position', [0.92, 0.25, 0.02, 0.5]);
+                cb.Label.String = 'Particle Weight';
+                cb.Label.Interpreter = 'latex';
+            end
+
+            % Bring inset axes to front if it exists
+            if exist('inset_handle', 'var') && isvalid(inset_handle)
+                uistack(inset_handle, 'top');
+            end
+
+        end
+
+        function ellipse_points = computeCovarianceEllipse(obj, mean_pos, cov_matrix, n_sigma)
+            % COMPUTECOVARIANCEELLIPSE Compute points for covariance ellipse
+            %
+            % SYNTAX:
+            %   ellipse_points = obj.computeCovarianceEllipse(mean_pos, cov_matrix, n_sigma)
+            %
+            % INPUTS:
+            %   mean_pos    - Mean position [2x1]
+            %   cov_matrix  - Covariance matrix [2x2]
+            %   n_sigma     - Number of standard deviations (1 for 1σ, 3 for 3σ)
+            %
+            % OUTPUTS:
+            %   ellipse_points - Points defining the ellipse [2xN]
+            %
+            % DESCRIPTION:
+            %   Computes ellipse points using eigenvalue decomposition of the
+            %   covariance matrix to handle arbitrary orientation and scaling.
+
+            % Number of points for smooth ellipse
+            n_points = 100;
+            theta = linspace(0, 2 * pi, n_points);
+
+            % Unit circle points
+            unit_circle = [cos(theta); sin(theta)];
+
+            % Eigenvalue decomposition of covariance matrix
+            [eigvec, eigval] = eig(cov_matrix);
+
+            % Ensure positive eigenvalues (numerical stability)
+            eigval = max(eigval, eps);
+
+            % Scale by n_sigma and square root of eigenvalues
+            scaling = n_sigma * sqrt(eigval);
+
+            % Transform unit circle to ellipse
+            ellipse_centered = eigvec * scaling * unit_circle;
+
+            % Translate to mean position
+            ellipse_points = ellipse_centered + mean_pos;
+        end
 
     end
 

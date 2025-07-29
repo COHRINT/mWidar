@@ -11,10 +11,25 @@ function setDefaultPlotSettings()
 
 %% Plotting settings
 
-% LaTeX interpreter for text
+% LaTeX interpreter for text - comprehensive coverage
 set(0, 'DefaultTextInterpreter', 'latex');
 set(0, 'DefaultAxesTickLabelInterpreter', 'latex');
 set(0, 'DefaultLegendInterpreter', 'latex');
+set(0, 'DefaultColorbarTickLabelInterpreter', 'latex');
+set(0, 'DefaultAxesLabelFontSizeMultiplier', 1.0);
+set(0, 'DefaultAxesTitleFontSizeMultiplier', 1.1);
+
+% These are the key missing ones for title(), xlabel(), ylabel()
+try
+    set(0, 'DefaultAxesTitleInterpreter', 'latex');
+    set(0, 'DefaultAxesXLabelInterpreter', 'latex');
+    set(0, 'DefaultAxesYLabelInterpreter', 'latex');
+    set(0, 'DefaultAxesZLabelInterpreter', 'latex');
+catch
+    % For older MATLAB versions, these properties might not exist
+    fprintf('Warning: Some LaTeX interpreter defaults not supported in this MATLAB version.\n');
+    fprintf('You may need to specify ''Interpreter'', ''latex'' manually for titles and labels.\n');
+end
 
 % Default figure properties
 set(0, 'DefaultFigureColor', 'w'); % White background
