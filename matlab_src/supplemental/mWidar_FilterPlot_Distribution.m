@@ -1,10 +1,16 @@
-function [] = mWidar_FilterPlot_Distribution(Filter, Data, tvec, filter_type, gif_path)
+function [] = mWidar_FilterPlot_Distribution(Filter, Data, tvec, filter_type, validation_sigma, gif_path)
 
     %%%%%%% mWidar_FilterPlot_Distribution %%%%%%%%%%%%%%%
 %{
 
 Given a Filter Struct, Data struct from trajectory data, and filter type, 
-function will plot the trajectory over the mWidar image alongside the 
+function will plot the trajectory over the mWidar imag                % Plot 1-sigma ellipse (solid black)
+                [Xellip1, Yellip1] = calc_gsigma_ellipse_plotpoints(muin, innovCov, 1, 100);
+                h3 = plot(Xellip1, Yellip1, 'k-', 'LineWidth', 2);
+                
+                % Plot validation region ellipse (dotted black) - use validation_sigma parameter
+                [Xellip2, Yellip2] = calc_gsigma_ellipse_plotpoints(muin, innovCov, validation_sigma, 100);
+                h5 = plot(Xellip2, Yellip2, 'k:', 'LineWidth', 2);side the 
 filter-specific distribution visualization.
 
 INPUTS:
@@ -12,6 +18,7 @@ Filter - Struct containing all the relevant filter data
 Data - Data struct with GT, signal, and measurements
 tvec - time vector
 filter_type - String: 'KF', 'HMM', or 'HybridPF'
+validation_sigma - (optional) Number of sigma bounds for validation region (default: 2)
 gif_path - (optional) String path to save GIF animation. If empty or not provided, no GIF is saved.
 
 LEFT SUBPLOT: Current mWidar signal with true target, mean estimate, 
@@ -25,11 +32,16 @@ RIGHT SUBPLOT: Filter-specific distribution:
 
     % Validate inputs
     if nargin < 4
-        error('Usage: mWidar_FilterPlot_Distribution(Filter, Data, tvec, filter_type, [gif_path])');
+        error('Usage: mWidar_FilterPlot_Distribution(Filter, Data, tvec, filter_type, [validation_sigma], [gif_path])');
+    end
+    
+    % Handle optional validation_sigma parameter
+    if nargin < 5 || isempty(validation_sigma)
+        validation_sigma = 2; % Default to 2-sigma validation region
     end
     
     % Handle optional gif_path parameter
-    if nargin < 5 || isempty(gif_path)
+    if nargin < 6 || isempty(gif_path)
         save_gif = false;
         gif_path = '';
     else
@@ -52,14 +64,21 @@ RIGHT SUBPLOT: Filter-specific distribution:
     y = Data.y; % Filtered measurements (for filter processing)
     
     % Get original measurements and filtering info for visualization
-    if isfield(Data, 'y_original') && isfield(Data, 'y_filtered_indices')
+    % Check if measurements are stored in Filter performance data (preferred)
+    if isfield(Filter{1}, 'measurements_original') && isfield(Filter{1}, 'measurements_used')
+        % Use measurements from performance data
+        show_filtering = true;
+        fprintf('Using measurement data from performance structure\n');
+    elseif isfield(Data, 'y_original') && isfield(Data, 'y_filtered_indices')
+        % Fallback to Data structure
         y_original = Data.y_original; % All original measurements
         filtered_indices = Data.y_filtered_indices; % Which ones were kept
         show_filtering = true;
+        fprintf('Using measurement data from Data structure\n');
     else
-        y_original = y; % Fallback to filtered measurements
-        filtered_indices = [];
+        % Fallback: use measurements from Data.y and treat as both original and used
         show_filtering = false;
+        fprintf('No filtering information available - using basic measurement display\n');
     end
 
     n_k = size(GT, 2); % # of timesteps
@@ -84,14 +103,28 @@ RIGHT SUBPLOT: Filter-specific distribution:
             end
             
         case 'HMM'
-            % HMM data is probability distributions
-            % Filter{k} should contain the probability distribution
-            % We'll extract the mean and covariance for consistency
+            % HMM data - handle both old and new data structures
             X = zeros(2, n_k); % Position only for HMM
             pxyvec = [pxgrid(:), pygrid(:)];
             
             for k = 1:n_k
-                prob_dist = Filter{k};
+                % Check if Filter{k} is a struct with fields (new format) or direct probability distribution (old format)
+                if isstruct(Filter{k}) && isfield(Filter{k}, 'posterior_prob')
+                    % New format: performance structure with probability fields
+                    if ~isempty(Filter{k}.posterior_prob)
+                        prob_dist = Filter{k}.posterior_prob;
+                    elseif ~isempty(Filter{k}.prior_prob)
+                        prob_dist = Filter{k}.prior_prob;
+                    else
+                        error('No probability distribution found in Filter{%d}', k);
+                    end
+                elseif isnumeric(Filter{k})
+                    % Old format: direct probability distribution
+                    prob_dist = Filter{k};
+                else
+                    error('Invalid HMM data format in Filter{%d}', k);
+                end
+                
                 % Compute mean position from probability distribution
                 X(:, k) = sum(pxyvec .* repmat(prob_dist, [1, 2]), 1)';
             end
@@ -125,36 +158,49 @@ RIGHT SUBPLOT: Filter-specific distribution:
         %% LEFT SUBPLOT: mWidar Signal with Estimates
         subplot(1, 2, 1); cla; hold on; grid on;
         
+        % Set light gray background
+        set(gca, 'Color', [0.94, 0.94, 0.94]);
+        
         % Plot the mWidar signal as 2D image instead of 3D surf
         imagesc(xgrid, ygrid, sim_signal{k} / (max(max(sim_signal{k}))));
         set(gca, 'YDir', 'normal');
         colormap('parula');
         
-        % Plot true target location (2D)
-        plot(GT(1, k), GT(2, k), 'mx', 'MarkerSize', 10, 'LineWidth', 3);
+        % Plot true target location (magenta diamond)
+        plot(GT(1, k), GT(2, k), 'd', 'Color', 'm', 'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'm');
         
-        % Plot detections (2D instead of 3D scatter)
-        if show_filtering && ~isempty(y_original{k})
-            % Plot all original measurements in light red (rejected)
-            scatter(y_original{k}(1, :), y_original{k}(2, :), 30, [1 0.7 0.7], '*');
+                % Plot detections with improved color scheme
+        if show_filtering && isfield(Filter{k}, 'measurements_original')
+            % Use measurements from performance data
+            if ~isempty(Filter{k}.measurements_original)
+                % Plot all original measurements (orange +)
+                scatter3(Filter{k}.measurements_original(1, :), Filter{k}.measurements_original(2, :), ...
+                    ones(size(Filter{k}.measurements_original, 2), 1), 30, [1 0.5 0], '+', 'LineWidth', 2);
+            end
             
-            % Plot filtered (kept) measurements in bright red on top
+            % Plot used measurements (red +) on top
+            if isfield(Filter{k}, 'measurements_used') && ~isempty(Filter{k}.measurements_used)
+                scatter3(Filter{k}.measurements_used(1, :), Filter{k}.measurements_used(2, :), ...
+                    ones(size(Filter{k}.measurements_used, 2), 1), 50, 'r', '+', 'LineWidth', 2);
+            end
+        elseif show_filtering && ~isempty(y_original{k})
+            % Fallback: use Data structure measurements
+            % Plot all original measurements (orange +)
+            scatter3(y_original{k}(1, :), y_original{k}(2, :), ones(size(y_original{k}, 2), 1), 30, [1 0.5 0], '+', 'LineWidth', 2);
+            
+            % Plot filtered (used) measurements (red +) on top
             if ~isempty(y{k})
-                scatter(y{k}(1, :), y{k}(2, :), 50, '*r');
+                scatter3(y{k}(1, :), y{k}(2, :), ones(size(y{k}, 2), 1), 50, 'r', '+', 'LineWidth', 2);
             end
         else
-            % Fallback: just plot the measurements we have
+            % Fallback: just plot the measurements we have (red +)
             if ~isempty(y{k})
-                scatter(y{k}(1, :), y{k}(2, :), 50, '*r');
+                scatter(y{k}(1, :), y{k}(2, :), 50, 'r', '+', 'LineWidth', 2);
             end
         end
         
-        % Plot mean estimate (2D)
-        if strcmp(filter_type, 'HMM')
-            plot(X(1, k), X(2, k), 'ms', 'MarkerSize', 12, 'LineWidth', 1.2);
-        else
-            plot(X(1, k), X(2, k), 'ms', 'MarkerSize', 12, 'LineWidth', 1.2);
-        end
+        % Plot mean estimate (red circle)
+        plot(X(1, k), X(2, k), 'ro', 'MarkerSize', 10, 'LineWidth', 3);
         
         % Plot covariance ellipses (2D instead of 3D)
         if strcmp(filter_type, 'KF')
@@ -162,41 +208,34 @@ RIGHT SUBPLOT: Filter-specific distribution:
             innovCov = [P{k}(1, 1) P{k}(1, 2); P{k}(2, 1) P{k}(2, 2)];
             muin = X(1:2, k);
             
-            % Plot 1-sigma ellipse (68% confidence)
+            % Plot 1-sigma ellipse (solid black)
             [Xellip1, Yellip1] = calc_gsigma_ellipse_plotpoints(muin, innovCov, 1, 100);
-            plot(Xellip1, Yellip1, '--k', 'LineWidth', 2);
+            plot(Xellip1, Yellip1, 'k-', 'LineWidth', 2);
             
-            % Plot 2-sigma ellipse (95% confidence)
-            [Xellip2, Yellip2] = calc_gsigma_ellipse_plotpoints(muin, innovCov, 2, 100);
-            plot(Xellip2, Yellip2, ':k', 'LineWidth', 1.5);
+            % Plot validation region ellipse (dotted black) - use validation_sigma parameter
+            [Xellip2, Yellip2] = calc_gsigma_ellipse_plotpoints(muin, innovCov, validation_sigma, 100);
+            plot(Xellip2, Yellip2, 'k:', 'LineWidth', 2);
             
         elseif strcmp(filter_type, 'HybridPF')
             % Use precomputed position covariance
             innovCov = [P{k}(1, 1) P{k}(1, 2); P{k}(2, 1) P{k}(2, 2)];
             muin = X(1:2, k);
             
-            % Plot 1-sigma ellipse (68% confidence)
+            % Plot 1-sigma ellipse (solid black)
             [Xellip1, Yellip1] = calc_gsigma_ellipse_plotpoints(muin, innovCov, 1, 100);
-            plot(Xellip1, Yellip1, '--k', 'LineWidth', 2);
+            plot(Xellip1, Yellip1, 'k-', 'LineWidth', 2);
             
-            % Plot 2-sigma ellipse (95% confidence)
-            [Xellip2, Yellip2] = calc_gsigma_ellipse_plotpoints(muin, innovCov, 2, 100);
-            plot(Xellip2, Yellip2, ':k', 'LineWidth', 1.5);
+            % Plot validation region ellipse (dotted black) - use validation_sigma parameter
+            [Xellip2, Yellip2] = calc_gsigma_ellipse_plotpoints(muin, innovCov, validation_sigma, 100);
+            plot(Xellip2, Yellip2, 'k:', 'LineWidth', 2);
         end
         
         xlim([-2 2]);
         ylim([0 4]);
-        title(['mWidar Signal @ k=', num2str(k)], 'Interpreter', 'latex');
+        title('Position', 'Interpreter', 'latex');
         xlabel('X (m)', 'Interpreter', 'latex');
         ylabel('Y (m)', 'Interpreter', 'latex');
         axis square;
-        
-        % Add legend for left subplot
-        if show_filtering
-            legend('mWidar Signal', 'True Target', 'Rejected Measurements', 'Valid Measurements', 'Filter Estimate', 'Location', 'northeast', 'Interpreter', 'latex');
-        else
-            legend('mWidar Signal', 'True Target', 'Measurements', 'Filter Estimate', 'Location', 'northeast', 'Interpreter', 'latex');
-        end
         
         %% RIGHT SUBPLOT: Filter-Specific Distribution
         subplot(1, 2, 2); cla; hold on; grid on;
@@ -245,7 +284,23 @@ RIGHT SUBPLOT: Filter-specific distribution:
                 
             case 'HMM'
                 % Plot full probability distribution as heatmap
-                prob_dist = Filter{k};
+                % Handle both old and new data structures (same logic as above)
+                if isstruct(Filter{k}) && isfield(Filter{k}, 'posterior_prob')
+                    % New format: performance structure with probability fields
+                    if ~isempty(Filter{k}.posterior_prob)
+                        prob_dist = Filter{k}.posterior_prob;
+                    elseif ~isempty(Filter{k}.prior_prob)
+                        prob_dist = Filter{k}.prior_prob;
+                    else
+                        error('No probability distribution found in Filter{%d} for plotting', k);
+                    end
+                elseif isnumeric(Filter{k})
+                    % Old format: direct probability distribution
+                    prob_dist = Filter{k};
+                else
+                    error('Invalid HMM data format in Filter{%d} for plotting', k);
+                end
+                
                 prob_2d = reshape(prob_dist, [npx, npx]);
                 
                 imagesc(xgrid, ygrid, prob_2d);
@@ -265,37 +320,52 @@ RIGHT SUBPLOT: Filter-specific distribution:
                 legend([h1, h2], 'HMM Mean Estimate', 'True Position', 'Location', 'northeast', 'Interpreter', 'latex');
                 
             case 'HybridPF'
+                % Set light gray background
+                set(gca, 'Color', [0.94, 0.94, 0.94]);
+                
                 % Plot all particles colored by weights (position only)
                 particles = particles_hist{k};
                 weights = weights_hist{k};
                 
-                % Plot particles using weights directly (no normalization)
+                % Determine colorbar bounds based on weight distribution
+                uniform_threshold = 1e-6; % Threshold for considering weights uniform
+                weight_range = max(weights) - min(weights);
+                uniform_weight = 1 / length(weights);
+                
+                if weight_range < uniform_threshold
+                    % Weights are uniform - set bounds to [0, 2/N_p] for better visibility
+                    colorbar_min = 0;
+                    colorbar_max = 2 * uniform_weight;
+                else
+                    % Weights are not uniform - set bounds to [0, max(weight)]
+                    colorbar_min = 0;
+                    colorbar_max = max(weights);
+                end
+                
+                % Plot particles using weights with dynamic colorbar bounds
                 h1 = scatter(particles(1, :), particles(2, :), 20, weights, 'filled', 'MarkerFaceAlpha', 0.6);
-                colormap('parula');
+                caxis([colorbar_min, colorbar_max]); % Set consistent color limits
                 colorbar;
                 
-                % Overlay mean estimate
-                h2 = plot(X(1, k), X(2, k), 'ro', 'MarkerSize', 10, 'MarkerFaceColor', 'r', 'LineWidth', 2);
+                % Overlay mean estimate (red circle)
+                h2 = plot(X(1, k), X(2, k), 'ro', 'MarkerSize', 10, 'LineWidth', 3);
                 
                 % Plot covariance ellipses using precomputed covariance
                 innovCov = [P{k}(1, 1) P{k}(1, 2); P{k}(2, 1) P{k}(2, 2)];
                 muin = X(1:2, k);
                 
-                % Plot 1-sigma ellipse
+                % Plot 1-sigma ellipse (solid black)
                 [Xellip1, Yellip1] = calc_gsigma_ellipse_plotpoints(muin, innovCov, 1, 100);
-                h3 = plot(Xellip1, Yellip1, '--k', 'LineWidth', 2);
+                h3 = plot(Xellip1, Yellip1, 'k-', 'LineWidth', 2);
                 
-                % Plot 2-sigma ellipse
+                % Plot validation region ellipse (dotted black)
                 [Xellip2, Yellip2] = calc_gsigma_ellipse_plotpoints(muin, innovCov, 2, 100);
-                h5 = plot(Xellip2, Yellip2, ':k', 'LineWidth', 1.5);
+                h5 = plot(Xellip2, Yellip2, 'k:', 'LineWidth', 2);
                 
-                % Plot true position for reference
-                h4 = plot(GT(1, k), GT(2, k), 'mx', 'MarkerSize', 10, 'LineWidth', 3);
+                % Plot true position for reference (magenta diamond)
+                h4 = plot(GT(1, k), GT(2, k), 'd', 'Color', 'm', 'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'm');
                 
-                title('Hybrid PF: Particles + Mean + Covariance', 'Interpreter', 'latex');
-                
-                % Add legend for right subplot
-                legend([h1, h2, h3, h5, h4], 'Particles (by weight)', 'PF Mean Estimate', '1$\sigma$ Ellipse', '2$\sigma$ Ellipse', 'True Position', 'Location', 'northeast', 'Interpreter', 'latex');
+                title('Particles', 'Interpreter', 'latex');
         end
         
         xlim([-2 2]);

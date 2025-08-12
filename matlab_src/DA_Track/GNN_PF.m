@@ -12,6 +12,7 @@ classdef GNN_PF < DA_Filter
     %   particles, weights   - Particle filter state [N_x x N_p], [N_p x 1]
     %   F, Q, H             - System model matrices
     %   pointlikelihood_image - Precomputed likelihood lookup table
+    %   PD, PFA             - Detection model parameters (detection probability, false alarm probability)
     %   debug, validate     - Control flags for debugging and validation
     %
     % METHODS:
@@ -53,6 +54,13 @@ classdef GNN_PF < DA_Filter
         % Validation Parameters
         validation_sigma_bounds = 2 % Number of sigma bounds for measurement gating (default: 2)
 
+        % Detection Model Parameters
+        PD = 0.9 % Detection probability (probability of detecting true target)
+        PFA = 0.1 % False alarm probability (probability of false measurement)
+        
+        % Resampling Parameters
+        ESS_threshold_percentage = 0.95 % ESS threshold for resampling (default 95% - behaves like bootstrap)
+
         % Dynamic Plotting (inherited from DA_Filter)
         dynamic_figure_handle % Figure handle for dynamic plotting
     end
@@ -82,7 +90,8 @@ classdef GNN_PF < DA_Filter
             % DESCRIPTION:
             %   Creates and initializes a GNN particle filter with uniform particle
             %   distribution around the initial state. Uses provided likelihood
-            %   table for hybrid filtering applications.
+            %   table for hybrid filtering applications. Detection model uses default
+            %   values: PD = 0.9 (detection probability), PFA = 0.1 (false alarm probability).
             %
             % NOTE:
             %   Load likelihood table in calling script using:
@@ -169,15 +178,16 @@ classdef GNN_PF < DA_Filter
             %
             % DESCRIPTION:
             %   Executes one timestep of the GNN-PF algorithm including:
-            %   0. Initialization - Resample particles if weights are non-uniform
             %   1. Prediction Step - Propagate particles through dynamics model
             %   2. Validation Step - Gate measurements using particle estimate
             %   3. Data Association Step - Select best measurement using GNN
             %   4. Measurement Update - Update particle weights using selected measurement
-            %   5. Visualization - Update dynamic plot if enabled
+            %   5. Resampling Step - Sequential Importance Resampling (SIR) based on ESS threshold
+            %   6. Visualization - Update dynamic plot if enabled
             %
             % ALGORITHM NOTES:
-            %   - Resampling only occurs if weights are non-uniform
+            %   - Uses Sequential Importance Resampling (SIR) with ESS threshold
+            %   - Resampling occurs at END of timestep based on ESS threshold
             %   - Gating uses configurable sigma bounds based on current state estimate
             %   - GNN selects single best measurement based on likelihood comparison
             %   - Supports optional real-time visualization
@@ -197,22 +207,6 @@ classdef GNN_PF < DA_Filter
                 end
 
                 fprintf('------------------------------\n');
-            end
-
-            % Step 0: Initialization
-            % Resample the particles if necessary (only if weights are not uniform)
-            % This will only NOT be called if
-            %    1) This is the first timestep (weights are uniform by default)
-            %    2) The weights are already uniform (no measurement updates yet)
-            if any(obj.weights ~= 1 / length(obj.weights))
-                % print effective sample size
-                ESS = 1 / sum(obj.weights .^ 2);
-
-                if obj.debug
-                    fprintf('[RESAMPLING] ESS: %.2f, resampling particles...\n', ESS);
-                end
-
-                obj.resample();
             end
 
             % Step 1: Prediction Step
@@ -244,6 +238,29 @@ classdef GNN_PF < DA_Filter
 
             % Step 4: Measurement Update Step
             obj.measurement_update(selected_measurement);
+
+            % Step 5: Sequential Importance Resampling (SIR) based on ESS threshold
+            ESS = 1 / sum(obj.weights .^ 2);
+            ESS_percentage = ESS / obj.N_p;
+            
+            if ESS_percentage < obj.ESS_threshold_percentage
+                if obj.debug
+                    fprintf('\n');
+                    fprintf('╔═══════════════════════════════════════╗\n');
+                    fprintf('║           RESAMPLING EVENT            ║\n');
+                    fprintf('║  ESS: %6.1f/%d (%.1f%%)             ║\n', ESS, obj.N_p, 100*ESS_percentage);
+                    fprintf('║  Threshold: %.1f%%                     ║\n', 100*obj.ESS_threshold_percentage);
+                    fprintf('║  Action: Systematic resampling        ║\n');
+                    fprintf('╚═══════════════════════════════════════╝\n');
+                end
+                
+                obj.resample();
+            else
+                if obj.debug
+                    fprintf('[SIR] ESS: %.1f/%d (%.1f%%) >= %.1f%% threshold - no resampling\n', ...
+                        ESS, obj.N_p, 100*ESS_percentage, 100*obj.ESS_threshold_percentage);
+                end
+            end
 
             if obj.debug
                 [x_est, P_est] = obj.getGaussianEstimate();
@@ -427,66 +444,70 @@ classdef GNN_PF < DA_Filter
                 fprintf('[GNN DATA ASSOCIATION] Selecting best from %d measurements\n', N_measurements);
             end
 
-            % TODO: Implement proper GNN cost function
-            % For now, use a simple approach based on likelihood comparison
-            
-            % Check if likelihood image is available for proper cost computation
+            % IF likelihood image is available, use it for selection
             if isempty(obj.pointlikelihood_image)
                 % Fallback: Select measurement closest to predicted position
+                fprintf('[GNN] No likelihood data available - using fallback selection method\n');
+
                 [x_est, ~] = obj.getGaussianEstimate();
                 predicted_pos = x_est(1:2); % Position only
-                
+
                 distances = zeros(1, N_measurements);
+
                 for i = 1:N_measurements
                     distances(i) = norm(z_valid(:, i) - predicted_pos);
                 end
-                
+
                 [~, best_idx] = min(distances);
                 selected_measurement = z_valid(:, best_idx);
-                
+
                 if obj.debug
                     fprintf('[GNN] Selected measurement %d (closest to prediction): [%.3f, %.3f]\n', ...
                         best_idx, selected_measurement(1), selected_measurement(2));
                 end
-                
+
                 return;
             end
 
-            % TODO: Implement proper likelihood-based or cost-based selection
+            % Multiple measurements case -- j_opt = argmax_j w_j(z_j | x_est)  
             % Option 1: Maximum likelihood approach
             % - Compute weight update for each measurement individually
             % - Select measurement that maximizes total likelihood
-            
+
             % Option 2: Minimum cost approach (Mahalanobis distance)
             % - Compute innovation covariance S for current estimate
             % - Calculate Mahalanobis distance: (z - z_hat)' * S^(-1) * (z - z_hat)
             % - Select measurement with minimum distance
-            
-            % Option 3: Information-theoretic approach
+
+            % Option 3: Information-theoretic approach 
             % - Compute expected information gain for each measurement
             % - Select measurement that maximizes information gain
-            
-            % For now, use maximum likelihood approach using existing infrastructure
-            weight_updates = obj.computeIndividualWeightUpdates(z_valid);
-            
-            % Compute total likelihood for each measurement (sum of all particle weights)
-            total_likelihoods = zeros(1, N_measurements);
-            for i = 1:N_measurements
-                total_likelihoods(i) = sum(weight_updates{i});
-            end
-            
-            % Select measurement with maximum total likelihood
-            [max_likelihood, best_idx] = max(total_likelihoods);
-            selected_measurement = z_valid(:, best_idx);
+            % TODO: Discuss this with Nisar
 
-            if obj.debug
-                fprintf('[GNN] Measurement likelihoods: [');
-                for i = 1:N_measurements
-                    fprintf('%.4f ', total_likelihoods(i));
+            % PDA -- choose maximum p(y|a) 
+            normalization_constants = obj.computeNormalizationConstants(z_valid);
+            N_measurements = size(z_valid, 2);
+            
+            % Find best hypothesis (measurements + clutter)
+            [~, best_idx] = max(normalization_constants);
+            
+            % If best index is within measurement range, select that measurement
+            % Otherwise (best_idx > N_measurements), it's clutter - return empty
+            if best_idx <= N_measurements
+                selected_measurement = z_valid(:, best_idx);
+                
+                if obj.debug
+                    fprintf('[GNN] Selected measurement %d (constant %.4f): [%.3f, %.3f]\n', ...
+                        best_idx, normalization_constants(best_idx), selected_measurement(1), selected_measurement(2));
                 end
-                fprintf(']\n');
-                fprintf('[GNN] Selected measurement %d (max likelihood %.4f): [%.3f, %.3f]\n', ...
-                    best_idx, max_likelihood, selected_measurement(1), selected_measurement(2));
+            else
+                % Clutter hypothesis wins - missed detection
+                selected_measurement = [];
+                
+                if obj.debug
+                    fprintf('[GNN] Clutter hypothesis wins (constant %.4f) - missed detection\n', ...
+                        normalization_constants(end));
+                end
             end
 
         end
@@ -544,26 +565,28 @@ classdef GNN_PF < DA_Filter
                 fprintf('  Selected meas: [%.3f, %.3f] -> ', z(1), z(2));
             end
 
-            % Get likelihood for the selected measurement
-            likelihood_meas = obj.likelihoodLookup(z);
-
-            % Apply Gaussian weighting for the selected measurement
-            sf = 0.15;
-            dx = obj.particles(1, :) - z(1); % [1 x N_p]
-            dy = obj.particles(2, :) - z(2); % [1 x N_p]
-            dist_sq = dx .^ 2 + dy .^ 2; % [1 x N_p]
-            gauss_weights = exp(-dist_sq / (2 * sf ^ 2)); % [1 x N_p]
-
-            % Apply Gaussian weighting
-            likelihood_total = likelihood_meas .* gauss_weights';
+            % Compute weights using helper method
+            likelihood_total = obj.computeWeightsForMeasurement(z);
 
             if obj.debug
+                fprintf('[WEIGHT UPDATE] Applied detection model: PD=%.2f, likelihood computed\n', obj.PD);
                 fprintf('[GAUSSIAN MASK] Applied around selected measurement [%.3f, %.3f]\n', z(1), z(2));
             end
 
-            % Final weight update and normalization
-            new_weights = likelihood_total + eps;
-            obj.weights = new_weights / sum(new_weights);
+            % SIR weight update: multiply previous weights by likelihood
+            obj.weights = obj.weights .* likelihood_total;
+            
+            % Normalize weights
+            weight_sum = sum(obj.weights);
+            if weight_sum > 0
+                obj.weights = obj.weights / weight_sum;
+            else
+                % Handle degenerate case
+                obj.weights = ones(obj.N_p, 1) / obj.N_p;
+                if obj.debug
+                    fprintf('[WARNING] Degenerate weights detected, reset to uniform\n');
+                end
+            end
 
             % Debug: Print final weight stats
             if obj.debug
@@ -573,24 +596,27 @@ classdef GNN_PF < DA_Filter
 
         end
 
-        function weight_updates = computeIndividualWeightUpdates(obj, z)
-            % COMPUTEINDIVIDUALWEIGHTUPDATES Compute separate weight updates for each measurement (for GNN)
+        function normalization_constants = computeNormalizationConstants(obj, z)
+            % COMPUTENORMALIZATIONCONSTANTS Compute normalization constants for each measurement hypothesis (for GNN)
             %
             % SYNTAX:
-            %   weight_updates = obj.computeIndividualWeightUpdates(z)
+            %   normalization_constants = obj.computeNormalizationConstants(z)
             %
             % INPUTS:
             %   z - Current measurements [N_z x N_measurements]
             %
             % OUTPUTS:
-            %   weight_updates - Cell array of weight updates for each measurement
-            %                   weight_updates{i} contains [N_p x 1] weights for measurement i
-            %                   weight_updates{end} contains clutter weights (uniform)
+            %   normalization_constants - Vector of normalization constants [N_measurements + 1 x 1]
+            %                           normalization_constants(i) = sum_p w_p^(i) for measurement i
+            %                           normalization_constants(end) = clutter hypothesis constant
             %
             % DESCRIPTION:
-            %   Computes individual normalized weight updates for each measurement separately.
-            %   Used by GNN algorithm to compare and select the best measurement association.
-            %   Each weight update includes both likelihood lookup and Gaussian weighting.
+            %   Computes normalization constants for GNN data association by calculating
+            %   the sum of particle weights for each measurement hypothesis separately.
+            %   Uses proper detection model:
+            %   - Weight hypothesis: PD * p(y|x) / N_p
+            %   - Clutter hypothesis: (1-PD) * PFA / N_p
+            %   The highest normalization constant corresponds to the best association.
             %
             % See also measurement_update, likelihoodLookup, Data_Association
 
@@ -601,40 +627,33 @@ classdef GNN_PF < DA_Filter
             end
 
             N_measurements = size(z, 2);
-            weight_updates = cell(N_measurements + 1, 1); % +1 for clutter
+            normalization_constants = zeros(N_measurements + 1, 1); % +1 for clutter
 
-            % Compute weight update for each measurement individually
+            % Compute normalization constant for each measurement individually
             for i = 1:N_measurements
-                % Get likelihood for this measurement
-                likelihood_i = obj.likelihoodLookup(z(:, i));
+                % Compute weights using helper method
+                weight_updates_i = obj.computeWeightsForMeasurement(z(:, i));
 
-                % Apply Gaussian weighting for this specific measurement
-                sf = 0.15;
-                dx = obj.particles(1, :) - z(1, i); % [1 x N_p]
-                dy = obj.particles(2, :) - z(2, i); % [1 x N_p]
-                dist_sq = dx .^ 2 + dy .^ 2; % [1 x N_p]
-                gauss_weights = exp(-dist_sq / (2 * sf ^ 2)); % [1 x N_p]
-
-                % Combine likelihoods and Gaussian weights
-                combined_weights = likelihood_i .* gauss_weights' + eps;
-
-                % Normalize this individual weight update
-                weight_updates{i} = combined_weights / sum(combined_weights);
+                % Compute normalization constant (sum of all particle weights for this measurement)
+                normalization_constants(i) = sum(weight_updates_i);
 
                 if obj.debug
-                    fprintf('[GNN] Measurement %d individual weights: min=%.6f, max=%.6f\n', ...
-                        i, min(weight_updates{i}), max(weight_updates{i}));
+                    fprintf('[GNN] Measurement %d normalization constant: %.6f\n', ...
+                        i, normalization_constants(i));
                 end
 
             end
 
-            % Add clutter weight update (uniform distribution)
-            clutter_weights = ones(obj.N_p, 1) / obj.N_p;
-            weight_updates{end} = clutter_weights;
+            % Add clutter hypothesis normalization constant
+            % Clutter hypothesis: (1-PD) * PFA / N_p added over N_p particles
+            % clutter_constant = (1 - obj.PD) * obj.PFA / obj.N_p;
+            clutter_constant = (1 - obj.PD) * obj.PFA;
+            normalization_constants(end) = clutter_constant;
 
             if obj.debug
-                fprintf('[GNN] Computed %d individual weight updates (%d measurements + clutter)\n', ...
-                    length(weight_updates), N_measurements);
+                fprintf('[GNN] Clutter hypothesis constant: %.6f\n', clutter_constant);
+                fprintf('[GNN] Computed %d normalization constants (%d measurements + clutter)\n', ...
+                    length(normalization_constants), N_measurements);
             end
 
         end
@@ -704,6 +723,41 @@ classdef GNN_PF < DA_Filter
             if size(likelihood_raw, 1) == 1 && size(likelihood_raw, 2) == obj.N_p
                 likelihood_raw = likelihood_raw';
             end
+
+        end
+
+        function weights = computeWeightsForMeasurement(obj, z)
+            % COMPUTEWEIGHTSFORMEASUREMENT Compute particle weights for a single measurement
+            %
+            % SYNTAX:
+            %   weights = obj.computeWeightsForMeasurement(z)
+            %
+            % INPUTS:
+            %   z - Single measurement [N_z x 1]
+            %
+            % OUTPUTS:
+            %   weights - Particle weights for this measurement [N_p x 1]
+            %
+            % DESCRIPTION:
+            %   Abstracts the common pattern of computing particle weights for a measurement
+            %   using likelihood lookup and Gaussian weighting. Used by both measurement_update
+            %   and computeNormalizationConstants to avoid code duplication.
+            %
+            % See also measurement_update, computeNormalizationConstants, likelihoodLookup
+
+            % Get likelihood for this measurement
+            likelihood = obj.likelihoodLookup(z);
+
+            % Apply Gaussian weighting
+            sf = 0.15;
+            dx = obj.particles(1, :) - z(1); % [1 x N_p]
+            dy = obj.particles(2, :) - z(2); % [1 x N_p]
+            dist_sq = dx .^ 2 + dy .^ 2; % [1 x N_p]
+            gauss_weights = exp(-dist_sq / (2 * sf ^ 2)); % [1 x N_p]
+
+            % Combine likelihood and Gaussian weights with detection probability
+            % Weight hypothesis: PD * p(y|x) / N_p
+            weights = (obj.PD / obj.N_p) * (likelihood .* gauss_weights') + eps;
 
         end
 
@@ -779,6 +833,40 @@ classdef GNN_PF < DA_Filter
         end
 
         % Helper functions
+        function setDetectionModel(obj, PD, PFA)
+            % SETDETECTIONMODEL Set detection model parameters
+            %
+            % SYNTAX:
+            %   obj.setDetectionModel(PD, PFA)
+            %
+            % INPUTS:
+            %   PD  - Detection probability (0 < PD <= 1)
+            %   PFA - False alarm probability (0 <= PFA < 1)
+            %
+            % DESCRIPTION:
+            %   Updates the detection model parameters used in GNN data association.
+            %   These parameters affect the weight hypothesis and clutter hypothesis
+            %   calculations in the normalization constants computation.
+            %
+            % See also computeNormalizationConstants, Data_Association
+            
+            % Validate inputs
+            if PD <= 0 || PD > 1
+                error('GNN_PF:InvalidPD', 'Detection probability PD must be in range (0, 1]');
+            end
+            
+            if PFA < 0 || PFA >= 1
+                error('GNN_PF:InvalidPFA', 'False alarm probability PFA must be in range [0, 1)');
+            end
+            
+            obj.PD = PD;
+            obj.PFA = PFA;
+            
+            if obj.debug
+                fprintf('[DETECTION MODEL] Updated: PD=%.3f, PFA=%.3f\n', obj.PD, obj.PFA);
+            end
+        end
+
         function loadLikelihoodData(obj, likelihood_file_path)
             % LOADLIKELIHOODDATA Load precomputed likelihood lookup table for hybrid PF
             %
@@ -932,7 +1020,7 @@ classdef GNN_PF < DA_Filter
         end
 
         %% ========== VISUALIZATION ==========
-        function visualize(obj, figure_handle, title_str, measurements, true_state)
+        function visualize(obj, figure_handle, title_str, measurements, true_state, all_measurements)
             % VISUALIZE Plot current particle distribution and state estimates
             %
             % SYNTAX:
@@ -981,11 +1069,30 @@ classdef GNN_PF < DA_Filter
                 true_state = [];
             end
 
+            if nargin < 6
+                all_measurements = [];
+            end
+
             % Get current state estimate
             [mean_state, state_cov] = obj.getGaussianEstimate();
 
             % Compute effective sample size for main title
             eff_sample_size = 1 / sum(obj.weights .^ 2);
+            
+            % Determine colorbar bounds based on weight distribution
+            uniform_threshold = 1e-6; % Threshold for considering weights uniform
+            weight_range = max(obj.weights) - min(obj.weights);
+            uniform_weight = 1 / obj.N_p;
+            
+            if weight_range < uniform_threshold
+                % Weights are uniform - set bounds to [0, 2/N_p] for better visibility
+                colorbar_min = 0;
+                colorbar_max = 2 * uniform_weight;
+            else
+                % Weights are not uniform - set bounds to [0, max(weight)]
+                colorbar_min = 0;
+                colorbar_max = max(obj.weights);
+            end
 
             % Define spatial bounds (matching test_hybrid_PF)
             Xbounds = [-2, 2];
@@ -998,37 +1105,39 @@ classdef GNN_PF < DA_Filter
             % Scatter plot of particle positions colored by weights
             h_scatter = scatter(obj.particles(1, :), obj.particles(2, :), 20, obj.weights, ...
                 'filled', 'MarkerFaceAlpha', 0.6);
+            caxis([colorbar_min, colorbar_max]); % Set consistent color limits
             hold on
 
             % Plot particle filter estimate
-            plot(mean_state(1), mean_state(2), 'ro', 'MarkerSize', 10, 'LineWidth', 3, ...
-                'DisplayName', 'PF Estimate');
+            plot(mean_state(1), mean_state(2), 'ro', 'MarkerSize', 10, 'LineWidth', 3);
 
-            % Plot covariance ellipses (1σ and 3σ)
+            % Plot covariance ellipses (1σ and validation bounds)
             pos_cov = state_cov(1:2, 1:2); % Position covariance only
 
-            % 1σ covariance ellipse (solid white)
+            % 1σ covariance ellipse (solid black)
             ellipse_1sigma = obj.computeCovarianceEllipse(mean_state(1:2), pos_cov, 1);
-            plot(ellipse_1sigma(1, :), ellipse_1sigma(2, :), 'w-', 'LineWidth', 2, ...
-                'DisplayName', '1\sigma Covariance');
+            plot(ellipse_1sigma(1, :), ellipse_1sigma(2, :), 'k-', 'LineWidth', 2);
 
-            % 3σ covariance ellipse (dotted white)
+            % Validation sigma covariance ellipse (dotted black)
             ellipse_validation = obj.computeCovarianceEllipse(mean_state(1:2), pos_cov, obj.validation_sigma_bounds);
-            plot(ellipse_validation(1, :), ellipse_validation(2, :), 'w:', 'LineWidth', 2, ...
-                'DisplayName', 'Validation');
+            plot(ellipse_validation(1, :), ellipse_validation(2, :), 'k:', 'LineWidth', 2);
 
             % Plot true state if provided
             if ~isempty(true_state)
                 plot(true_state(1), true_state(2), 'd', 'Color', 'm', ...
-                    'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'm', ...
-                    'DisplayName', 'True Position');
+                    'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'm');
             end
 
-            % Plot measurements if provided
+            % Plot all measurements first (orange +) if provided
+            if ~isempty(all_measurements)
+                plot(all_measurements(1, :), all_measurements(2, :), '+', 'Color', [1 0.5 0], ...
+                    'MarkerSize', 8, 'LineWidth', 2);
+            end
+
+            % Plot used measurements (red +) if provided - these will appear on top
             if ~isempty(measurements)
-                % Plot all measurements with a single legend entry in bright orange
-                plot(measurements(1, :), measurements(2, :), '+', 'Color', [1 0.5 0], ...
-                    'MarkerSize', 8, 'LineWidth', 2, 'DisplayName', 'Measurements');
+                plot(measurements(1, :), measurements(2, :), '+', 'Color', 'r', ...
+                    'MarkerSize', 8, 'LineWidth', 2);
 
                 % Draw rectangle indicating inset zoom region around first measurement
                 if size(measurements, 2) > 0
@@ -1036,14 +1145,12 @@ classdef GNN_PF < DA_Filter
                     zoom_rect = rectangle('Position', [current_meas(1) - 0.3, current_meas(2) - 0.3, 0.6, 0.6], ...
                         'EdgeColor', 'k', 'LineWidth', 1, 'LineStyle', '--');
                 end
-
             end
 
             title('Position', 'Interpreter', 'latex');
             xlabel('X (m)'), ylabel('Y (m)');
             xlim(Xbounds), ylim(Ybounds);
             axis square;
-            legend('Location', 'northwest');
 
             % Create inset zoom window if measurements are provided
             if ~isempty(measurements) && size(measurements, 2) > 0
@@ -1073,6 +1180,7 @@ classdef GNN_PF < DA_Filter
                 inset_ax = axes('Position', inset_pos);
                 scatter(obj.particles(1, :), obj.particles(2, :), 15, obj.weights, ...
                     'filled', 'MarkerFaceAlpha', 0.7);
+                caxis([colorbar_min, colorbar_max]); % Set consistent color limits
                 hold on
                 plot(mean_state(1), mean_state(2), 'ro', 'MarkerSize', 8, 'LineWidth', 2);
 
@@ -1110,6 +1218,7 @@ classdef GNN_PF < DA_Filter
 
                 scatter(obj.particles(3, :), obj.particles(4, :), 20, obj.weights, ...
                     'filled', 'MarkerFaceAlpha', 0.6);
+                caxis([colorbar_min, colorbar_max]); % Set consistent color limits
                 hold on
                 plot(mean_state(3), mean_state(4), 'ro', 'MarkerSize', 10, 'LineWidth', 3, ...
                     'DisplayName', 'PF Estimate');
@@ -1143,6 +1252,7 @@ classdef GNN_PF < DA_Filter
 
                 scatter(obj.particles(5, :), obj.particles(6, :), 20, obj.weights, ...
                     'filled', 'MarkerFaceAlpha', 0.6);
+                caxis([colorbar_min, colorbar_max]); % Set consistent color limits
                 hold on
                 plot(mean_state(5), mean_state(6), 'ro', 'MarkerSize', 10, 'LineWidth', 3, ...
                     'DisplayName', 'PF Estimate');
@@ -1194,6 +1304,9 @@ classdef GNN_PF < DA_Filter
                 cb = colorbar('Position', [0.92, 0.25, 0.02, 0.5]);
                 cb.Label.String = 'Particle Weight';
                 cb.Label.Interpreter = 'latex';
+                
+                % Set colorbar limits based on weight distribution
+                caxis([colorbar_min, colorbar_max]);
             end
 
             % Bring inset axes to front if it exists

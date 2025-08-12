@@ -15,20 +15,18 @@ wait_for_jobs() {
 
 echo "Starting parallel execution of all datasets..."
 
-# Run all datasets with HybridPF in parallel
+# Run all combinations of datasets, filters, and data association algorithms in parallel
 for dataset in "T1_near" "T2_far" "T3_border" "T4_parab" "T5_parab_noise"
 do
-    wait_for_jobs  # Wait if we have too many jobs running
-    echo "Starting $dataset with HybridPF..."
-    matlab -batch "main('$dataset', 'HybridPF')" > "output_HybridPF_$dataset.log" 2>&1 &
-done
-
-# Run all datasets with KF in parallel
-for dataset in "T1_near" "T2_far" "T3_border" "T4_parab" "T5_parab_noise"
-do
-    wait_for_jobs  # Wait if we have too many jobs running
-    echo "Starting $dataset with KF..."
-    matlab -batch "main('$dataset', 'KF')" > "output_KF_$dataset.log" 2>&1 &
+    for filter in "HybridPF" "KF"
+    do
+        for DA in "PDA" "GNN"
+        do
+            wait_for_jobs  # Wait if we have too many jobs running
+            echo "Starting $dataset with $filter and $DA..."
+            matlab -batch "main('$dataset', '$filter', 'DA', '$DA', 'Debug', false, 'FinalPlot', 'animation', 'DynamicPlot', false)" > "output_${filter}_${DA}_${dataset}.log" 2>&1 &
+        done
+    done
 done
 
 # Wait for all background jobs to complete

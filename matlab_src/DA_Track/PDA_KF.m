@@ -498,211 +498,105 @@ classdef PDA_KF < DA_Filter
 
         end
 
-    end
+        %% ========== VISUALIZATION ==========
+        function visualize(obj, varargin)
+            % VISUALIZE Plot current filter state
+            %
+            % SYNTAX:
+            %   obj.visualize()
+            %   obj.visualize(figure_handle, title_str)
+            %   obj.visualize(figure_handle, title_str, measurements, true_state)
+            %
+            % INPUTS:
+            %   figure_handle - (optional) Figure handle to plot in
+            %   title_str     - (optional) Title string for plot
+            %   measurements  - (optional) Current measurements [N_z x N_meas]
+            %   true_state    - (optional) True state for comparison [N_x x 1]
+            %
+            % DESCRIPTION:
+            %   Creates visualization of Kalman filter state including state
+            %   estimate, covariance ellipse, measurements, and true state.
 
-    %% ========== VISUALIZATION ==========
-    function visualize(obj, varargin)
-        % VISUALIZE Plot current filter state
-        %
-        % SYNTAX:
-        %   obj.visualize()
-        %   obj.visualize(figure_handle, title_str)
-        %   obj.visualize(figure_handle, title_str, measurements, true_state)
-        %
-        % INPUTS:
-        %   figure_handle - (optional) Figure handle to plot in
-        %   title_str     - (optional) Title string for plot
-        %   measurements  - (optional) Current measurements [N_z x N_meas]
-        %   true_state    - (optional) True state for comparison [N_x x 1]
-        %
-        % DESCRIPTION:
-        %   Creates visualization of Kalman filter state including state
-        %   estimate, covariance ellipse, measurements, and true state.
+            % Parse input arguments
+            if nargin > 1 && ~isempty(varargin{1})
+                figure(varargin{1});
+            else
+                figure;
+            end
 
-        % Parse input arguments
-        if nargin > 1 && ~isempty(varargin{1})
-            figure(varargin{1});
-        else
-            figure;
+            if nargin > 2
+                title_str = varargin{2};
+            else
+                title_str = 'PDA-KF State Estimate';
+            end
+
+            if nargin > 3
+                measurements = varargin{3};
+            else
+                measurements = [];
+            end
+
+            if nargin > 4
+                true_state = varargin{4};
+            else
+                true_state = [];
+            end
+
+            cla; hold on;
+
+            % Plot state estimate
+            plot(obj.x_current(1), obj.x_current(2), 'ro', 'MarkerSize', 10, 'LineWidth', 3, ...
+                'DisplayName', 'KF Estimate');
+
+            % Plot covariance ellipse (1-sigma and 2-sigma)
+            if size(obj.P_current, 1) >= 2
+                theta = linspace(0, 2 * pi, 100);
+                pos_cov = obj.P_current(1:2, 1:2);
+
+                % Eigenvalue decomposition for proper ellipse orientation
+                [V, D] = eig(pos_cov);
+
+                % 1-sigma ellipse (68% confidence)
+                sigma1_scale = sqrt(chi2inv(0.68, 2));
+                a1 = sigma1_scale * sqrt(D(1, 1));
+                b1 = sigma1_scale * sqrt(D(2, 2));
+                ellipse1_local = [a1 * cos(theta); b1 * sin(theta)];
+                ellipse1_global = V * ellipse1_local + obj.x_current(1:2);
+                plot(ellipse1_global(1, :), ellipse1_global(2, :), 'r-', 'LineWidth', 2, ...
+                    'DisplayName', '1σ Covariance');
+
+                % 2-sigma ellipse (95% confidence)
+                sigma2_scale = sqrt(chi2inv(0.95, 2));
+                a2 = sigma2_scale * sqrt(D(1, 1));
+                b2 = sigma2_scale * sqrt(D(2, 2));
+                ellipse2_local = [a2 * cos(theta); b2 * sin(theta)];
+                ellipse2_global = V * ellipse2_local + obj.x_current(1:2);
+                plot(ellipse2_global(1, :), ellipse2_global(2, :), 'r--', 'LineWidth', 1.5, ...
+                    'DisplayName', '2σ Covariance');
+            end
+
+            % Plot measurements if provided
+            if ~isempty(measurements)
+                plot(measurements(1, :), measurements(2, :), '+', 'Color', [1 0.5 0], ...
+                    'MarkerSize', 10, 'LineWidth', 3, 'DisplayName', 'Measurements');
+            end
+
+            % Plot true state if provided
+            if ~isempty(true_state)
+                plot(true_state(1), true_state(2), 'd', 'Color', 'm', ...
+                    'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'm', ...
+                    'DisplayName', 'True Position');
+            end
+
+            % Formatting
+            xlabel('X Position (m)');
+            ylabel('Y Position (m)');
+            title(title_str, 'Interpreter', 'latex');
+            legend('Location', 'best');
+            grid on;
+            axis equal;
         end
 
-        if nargin > 2
-            title_str = varargin{2};
-        else
-            title_str = 'PDA-KF State Estimate';
-        end
-
-        if nargin > 3
-            measurements = varargin{3};
-        else
-            measurements = [];
-        end
-
-        if nargin > 4
-            true_state = varargin{4};
-        else
-            true_state = [];
-        end
-
-        cla; hold on;
-
-        % Plot state estimate
-        plot(obj.x_current(1), obj.x_current(2), 'ro', 'MarkerSize', 10, 'LineWidth', 3, ...
-            'DisplayName', 'KF Estimate');
-
-        % Plot covariance ellipse (1-sigma and 2-sigma)
-        if size(obj.P_current, 1) >= 2
-            theta = linspace(0, 2 * pi, 100);
-            pos_cov = obj.P_current(1:2, 1:2);
-
-            % Eigenvalue decomposition for proper ellipse orientation
-            [V, D] = eig(pos_cov);
-
-            % 1-sigma ellipse (68% confidence)
-            sigma1_scale = sqrt(chi2inv(0.68, 2));
-            a1 = sigma1_scale * sqrt(D(1, 1));
-            b1 = sigma1_scale * sqrt(D(2, 2));
-            ellipse1_local = [a1 * cos(theta); b1 * sin(theta)];
-            ellipse1_global = V * ellipse1_local + obj.x_current(1:2);
-            plot(ellipse1_global(1, :), ellipse1_global(2, :), 'r-', 'LineWidth', 2, ...
-                'DisplayName', '1σ Covariance');
-
-            % 2-sigma ellipse (95% confidence)
-            sigma2_scale = sqrt(chi2inv(0.95, 2));
-            a2 = sigma2_scale * sqrt(D(1, 1));
-            b2 = sigma2_scale * sqrt(D(2, 2));
-            ellipse2_local = [a2 * cos(theta); b2 * sin(theta)];
-            ellipse2_global = V * ellipse2_local + obj.x_current(1:2);
-            plot(ellipse2_global(1, :), ellipse2_global(2, :), 'r--', 'LineWidth', 1.5, ...
-                'DisplayName', '2σ Covariance');
-        end
-
-        % Plot measurements if provided
-        if ~isempty(measurements)
-            plot(measurements(1, :), measurements(2, :), '+', 'Color', [1 0.5 0], ...
-                'MarkerSize', 10, 'LineWidth', 3, 'DisplayName', 'Measurements');
-        end
-
-        % Plot true state if provided
-        if ~isempty(true_state)
-            plot(true_state(1), true_state(2), 'd', 'Color', 'm', ...
-                'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'm', ...
-                'DisplayName', 'True Position');
-        end
-
-        % Formatting
-        xlabel('X Position (m)');
-        ylabel('Y Position (m)');
-        title(title_str, 'Interpreter', 'latex');
-        legend('Location', 'best');
-        grid on;
-        axis equal;
     end
 
-end
-
-end
-
-function prediction(obj)
-    % PREDICTION Perform prediction step (DA_Filter interface wrapper)
-    %
-    % DESCRIPTION:
-    %   Updates internal state using stored state and covariance.
-    %   For explicit state management, use prediction_step(x_prior, P_prior).
-
-    if ~isfield(obj, 'current_state') || ~isfield(obj, 'current_covariance')
-        error('PDA_KF:StateError', 'No current state available. Call timestep first or use prediction_step directly.');
-    end
-
-    [obj.current_state, ~, obj.current_covariance, ~] = obj.prediction_step( ...
-        obj.current_state, obj.current_covariance);
-end
-
-function measurement_update(obj, measurements)
-    % MEASUREMENT_UPDATE Perform measurement update (DA_Filter interface wrapper)
-    %
-    % INPUTS:
-    %   measurements - Current measurements [N_z x N_measurements]
-    %
-    % DESCRIPTION:
-    %   Simplified measurement update using current internal state.
-    %   For full PDA control, use measurement_update_full directly.
-
-    if ~isfield(obj, 'current_state') || ~isfield(obj, 'current_covariance')
-        error('PDA_KF:StateError', 'No current state available. Call prediction first.');
-    end
-
-    % Perform complete update cycle for simplicity
-    obj.timestep(measurements);
-end
-
-function visualize(obj, varargin)
-    % VISUALIZE Plot current filter state (DA_Filter interface)
-    %
-    % SYNTAX:
-    %   obj.visualize()
-    %   obj.visualize(X, P)
-    %   obj.visualize(X, P, measurements, true_state)
-    %
-    % DESCRIPTION:
-    %   Creates visualization of current Kalman filter state including
-    %   state estimate, covariance ellipse, measurements, and true state.
-
-    if nargin < 3
-        error('PDA_KF:InvalidInput', 'visualize requires at least X and P arguments for KF');
-    end
-
-    X = varargin{1};
-    P = varargin{2};
-
-    if nargin > 3
-        measurements = varargin{3};
-    else
-        measurements = [];
-    end
-
-    if nargin > 4
-        true_state = varargin{4};
-    else
-        true_state = [];
-    end
-
-    % Create simple Kalman filter visualization
-    figure;
-    hold on;
-
-    % Plot state estimate
-    plot(X(1), X(2), 'ro', 'MarkerSize', 8, 'LineWidth', 2, 'DisplayName', 'KF Estimate');
-
-    % Plot covariance ellipse (2-sigma)
-    if size(P, 1) >= 2
-        theta = linspace(0, 2 * pi, 100);
-        [V, D] = eig(P(1:2, 1:2));
-        a = 2 * sqrt(D(1, 1)); % 2-sigma
-        b = 2 * sqrt(D(2, 2));
-        ellipse_x = X(1) + a * cos(theta) * V(1, 1) + b * sin(theta) * V(1, 2);
-        ellipse_y = X(2) + a * cos(theta) * V(2, 1) + b * sin(theta) * V(2, 2);
-        plot(ellipse_x, ellipse_y, 'r--', 'LineWidth', 1.5, 'DisplayName', '2σ Uncertainty');
-    end
-
-    % Plot measurements if provided
-    if ~isempty(measurements)
-        plot(measurements(1, :), measurements(2, :), '+', 'Color', [1 0.5 0], ...
-            'MarkerSize', 10, 'LineWidth', 3, 'DisplayName', 'Measurements');
-    end
-
-    % Plot true state if provided
-    if ~isempty(true_state)
-        plot(true_state(1), true_state(2), 'd', 'Color', 'm', ...
-            'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'm', ...
-            'DisplayName', 'True Position');
-    end
-
-    xlabel('X (m)');
-    ylabel('Y (m)');
-    title('PDA-KF State Estimate', 'Interpreter', 'latex');
-    legend('Location', 'best');
-    grid on;
-    axis equal;
-    hold off;
 end

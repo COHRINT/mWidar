@@ -4,9 +4,15 @@ classdef GNN_HMM < DA_Filter
     % DESCRIPTION:
     %   Implements a hybrid tracker combining GNN data association with HMM
     %   grid-based state estimation for single target tracking. Uses discrete
-    %   probability distributions over spatial grids instead of particles.
+    %   probability distributions over spatial grids and selects the single
+    %   best measurement using Global Nearest Neighbor (GNN) data association.
     %   Supports precomputed spatial likelihood lookup tables for radar/sensor
     %   fusion applications.
+    %
+    % ALGORITHM:
+    %   GNN data association selects the measurement with the highest normalization
+    %   constant (likelihood integrated over the grid), then applies a single
+    %   posterior update using only that selected measurement.
     %
     % PROPERTIES:
     %   grid_size, npx2          - Grid dimensions (128x128, flattened to 16384)
@@ -20,15 +26,15 @@ classdef GNN_HMM < DA_Filter
     %   GNN_HMM                 - Constructor
     %   timestep                - Process single time step with GNN-HMM algorithm
     %   prediction              - HMM prediction step using transition matrix
-    %   measurement_update      - GNN measurement update with grid likelihood
+    %   measurement_update      - GNN measurement update with single selected measurement
     %   getGaussianEstimate     - Extract mean and covariance from grid distribution
     %
     % EXAMPLE:
     %   hmm = GNN_HMM(x0, A_transition, pointlikelihood_image, 'Debug', true, 'DynamicPlot', true);
-    %   hmm.timestep(measurements);
+    %   hmm.timestep(z);
     %   [x_est, P_est] = hmm.getGaussianEstimate();
     %
-    % See also DA_Filter, GNN_PF, test_HMM
+    % See also DA_Filter, PDA_HMM, GNN_PF, test_HMM
 
     properties
         % Grid Parameters
@@ -62,12 +68,14 @@ classdef GNN_HMM < DA_Filter
         % GNN Parameters
         PD = 0.95 % Probability of detection
         PFA = 0.05 % Probability of false alarm
-        lambda_clutter = 2.5 % Clutter density parameter
 
         % Control Flags (inherited from DA_Filter)
         debug = false % Enable debug output and validation
         validate = false % Enable input/output validation checks
         DynamicPlot = false % Enable real-time visualization during timesteps
+
+        % Validation Parameters
+        validation_sigma_bounds = 2 % Number of sigma bounds for measurement gating (default: 2)
 
         % Dynamic Plotting (inherited from DA_Filter)
         dynamic_figure_handle % Figure handle for dynamic plotting
@@ -80,13 +88,16 @@ classdef GNN_HMM < DA_Filter
             %
             % SYNTAX:
             %   obj = GNN_HMM(x0, A_transition, pointlikelihood_image)
-            %   obj = GNN_HMM(..., 'Debug', true, 'DynamicPlot', true)
+            %   obj = GNN_HMM(..., 'Debug', true, 'DynamicPlot', true, 'ValidationSigma', 3)
             %
             % INPUTS:
             %   x0                    - Initial state estimate [2 x 1] (position only)
             %   A_transition          - HMM transition matrix [npx2 x npx2]
             %   pointlikelihood_image - Precomputed likelihood lookup table [npx2 x npx2]
-            %   varargin              - Name-value pairs: 'Debug', true/false, 'DynamicPlot', true/false
+            %   varargin              - Name-value pairs:
+            %                          'Debug', true/false
+            %                          'DynamicPlot', true/false
+            %                          'ValidationSigma', numeric
             %
             % OUTPUTS:
             %   obj - Initialized GNN_HMM object
@@ -106,6 +117,7 @@ classdef GNN_HMM < DA_Filter
             options = DA_Filter.parseFilterOptions(varargin{:});
             obj.debug = options.Debug;
             obj.DynamicPlot = options.DynamicPlot;
+            obj.validation_sigma_bounds = options.ValidationSigma;
 
             % Initialize grid parameters
             obj.npx2 = obj.grid_size ^ 2;
@@ -144,6 +156,8 @@ classdef GNN_HMM < DA_Filter
                     obj.grid_size, obj.grid_size, obj.dx);
                 fprintf('Scene bounds: X[%.1f, %.1f], Y[%.1f, %.1f] m\n', ...
                     obj.Xbounds(1), obj.Xbounds(2), obj.Ybounds(1), obj.Ybounds(2));
+                fprintf('Validation: %.1f-sigma bounds\n', obj.validation_sigma_bounds);
+                fprintf('Detection: PD=%.3f, PFA=%.3f\n', obj.PD, obj.PFA);
                 fprintf('==============================\n\n');
             end
 
@@ -184,34 +198,36 @@ classdef GNN_HMM < DA_Filter
 
         end
 
-        function timestep(obj, measurements, varargin)
+        %% ========== TIMESTEP ==========
+        function timestep(obj, z, varargin)
             % TIMESTEP Process single time step with GNN-HMM algorithm
             %
             % SYNTAX:
-            %   obj.timestep(measurements)
-            %   obj.timestep(measurements, true_state)
+            %   obj.timestep(z)
+            %   obj.timestep(z, true_state)
             %
             % INPUTS:
-            %   measurements - Current measurements [2 x N_measurements]
-            %   true_state   - (optional) True state for visualization
+            %   z          - Current measurements [2 x N_measurements]
+            %   true_state - (optional) True state for visualization
             %
             % DESCRIPTION:
             %   Implements full GNN-HMM algorithm:
             %   1. Prediction step using HMM transition matrix
-            %   2. Data association step using GNN to select best measurement
-            %   3. Measurement update with selected measurement likelihood
+            %   2. Measurement validation using configurable sigma gating
+            %   3. GNN data association to select single best measurement
+            %   4. Measurement update with selected measurement only
             %   Use getGaussianEstimate() to extract state estimates after timestep.
             %
             % See also prediction, measurement_update, getGaussianEstimate
 
             if obj.debug
                 fprintf('\n=== GNN-HMM TIMESTEP START ===\n');
-                fprintf('Input: %d measurements\n', size(measurements, 2));
+                fprintf('Input: %d measurements\n', size(z, 2));
 
-                if ~isempty(measurements)
+                if ~isempty(z)
 
-                    for i = 1:size(measurements, 2)
-                        fprintf('  Meas %d: [%.3f, %.3f]\n', i, measurements(1, i), measurements(2, i));
+                    for i = 1:size(z, 2)
+                        fprintf('  Meas %d: [%.3f, %.3f]\n', i, z(1, i), z(2, i));
                     end
 
                 end
@@ -222,14 +238,13 @@ classdef GNN_HMM < DA_Filter
             % Step 1: Prediction step
             obj.prediction();
 
-            % Step 2: Data Association step - GNN selects best measurement
-            % TODO: Implement GNN data association to select single best measurement
-            % TODO: Compare likelihoods/costs for each measurement and choose optimal one
-            % TODO: Handle missed detection case when no measurements available
-            % TODO: Consider validation gating before data association
-            selected_measurement = obj.Data_Association(measurements);
+            % Step 2: Measurement validation (gating)
+            [z_valid, has_valid_meas] = obj.Validation(z);
 
-            % Step 3: Measurement update with selected measurement
+            % Step 3: GNN data association - select single best measurement
+            selected_measurement = obj.Data_Association(z_valid);
+
+            % Step 4: Measurement update with selected measurement
             obj.measurement_update(selected_measurement);
 
             if obj.debug
@@ -244,9 +259,9 @@ classdef GNN_HMM < DA_Filter
 
                 if nargin > 2
                     true_state = varargin{1};
-                    obj.updateDynamicPlot(measurements, true_state);
+                    obj.updateDynamicPlot(selected_measurement, true_state, z);
                 else
-                    obj.updateDynamicPlot(measurements);
+                    obj.updateDynamicPlot(selected_measurement, [], z);
                 end
 
             end
@@ -296,51 +311,133 @@ classdef GNN_HMM < DA_Filter
 
         end
 
-        %% ========== GLOBAL NEAREST NEIGHBOR DATA ASSOCIATION ==========
-        function selected_measurement = Data_Association(obj, measurements)
-            % DATA_ASSOCIATION Global Nearest Neighbor data association for measurements
+        %% ========== MEASUREMENT VALIDATION ==========
+        function [z_valid, has_valid_meas] = Validation(obj, z)
+            % VALIDATION Gate measurements using HMM grid state estimate
             %
             % SYNTAX:
-            %   selected_measurement = obj.Data_Association(measurements)
+            %   [z_valid, has_valid_meas] = obj.Validation(z)
             %
             % INPUTS:
-            %   measurements - Current measurements [2 x N_measurements]
+            %   z - Raw measurements [N_z x N_meas]
             %
             % OUTPUTS:
-            %   selected_measurement - Single selected measurement [2 x 1] or empty if none selected
+            %   z_valid        - Validated measurements [N_z x N_valid]
+            %   has_valid_meas - Boolean flag indicating if any measurements passed validation
+            %
+            % DESCRIPTION:
+            %   Applies configurable sigma gating to filter measurements that fall within
+            %   ellipsoidal bounds around the current HMM grid state estimate. Uses Gaussian
+            %   approximation extracted from the grid distribution and Mahalanobis distance
+            %   thresholding with obj.validation_sigma_bounds.
+            %
+            % ALGORITHM:
+            %   1. Extract Gaussian estimate (mean, covariance) from grid distribution
+            %   2. Scale covariance by validation_sigma_bounds²
+            %   3. Apply ellipsoidal gating using Mahalanobis distance threshold
+            %   4. Accept measurements within chi-square threshold for 2 DOF
+            %
+            % See also timestep, measurement_update, getGaussianEstimate
+
+            % Handle empty measurement case
+            if isempty(z)
+                z_valid = [];
+                has_valid_meas = false;
+
+                if obj.debug
+                    fprintf('[GATING] No measurements to validate\n');
+                end
+
+                return;
+            end
+
+            % Get current state estimate and covariance from grid distribution
+            [x_est, P_est] = obj.getGaussianEstimate();
+            
+            % Scale covariance for gating (similar to GNN_PF)
+            gate_covariance = obj.validation_sigma_bounds^2 * P_est;
+            
+            % Apply ellipsoidal gating for each measurement
+            z_valid = [];
+            valid_count = 0;
+            
+            for i = 1:size(z, 2)
+                meas_i = z(:, i);
+                
+                % Compute Mahalanobis distance
+                innovation = meas_i - x_est;
+                mahal_dist_sq = innovation' / gate_covariance * innovation;
+                
+                % Chi-square threshold for 2D (95% confidence for 2-sigma)
+                chi2_threshold = obj.validation_sigma_bounds^2 * 2; % 2 DOF
+                
+                if mahal_dist_sq <= chi2_threshold
+                    % Measurement passes gate
+                    z_valid = [z_valid, meas_i];
+                    valid_count = valid_count + 1;
+                    
+                    if obj.debug
+                        fprintf('[GATING] Meas %d: [%.3f, %.3f] PASSED (dist²=%.3f <= %.3f)\n', ...
+                            i, meas_i(1), meas_i(2), mahal_dist_sq, chi2_threshold);
+                    end
+                else
+                    if obj.debug
+                        fprintf('[GATING] Meas %d: [%.3f, %.3f] REJECTED (dist²=%.3f > %.3f)\n', ...
+                            i, meas_i(1), meas_i(2), mahal_dist_sq, chi2_threshold);
+                    end
+                end
+            end
+            
+            has_valid_meas = ~isempty(z_valid);
+
+            if obj.debug
+                fprintf('[GATING] Input: %d measurements, Output: %d valid measurements\n', ...
+                    size(z, 2), valid_count);
+                fprintf('[GATING] Using %.1f-sigma ellipsoidal gate (chi²=%.1f)\n', ...
+                    obj.validation_sigma_bounds, chi2_threshold);
+            end
+
+        end
+
+        %% ========== GLOBAL NEAREST NEIGHBOR DATA ASSOCIATION ==========
+        function selected_measurement = Data_Association(obj, z_valid)
+            % DATA_ASSOCIATION Global Nearest Neighbor data association for validated measurements
+            %
+            % SYNTAX:
+            %   selected_measurement = obj.Data_Association(z_valid)
+            %
+            % INPUTS:
+            %   z_valid - Validated measurements [N_z x N_valid]
+            %
+            % OUTPUTS:
+            %   selected_measurement - Single selected measurement [N_z x 1] or empty if none selected
             %
             % DESCRIPTION:
             %   Implements GNN data association algorithm to select the single best
-            %   measurement from the available set. The selection is based on maximizing
-            %   the likelihood or minimizing a cost function for grid-based HMM.
-            %
-            % TODO: Implement proper GNN cost function for grid-based HMM
-            % TODO: Compare different cost metrics: integrated likelihood, maximum likelihood, etc.
-            % TODO: Handle edge cases: no measurements, single measurement, multiple measurements
-            % TODO: Consider validation gating before data association
-            % TODO: Implement Mahalanobis distance or other distance metrics for grid-based systems
+            %   measurement from the validated set. The selection is based on maximizing
+            %   the normalization constant (likelihood integrated over the grid).
             %
             % ALGORITHM:
             %   1. If no measurements: return empty (missed detection)
             %   2. If single measurement: return that measurement
-            %   3. If multiple measurements: compute cost/likelihood for each and select best
+            %   3. If multiple measurements: compute normalization constants for each and select best
             %
-            % See also timestep, measurement_update, likelihoodLookup
+            % See also timestep, measurement_update, Validation
 
             % Handle empty measurement case (missed detection)
-            if isempty(measurements)
+            if isempty(z_valid)
                 selected_measurement = [];
 
                 if obj.debug
-                    fprintf('[GNN DATA ASSOCIATION] No measurements - missed detection\n');
+                    fprintf('[GNN DATA ASSOCIATION] No validated measurements - missed detection\n');
                 end
 
                 return;
             end
 
             % Handle single measurement case
-            if size(measurements, 2) == 1
-                selected_measurement = measurements;
+            if size(z_valid, 2) == 1
+                selected_measurement = z_valid;
 
                 if obj.debug
                     fprintf('[GNN DATA ASSOCIATION] Single measurement - auto-selected [%.3f, %.3f]\n', ...
@@ -351,93 +448,66 @@ classdef GNN_HMM < DA_Filter
             end
 
             % Multiple measurements case - need to select best one
-            N_measurements = size(measurements, 2);
+            N_measurements = size(z_valid, 2);
 
             if obj.debug
                 fprintf('[GNN DATA ASSOCIATION] Selecting best from %d measurements\n', N_measurements);
             end
 
-            % TODO: Implement proper GNN cost function for grid-based HMM
-            % For now, use a simple approach based on likelihood comparison
+            % Compute normalization constants for each measurement + clutter
+            normalization_constants = obj.computeNormalizationConstants(z_valid);
             
-            % TODO: Option 1: Maximum integrated likelihood approach
-            % - Compute likelihood grid for each measurement
-            % - Integrate likelihood * prior for each measurement: sum(likelihood_grid .* prior_prob)
-            % - Select measurement with maximum integrated likelihood
+            % Find best hypothesis (measurements + clutter)
+            [~, best_idx] = max(normalization_constants);
             
-            % TODO: Option 2: Maximum likelihood at MAP estimate approach
-            % - Get current MAP estimate from grid
-            % - Evaluate likelihood at MAP position for each measurement
-            % - Select measurement with maximum likelihood at MAP
-            
-            % TODO: Option 3: Minimum "distance" approach (grid-based)
-            % - Define distance metric suitable for grid-based systems
-            % - Could use KL divergence between predicted and measurement-updated distributions
-            % - Select measurement with minimum distance/cost
-            
-            % For now, use maximum integrated likelihood approach
-            integrated_likelihoods = zeros(1, N_measurements);
-            
-            for i = 1:N_measurements
-                % Get likelihood grid for this measurement
-                likelihood_grid = obj.likelihoodLookup(measurements(:, i));
-                
-                % Integrate likelihood with current prior
-                integrated_likelihoods(i) = sum(likelihood_grid .* obj.ptarget_prob);
+            % If best index is within measurement range, select that measurement
+            % Otherwise (best_idx > N_measurements), it's clutter - return empty
+            if best_idx <= N_measurements
+                selected_measurement = z_valid(:, best_idx);
                 
                 if obj.debug
-                    fprintf('[GNN] Measurement %d integrated likelihood: %.6f\n', i, integrated_likelihoods(i));
+                    fprintf('[GNN] Selected measurement %d (constant %.4f): [%.3f, %.3f]\n', ...
+                        best_idx, normalization_constants(best_idx), selected_measurement(1), selected_measurement(2));
                 end
-            end
-            
-            % Select measurement with maximum integrated likelihood
-            [max_likelihood, best_idx] = max(integrated_likelihoods);
-            selected_measurement = measurements(:, best_idx);
-
-            if obj.debug
-                fprintf('[GNN] Integrated likelihoods: [');
-                for i = 1:N_measurements
-                    fprintf('%.6f ', integrated_likelihoods(i));
+            else
+                % Clutter hypothesis wins - missed detection
+                selected_measurement = [];
+                
+                if obj.debug
+                    fprintf('[GNN] Clutter hypothesis wins (constant %.4f) - missed detection\n', ...
+                        normalization_constants(end));
                 end
-                fprintf(']\n');
-                fprintf('[GNN] Selected measurement %d (max integrated likelihood %.6f): [%.3f, %.3f]\n', ...
-                    best_idx, max_likelihood, selected_measurement(1), selected_measurement(2));
             end
 
         end
 
-        %% ========== MEASUREMENT UPDATE ==========
-        function measurement_update(obj, measurement)
-            % MEASUREMENT_UPDATE GNN measurement update with selected measurement
+        %% ========== MEASUREMENT UPDATE (GNN) ==========
+        function measurement_update(obj, z)
+            % MEASUREMENT_UPDATE GNN measurement update with single selected measurement
             %
             % SYNTAX:
-            %   obj.measurement_update(measurement)
+            %   obj.measurement_update(z)
             %
             % INPUTS:
-            %   measurement - Selected measurement [2 x 1] (from GNN data association)
+            %   z - Selected measurement [2 x 1] (from GNN data association)
             %
             % DESCRIPTION:
             %   Implements GNN measurement update for grid-based HMM using single
             %   selected measurement. Unlike PDA which combines all measurements,
-            %   GNN uses only the best measurement as determined by data association.
-            %   Handles missed detection case when measurement is empty.
+            %   GNN uses only the best measurement as determined by the data
+            %   association step.
             %
             % MODIFIES:
             %   obj.ptarget_prob - Updated posterior probability distribution
             %
-            % TODO: Optimize likelihood computation for single measurement case
-            % TODO: Consider different update strategies for GNN vs PDA
-            % TODO: Implement proper missed detection handling with detection probability
-            % TODO: Remove or modify Gaussian mask for single measurement case
-            %
-            % See also timestep, prediction, likelihoodLookup, Data_Association
+            % See also timestep, prediction, Data_Association
 
             if obj.debug
                 fprintf('[MEASUREMENT UPDATE] Starting GNN likelihood computation...\n');
             end
 
             % Handle missed detection case (no measurement selected by GNN)
-            if isempty(measurement)
+            if isempty(z)
 
                 if obj.debug
                     fprintf('[MEASUREMENT UPDATE] No measurement selected - missed detection case\n');
@@ -453,37 +523,19 @@ classdef GNN_HMM < DA_Filter
                 return;
             end
 
+            if obj.debug
+                fprintf('[MEASUREMENT UPDATE] Processing selected measurement: [%.3f, %.3f]\n', z(1), z(2));
+            end
+
             % Single measurement case - simpler than PDA
-            if obj.debug
-                fprintf('[MEASUREMENT UPDATE] Processing selected measurement: [%.3f, %.3f]\n', ...
-                    measurement(1), measurement(2));
-            end
-
             % Get likelihood grid for the selected measurement
-            likelihood_meas = obj.likelihoodLookup(measurement);
+            likelihood_meas = obj.computeLikelihoodForMeasurement(z);
 
-            % TODO: Apply Gaussian mask - consider if this is appropriate for GNN
-            % Unlike PDA which needs to handle multiple measurements, GNN has already
-            % selected the best measurement, so Gaussian mask might be redundant
-            sf = 0.15; % scaling factor for Gaussian mask
-            gaussmask = mvnpdf(obj.pxyvec, measurement', sf * eye(2));
-            gaussmask(gaussmask < 0.1 * max(gaussmask)) = 0; % threshold small values
-
-            % Apply Gaussian mask to likelihood
-            likelihood_total = likelihood_meas .* gaussmask;
-
-            if obj.debug
-                fprintf('[GAUSSIAN MASK] Applied around selected measurement [%.3f, %.3f]\n', ...
-                    measurement(1), measurement(2));
-                fprintf('[LIKELIHOOD] Max likelihood: %.6f, sum: %.6f\n', ...
-                    full(max(likelihood_total)), full(sum(likelihood_total)));
-            end
-
-            % Compute posterior: P(x_k | z_1:k) ∝ P(z_k | x_k) * P(x_k | z_1:k-1)
-            obj.ptarget_prob = obj.ptarget_prob .* likelihood_total;
+            % Apply likelihood to posterior: P(x_k | z_1:k) ∝ P(z_k | x_k) * P(x_k | z_1:k-1)
+            obj.ptarget_prob = obj.ptarget_prob .* likelihood_meas + eps;
 
             % Store copies for visualization
-            obj.likelihood_prob = likelihood_total / sum(likelihood_total); % Normalize for visualization
+            obj.likelihood_prob = likelihood_meas;
 
             % Normalize posterior distribution
             obj.ptarget_prob = obj.ptarget_prob / sum(obj.ptarget_prob);
@@ -496,7 +548,115 @@ classdef GNN_HMM < DA_Filter
 
         end
 
+        %% ========== NORMALIZATION CONSTANTS (FOR GNN) ==========
+        function normalization_constants = computeNormalizationConstants(obj, z)
+            % COMPUTENORMALIZATIONCONSTANTS Compute normalization constants for each measurement hypothesis (for GNN)
+            %
+            % SYNTAX:
+            %   normalization_constants = obj.computeNormalizationConstants(z)
+            %
+            % INPUTS:
+            %   z - Current measurements [2 x N_measurements]
+            %
+            % OUTPUTS:
+            %   normalization_constants - Vector of normalization constants [N_measurements + 1 x 1]
+            %                           normalization_constants(i) = sum over grid of likelihood_i * prior
+            %                           normalization_constants(end) = clutter hypothesis constant
+            %
+            % DESCRIPTION:
+            %   Computes normalization constants for GNN-style data association by calculating
+            %   the integral (sum) of likelihood * prior over the entire grid for each measurement
+            %   hypothesis separately. This is the HMM equivalent of marginalizing over particles.
+            %
+            % ALGORITHM:
+            %   For each measurement i:
+            %     likelihood_grid_i = likelihoodLookup(measurement_i)
+            %     normalization_constants(i) = sum(likelihood_grid_i .* prior_prob)
+            %
+            % See also measurement_update, likelihoodLookup
+
+            N_measurements = size(z, 2);
+            normalization_constants = zeros(N_measurements + 1, 1); % +1 for clutter
+
+            % Handle empty measurement case -- just return clutter
+            if N_measurements == 0
+                % Only clutter hypothesis
+                clutter_constant = (1 - obj.PD) * obj.PFA / obj.npx2;
+                normalization_constants(1) = clutter_constant;
+
+                if obj.debug
+                    fprintf('[GNN] No measurements - only clutter hypothesis: %.6f\n', clutter_constant);
+                end
+
+                return;
+            end
+
+            % Compute normalization constant for each measurement individually
+            for i = 1:N_measurements
+                % Get likelihood grid for this measurement using helper function
+                likelihood_grid = obj.computeLikelihoodForMeasurement(z(:, i));
+
+                % Marginalize over the entire grid: sum(likelihood * prior)
+                normalization_constants(i) = sum((obj.npx2 * obj.PD) * likelihood_grid .* obj.prior_prob);
+
+                if obj.debug
+                    fprintf('[GNN] Measurement %d normalization constant: %.6f\n', ...
+                        i, normalization_constants(i));
+                end
+
+            end
+
+            % Add clutter hypothesis normalization constant
+            % Clutter hypothesis: (1-PD) * PFA / grid_area
+            clutter_constant = (1 - obj.PD) * obj.PFA / obj.npx2;
+            normalization_constants(end) = clutter_constant;
+
+            if obj.debug
+                fprintf('[GNN] Clutter hypothesis constant: %.6f\n', clutter_constant);
+                fprintf('[GNN] Computed %d normalization constants (%d measurements + clutter)\n', ...
+                    length(normalization_constants), N_measurements);
+            end
+
+        end
+
         %% ========== LIKELIHOOD COMPUTATION ==========
+        function likelihood_grid = computeLikelihoodForMeasurement(obj, measurement)
+            % COMPUTELIKELIHOODFORMEASUREMENT Compute grid likelihood for a single measurement
+            %
+            % SYNTAX:
+            %   likelihood_grid = obj.computeLikelihoodForMeasurement(measurement)
+            %
+            % INPUTS:
+            %   measurement - Single measurement [2 x 1]
+            %
+            % OUTPUTS:
+            %   likelihood_grid - Likelihood values for all grid points [npx2 x 1]
+            %
+            % DESCRIPTION:
+            %   Abstracts the common pattern of computing grid likelihood for a measurement
+            %   using likelihood lookup and Gaussian masking. Used by both measurement_update
+            %   and computeNormalizationConstants to avoid code duplication.
+            %
+            % See also measurement_update, computeNormalizationConstants, likelihoodLookup
+
+            % Get likelihood for this measurement
+            likelihood_grid = obj.likelihoodLookup(measurement);
+
+            % Apply Gaussian mask (optional - can be disabled if needed)
+            sf = 0.15; % scaling factor for Gaussian mask
+            gaussmask = mvnpdf(obj.pxyvec, measurement', sf * eye(2));
+            gaussmask(gaussmask < 0.1 * max(gaussmask)) = 0; % threshold small values
+
+            % Combine likelihood and Gaussian mask and scale appropriately
+            likelihood_grid = (obj.PD * obj.npx2) * likelihood_grid .* gaussmask;
+
+            if obj.debug
+                fprintf('    Likelihood: max=%.6f, sum=%.6f\n', ...
+                    full(max(likelihood_grid)), full(sum(likelihood_grid)));
+            end
+
+        end
+
         function likelihood_grid = likelihoodLookup(obj, measurement)
             % LIKELIHOODLOOKUP Get likelihood grid for given measurement
             %
@@ -513,7 +673,7 @@ classdef GNN_HMM < DA_Filter
             %   Retrieves likelihood values from precomputed lookup table for all
             %   grid points given a specific measurement location.
             %
-            % See also measurement_update, Data_Association
+            % See also measurement_update
 
             % Find closest grid point to measurement
             [~, meas_x_idx] = min(abs(obj.xgrid - measurement(1)));
@@ -533,7 +693,7 @@ classdef GNN_HMM < DA_Filter
             end
 
             % Extract likelihood column from lookup table
-            likelihood_grid = obj.pointlikelihood_image(meas_linear_idx, :)';
+            likelihood_grid = (obj.PD * obj.npx2) * obj.pointlikelihood_image(meas_linear_idx, :)' + eps;
 
             % Ensure output is column vector
             if size(likelihood_grid, 2) > 1
@@ -545,6 +705,121 @@ classdef GNN_HMM < DA_Filter
                     full(max(likelihood_grid)), full(sum(likelihood_grid)));
             end
 
+        end
+
+        function updateDynamicPlot(obj, measurements, true_state, all_measurements)
+            % UPDATEDYNAMICPLOT Update dynamic plot during timestep execution (GNN_HMM override)
+            %
+            % SYNTAX:
+            %   obj.updateDynamicPlot(measurements)
+            %   obj.updateDynamicPlot(measurements, true_state)
+            %   obj.updateDynamicPlot(measurements, true_state, all_measurements)
+            %
+            % INPUTS:
+            %   measurements     - Used measurements [N_z x N_measurements] (after GNN selection)
+            %   true_state       - (optional) True state for comparison
+            %   all_measurements - (optional) All measurements [N_z x N_measurements] (before GNN selection)
+            %
+            % DESCRIPTION:
+            %   Updates the dynamic visualization if enabled. Overrides parent method
+            %   to support displaying both all measurements and selected measurement with
+            %   color coding for GNN selection.
+            
+            if ~obj.DynamicPlot || isempty(obj.dynamic_figure_handle) || ...
+               ~isvalid(obj.dynamic_figure_handle)
+                return;
+            end
+            
+            % Handle optional arguments
+            if nargin < 3 || isempty(true_state)
+                true_state = [];
+            end
+            
+            if nargin < 4
+                all_measurements = [];
+            end
+            
+            % Increment timestep counter
+            obj.timestep_counter = obj.timestep_counter + 1;
+            
+            % Create title with timestep information
+            title_str = sprintf('%s Real-time Tracking (Step %d)', ...
+                class(obj), obj.timestep_counter);
+            
+            % Call GNN_HMM-specific visualization with both measurement sets
+            obj.visualize(obj.dynamic_figure_handle, title_str, measurements, true_state, all_measurements);
+            
+            drawnow; % Force immediate update
+            pause(0.01); % Small pause for smooth animation
+        end
+
+        %% ========== COMPATIBILITY METHODS ==========
+        function ess = getEffectiveSampleSize(obj)
+            % GETEFFECTIVESAMPLESIZE Get effective sample size equivalent for HMM
+            %
+            % SYNTAX:
+            %   ess = obj.getEffectiveSampleSize()
+            %
+            % OUTPUTS:
+            %   ess - Effective sample size measure based on probability distribution entropy
+            %
+            % DESCRIPTION:
+            %   Computes an HMM equivalent of particle filter effective sample size
+            %   using the entropy of the probability distribution. Lower entropy
+            %   corresponds to higher effective sample size (more concentrated distribution).
+            %
+            % NOTE:
+            %   This is primarily for compatibility with particle filter interfaces.
+            %   The mapping is: ESS = exp(-entropy), normalized to [0, npx2] range.
+
+            entropy = obj.getEntropy();
+
+            % Convert entropy to ESS-like measure
+            % High entropy -> low ESS, Low entropy -> high ESS
+            max_entropy = log(obj.npx2); % Maximum possible entropy (uniform distribution)
+            normalized_entropy = entropy / max_entropy; % [0, 1]
+            ess = obj.npx2 * (1 - normalized_entropy); % [0, npx2]
+
+            if obj.debug
+                fprintf('[ESS] Entropy: %.4f, Normalized: %.4f, ESS: %.1f\n', ...
+                    entropy, normalized_entropy, ess);
+            end
+
+        end
+
+        function printState(obj, label)
+            % PRINTSTATE Print current HMM state information for debugging
+            %
+            % SYNTAX:
+            %   obj.printState(label)
+            %
+            % INPUTS:
+            %   label - String label for the output
+            %
+            % DESCRIPTION:
+            %   Prints detailed state information including position estimate,
+            %   uncertainty measures, and probability distribution statistics.
+
+            if nargin < 2
+                label = 'HMM State';
+            end
+
+            % Get current estimates
+            [x_est, P_est] = obj.getGaussianEstimate();
+            [x_map, map_prob] = obj.getMAPEstimate();
+            entropy = obj.getEntropy();
+            ess = obj.getEffectiveSampleSize();
+
+            % Print header
+            fprintf('\n--- %s ---\n', label);
+            fprintf('MMSE Estimate: [%.4f, %.4f] m\n', x_est(1), x_est(2));
+            fprintf('MAP Estimate:  [%.4f, %.4f] m (prob=%.6f)\n', x_map(1), x_map(2), full(map_prob));
+            fprintf('Covariance:    det=%.8f, trace=%.6f\n', det(P_est), trace(P_est));
+            fprintf('Uncertainty:   entropy=%.4f, ESS=%.1f\n', entropy, ess);
+            fprintf('Distribution:  min=%.8f, max=%.8f, sum=%.8f\n', ...
+                full(min(obj.ptarget_prob)), full(max(obj.ptarget_prob)), full(sum(obj.ptarget_prob)));
+            fprintf('Grid:          %dx%d (%d points)\n', obj.grid_size, obj.grid_size, obj.npx2);
+            fprintf('-------------------\n');
         end
 
         %% ========== STATE ESTIMATION ==========
@@ -639,52 +914,28 @@ classdef GNN_HMM < DA_Filter
 
         end
 
-        %% ========== VALIDATION AND DEBUGGING ==========
-        function validateState(obj)
-            % VALIDATESTATE Check internal state consistency
-            %
-            % DESCRIPTION:
-            %   Validates that probability distribution sums to 1 and other
-            %   consistency checks for debugging purposes.
-
-            prob_sum = sum(obj.ptarget_prob);
-
-            if abs(full(prob_sum) - 1.0) > 1e-6
-                warning('GNN_HMM:Normalization', ...
-                    'Probability distribution not normalized: sum = %.8f', full(prob_sum));
-            end
-
-            if any(obj.ptarget_prob < 0)
-                warning('GNN_HMM:NegativeProbability', ...
-                'Negative probabilities detected');
-            end
-
-            if obj.debug
-                fprintf('[VALIDATION] State: sum=%.8f, min=%.8f, max=%.8f\n', ...
-                    full(prob_sum), full(min(obj.ptarget_prob)), full(max(obj.ptarget_prob)));
-            end
-
-        end
-
         %% ========== VISUALIZATION ==========
-        function visualize(obj, figure_handle, title_str, measurements, true_state)
+        function visualize(obj, figure_handle, title_str, z_valid, true_state, z_all)
             % VISUALIZE Plot prior, likelihood, and posterior distributions in 1x3 layout
             %
             % SYNTAX:
             %   obj.visualize()
             %   obj.visualize(figure_handle)
             %   obj.visualize(figure_handle, title_str)
-            %   obj.visualize(figure_handle, title_str, measurements, true_state)
+            %   obj.visualize(figure_handle, title_str, z_valid, true_state)
+            %   obj.visualize(figure_handle, title_str, z_valid, true_state, z_all)
             %
             % INPUTS:
             %   figure_handle - (optional) Figure handle to plot in
             %   title_str     - (optional) Title string for main plot
-            %   measurements  - (optional) Current measurements [2 x N] for overlay
+            %   z_valid       - (optional) Selected measurement [2 x 1] for overlay (from GNN)
             %   true_state    - (optional) True state [N x 1] for overlay
+            %   z_all         - (optional) All measurements [2 x N_all] for visualization
             %
             % DESCRIPTION:
             %   Creates 1x3 subplot showing prior, likelihood, and posterior
             %   distributions with proper axis labels, colorbars, and overlays.
+            %   Colors selected measurement differently from rejected ones.
 
             if nargin < 2 || isempty(figure_handle)
                 figure;
@@ -697,19 +948,15 @@ classdef GNN_HMM < DA_Filter
             end
 
             if nargin < 4
-                measurements = [];
+                z_valid = [];
             end
 
             if nargin < 5
                 true_state = [];
             end
 
-            % Set consistent color limits for all subplots
-            if ~isempty(obj.prior_prob) && ~isempty(obj.likelihood_prob) && ~isempty(obj.posterior_prob)
-                max_prob = max([max(obj.prior_prob), max(obj.likelihood_prob), max(obj.posterior_prob)]);
-                color_lims = [0, max_prob];
-            else
-                color_lims = [0, 1];
+            if nargin < 6
+                z_all = [];
             end
 
             % Subplot 1: Prior P(x_k | z_1:k-1)
@@ -719,13 +966,15 @@ classdef GNN_HMM < DA_Filter
                 prior_grid = reshape(obj.prior_prob, [obj.grid_size, obj.grid_size]);
                 imagesc(obj.xgrid, obj.ygrid, prior_grid);
                 set(gca, 'YDir', 'normal');
-                clim(color_lims);
+                % Individual color scale for prior
+                clim([min(obj.prior_prob), max(obj.prior_prob)]);
                 colorbar;
             else
                 % Plot current distribution if prior not available
                 prob_grid = reshape(obj.ptarget_prob, [obj.grid_size, obj.grid_size]);
                 imagesc(obj.xgrid, obj.ygrid, prob_grid);
                 set(gca, 'YDir', 'normal');
+                clim([min(obj.ptarget_prob), max(obj.ptarget_prob)]);
                 colorbar;
             end
 
@@ -753,12 +1002,14 @@ classdef GNN_HMM < DA_Filter
                 likelihood_grid = reshape(obj.likelihood_prob, [obj.grid_size, obj.grid_size]);
                 imagesc(obj.xgrid, obj.ygrid, likelihood_grid);
                 set(gca, 'YDir', 'normal');
-                clim(color_lims);
+                % Individual color scale for likelihood
+                clim([min(obj.likelihood_prob), max(obj.likelihood_prob)]);
                 colorbar;
             else
                 % Show empty plot if likelihood not available
                 imagesc(obj.xgrid, obj.ygrid, zeros(obj.grid_size));
                 set(gca, 'YDir', 'normal');
+                clim([0, 1]);
                 colorbar;
             end
 
@@ -772,9 +1023,22 @@ classdef GNN_HMM < DA_Filter
             % Add measurements overlay if provided
             hold on;
 
-            if ~isempty(measurements)
-                plot(measurements(1, :), measurements(2, :), '+', 'Color', [1 0.5 0], ...
-                    'MarkerSize', 10, 'LineWidth', 3);
+            % Plot all measurements (if available) in gray/rejected color
+            if ~isempty(z_all)
+                plot(z_all(1, :), z_all(2, :), 'x', 'Color', [0.7 0.7 0.7], ...
+                    'MarkerSize', 4, 'LineWidth', 1);
+                
+                % Plot selected measurement (if available) in bright color on top
+                if ~isempty(z_valid)
+                    plot(z_valid(1, :), z_valid(2, :), '+', 'Color', [1 0.5 0], ...
+                        'MarkerSize', 3, 'LineWidth', 1);
+                end
+            else
+                % Backward compatibility: if only z_valid provided, treat as selected measurement
+                if ~isempty(z_valid)
+                    plot(z_valid(1, :), z_valid(2, :), '+', 'Color', [1 0.5 0], ...
+                        'MarkerSize', 3, 'LineWidth', 1);
+                end
             end
 
             if ~isempty(true_state)
@@ -791,13 +1055,15 @@ classdef GNN_HMM < DA_Filter
                 posterior_grid = reshape(obj.posterior_prob, [obj.grid_size, obj.grid_size]);
                 imagesc(obj.xgrid, obj.ygrid, posterior_grid);
                 set(gca, 'YDir', 'normal');
-                clim(color_lims);
+                % Individual color scale for posterior
+                clim([min(obj.posterior_prob), max(obj.posterior_prob)]);
                 colorbar;
             else
                 % Plot current distribution if posterior not available
                 prob_grid = reshape(obj.ptarget_prob, [obj.grid_size, obj.grid_size]);
                 imagesc(obj.xgrid, obj.ygrid, prob_grid);
                 set(gca, 'YDir', 'normal');
+                clim([min(obj.ptarget_prob), max(obj.ptarget_prob)]);
                 colorbar;
             end
 
@@ -817,11 +1083,6 @@ classdef GNN_HMM < DA_Filter
                 'DisplayName', 'MMSE');
             plot(x_map(1), x_map(2), 'bs', 'MarkerSize', 8, 'LineWidth', 2, ...
                 'DisplayName', 'MAP');
-
-            if ~isempty(measurements)
-                plot(measurements(1, :), measurements(2, :), '+', 'Color', [1 0.5 0], ...
-                    'MarkerSize', 10, 'LineWidth', 3, 'DisplayName', 'Measurements');
-            end
 
             if ~isempty(true_state)
                 plot(true_state(1), true_state(2), 'd', 'Color', 'm', ...
@@ -847,6 +1108,136 @@ classdef GNN_HMM < DA_Filter
             else
                 % Set default position only for new figures
                 set(gcf, 'Position', [100, 100, 1200, 400]);
+            end
+
+        end
+
+        %% ========== GETTER/SETTER METHODS ==========
+        function setDetectionModel(obj, PD, PFA)
+            % SETDETECTIONMODEL Set detection model parameters
+            %
+            % SYNTAX:
+            %   obj.setDetectionModel(PD, PFA)
+            %
+            % INPUTS:
+            %   PD  - Detection probability (0 < PD <= 1)
+            %   PFA - False alarm probability (0 <= PFA < 1)
+            %
+            % DESCRIPTION:
+            %   Updates the detection model parameters used in GNN data association.
+            %   These parameters affect the likelihood combination and clutter hypothesis
+            %   calculations in the measurement update and normalization constants.
+            %
+            % See also computeNormalizationConstants, measurement_update
+
+            % Validate inputs
+            if PD <= 0 || PD > 1
+                error('GNN_HMM:InvalidPD', 'Detection probability PD must be in range (0, 1]');
+            end
+
+            if PFA < 0 || PFA >= 1
+                error('GNN_HMM:InvalidPFA', 'False alarm probability PFA must be in range [0, 1)');
+            end
+
+            obj.PD = PD;
+            obj.PFA = PFA;
+
+            if obj.debug
+                fprintf('[DETECTION MODEL] Updated: PD=%.3f, PFA=%.3f\n', obj.PD, obj.PFA);
+            end
+
+        end
+
+        function loadLikelihoodData(obj, likelihood_file_path)
+            % LOADLIKELIHOODDATA Load precomputed likelihood lookup table for hybrid HMM
+            %
+            % SYNTAX:
+            %   obj.loadLikelihoodData(likelihood_file_path)
+            %
+            % INPUTS:
+            %   likelihood_file_path - string, path to .mat file containing 'pointlikelihood_image'
+            %
+            % DESCRIPTION:
+            %   Loads and validates the precomputed likelihood lookup table used by the
+            %   hybrid HMM filter for measurement updates. Expected table size is
+            %   128^2 x 128^2 corresponding to spatial grid discretization.
+            %
+            % See also GNN_HMM, measurement_update, likelihoodLookup
+
+            if obj.debug
+                fprintf('\n=== LOADING LIKELIHOOD DATA ===\n');
+                fprintf('Loading from: %s\n', likelihood_file_path);
+            end
+
+            try
+                % Check if file exists
+                if ~exist(likelihood_file_path, 'file')
+                    error('GNN_HMM:FileNotFound', ...
+                        'Likelihood file not found: %s', likelihood_file_path);
+                end
+
+                % Load the likelihood data
+                likelihood_data = load(likelihood_file_path, 'pointlikelihood_image');
+
+                % Validate that the expected variable exists
+                if ~isfield(likelihood_data, 'pointlikelihood_image')
+                    error('GNN_HMM:InvalidData', ...
+                        'Variable "pointlikelihood_image" not found in file: %s', likelihood_file_path);
+                end
+
+                % Store as class property (immutable lookup table)
+                obj.pointlikelihood_image = likelihood_data.pointlikelihood_image;
+
+                % Validate dimensions (expecting 128^2 x 128^2 based on grid)
+                expected_dim = obj.npx2;
+                [rows, cols] = size(obj.pointlikelihood_image);
+
+                if obj.debug
+                    fprintf('[VALIDATION] Loaded table dimensions: %dx%d\n', rows, cols);
+                    fprintf('[VALIDATION] Expected dimensions: %dx%d\n', expected_dim, expected_dim);
+                end
+
+                if rows ~= expected_dim || cols ~= expected_dim
+                    warning('GNN_HMM:DimensionMismatch', ...
+                        'Likelihood model dimensions (%dx%d) do not match expected grid size (%dx%d)', ...
+                        rows, cols, expected_dim, expected_dim);
+                end
+
+                if obj.debug
+                    fprintf('[SUCCESS] Likelihood lookup table loaded successfully\n');
+                    fprintf('===============================\n\n');
+                end
+
+            catch ME
+                error('GNN_HMM:LoadError', ...
+                    'Failed to load likelihood data: %s', ME.message);
+            end
+
+        end
+
+        %% ========== VALIDATION AND DEBUGGING ==========
+        function validateState(obj)
+            % VALIDATESTATE Check internal state consistency
+            %
+            % DESCRIPTION:
+            %   Validates that probability distribution sums to 1 and other
+            %   consistency checks for debugging purposes.
+
+            prob_sum = sum(obj.ptarget_prob);
+
+            if abs(full(prob_sum) - 1.0) > 1e-6
+                warning('GNN_HMM:Normalization', ...
+                    'Probability distribution not normalized: sum = %.8f', full(prob_sum));
+            end
+
+            if any(obj.ptarget_prob < 0)
+                warning('GNN_HMM:NegativeProbability', ...
+                'Negative probabilities detected');
+            end
+
+            if obj.debug
+                fprintf('[VALIDATION] State: sum=%.8f, min=%.8f, max=%.8f\n', ...
+                    full(prob_sum), full(min(obj.ptarget_prob)), full(max(obj.ptarget_prob)));
             end
 
         end

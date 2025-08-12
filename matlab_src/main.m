@@ -4,7 +4,7 @@ function main(varargin)
     %   main()                                    % Uses all defaults
     %   main('T2_far')                           % Uses specified dataset
     %   main('T3_border', 'KF')                  % Uses dataset and filter type
-    %   main('T4_parab', 'HybridPF', 'DA', 'GNN', 'FinalPlot', 'interactive', 'Debug', true)
+    %   main('T4_parab', 'HybridPF', 'DA', 'GNN', 'FinalPlot', 'interactive', 'Debug', true, 'DynamicPlot', false)
     %
     % Parameters:
     %   DATASET (positional 1)    - Dataset name (default: "T4_parab")
@@ -12,6 +12,7 @@ function main(varargin)
     %   DA (name-value)           - Data association: "PDA" or "GNN" (default: "PDA")
     %   FinalPlot (name-value)    - Plot mode: "interactive", "animation", or "none" (default: "none")
     %   Debug (name-value)        - Enable debug output: true or false (default: false)
+    %   DynamicPlot (name-value)  - Enable dynamic plotting during filtering: true or false (default: false)
 
     %% ========== COMMAND LINE ARGUMENT PARSING ==========
 
@@ -19,7 +20,7 @@ function main(varargin)
     % Parse positional arguments first
     if nargin >= 1 && ~ischar(varargin{1}) && ~isstring(varargin{1})
         error('First argument (DATASET) must be a string');
-    elseif nargin >= 1 && ~startsWith(varargin{1}, {'DA', 'FinalPlot', 'Debug'})
+    elseif nargin >= 1 && ~startsWith(varargin{1}, {'DA', 'FinalPlot', 'Debug', 'DynamicPlot'})
         DATASET = string(varargin{1});
         start_named_args = 2;
     else
@@ -29,7 +30,7 @@ function main(varargin)
 
     %% --- Parse Filter Type Argument ---
     % Parse second positional argument (filter type)
-    if nargin >= start_named_args && ~startsWith(varargin{start_named_args}, {'DA', 'FinalPlot', 'Debug'})
+    if nargin >= start_named_args && ~startsWith(varargin{start_named_args}, {'DA', 'FinalPlot', 'Debug', 'DynamicPlot'})
         filter_type = string(varargin{start_named_args});
         start_named_args = start_named_args + 1;
     else
@@ -44,6 +45,7 @@ function main(varargin)
     DA = "PDA";
     FinalPlot = "none";
     DEBUG = false;
+    DYNAMIC_PLOT = false;
 
     %% --- Process Name-Value Pairs ---
     % Parse name-value pairs
@@ -63,6 +65,8 @@ function main(varargin)
                 FinalPlot = string(param_value);
             case 'debug'
                 DEBUG = logical(param_value);
+            case 'dynamicplot'
+                DYNAMIC_PLOT = logical(param_value);
             otherwise
                 error('Unknown parameter: %s', param_name);
         end
@@ -104,6 +108,7 @@ function main(varargin)
     fprintf('Using DA method: %s\n', DA);
     fprintf('Using plot mode: %s\n', FinalPlot);
     fprintf('Debug enabled: %s\n', string(DEBUG));
+    fprintf('Dynamic plot enabled: %s\n', string(DYNAMIC_PLOT));
 
     %% ========== WORKSPACE SETUP ==========
     %% --- Environment Configuration ---
@@ -116,8 +121,8 @@ function main(varargin)
 
     %% --- Load Supplemental Data ---
     % Load necessary supplemental data
-    load(fullfile('supplemental', 'recovery.mat'))
-    load(fullfile('supplemental', 'sampling.mat'))
+    % load(fullfile('supplemental', 'recovery.mat'))
+    % load(fullfile('supplemental', 'sampling.mat'))
     load(fullfile('supplemental', 'Final_Test_Tracks', 'SingleObj', DATASET + '.mat'), 'Data');
 
     %% --- Configure Plotting Environment ---
@@ -133,10 +138,16 @@ function main(varargin)
     GT = Data.GT;
     GT_meas = GT(1:2, :);
     z = Data.y;
-    signal = Data.signal;
+    % signal = Data.signal;
+
+    % Store original measurements for visualization (before any filtering)
+    Data.y_original = Data.y; % Keep original measurements for plotting
 
     n_k = size(GT, 2);
     performance = cell(1, n_k);
+
+    % Initialize validation sigma parameter (will be set based on filter type)
+    validation_sigma = 2; % Default value
 
     %% ========== FILTER PARAMETERS SETUP ==========
     %% --- Basic Parameters ---
@@ -164,6 +175,11 @@ function main(varargin)
 
     %% --- Define Noise Matrices ---
     Q = 1e-2 * eye(6);
+    Q(3,3) = 1e-6; % Set process noise for acceleration
+    Q(4,4) = 1e-6; % Set process noise for acceleration
+    Q(5,5) = 1e-6; % Set process noise for acceleration
+    Q(6,6) = 1e-6; % Set process noise for acceleration
+
     R = 0.1 * eye(2);
 
     %% --- Define Observation Matrix ---
@@ -181,16 +197,20 @@ function main(varargin)
             fprintf("Using Kalman Filter ")
 
             if DA == "PDA"
-                current_class = PDA_KF(GT(:, 1), P0, F_KF, Q, R, H, 'Debug', DEBUG);
+                current_class = PDA_KF(GT(:, 1), P0, F_KF, Q, R, H, 'Debug', DEBUG, "DynamicPlot", DYNAMIC_PLOT);
 
             elseif DA == "GNN"
-                current_class = GNN_KF(GT(:, 1), P0, F_KF, Q, R, H);
+                current_class = GNN_KF(GT(:, 1), P0, F_KF, Q, R, H, 'Debug', DEBUG, "DynamicPlot", DYNAMIC_PLOT);
             else
                 error('Unknown data association method: %s', DA);
             end
 
             %% --- Initialize Performance Storage ---
             [performance{1}.x, performance{1}.P] = current_class.getGaussianEstimate(); % Initial Gaussian estimate
+
+            % Store initial measurements (empty for first timestep)
+            performance{1}.measurements_original = [];
+            performance{1}.measurements_used = [];
 
         case 'HybridPF'
             %% --- Hybrid Particle Filter Setup ---
@@ -201,8 +221,11 @@ function main(varargin)
                 fprintf("with PDA data association\n");
 
                 Q_PF = Q;
-                Q_PF(1:2, 1:2) = .02 * eye(2); % Adjust process noise for position
-                current_class = PDA_PF(GT(:, 1), 10000, F_PF, Q_PF, H, pointlikelihood_image, "Debug", DEBUG, "DynamicPlot", true, "ValidationSigma", 3);
+                % Q_PF(1:2, 1:2) = .001 * eye(2); % Adjust process noise for position
+                validation_sigma = 5; % Set validation sigma for PDA
+                current_class = PDA_PF(GT(:, 1), 10000, F_PF, Q_PF, H, pointlikelihood_image, "Debug", DEBUG, "DynamicPlot", DYNAMIC_PLOT, "ValidationSigma", validation_sigma);
+                current_class.setDetectionModel(0.99, 0.80); % Set default detection model parameters
+                current_class.ESS_threshold_percentage = .20;
 
                 %% --- Optional: Challenging Initialization ---
                 % Harder test for the HybridPF... set all particles to uniform over the state space
@@ -219,8 +242,11 @@ function main(varargin)
 
             elseif DA == "GNN"
                 fprintf("with GNN data association\n");
-                current_class = GNN_PF(GT(:, 1), 10000, F_PF, Q, H, pointlikelihood_image, "Debug", DEBUG, "DynamicPlot", true);
                 % current_class.debug = DEBUG;
+                Q_PF = Q;
+                % Q_PF(1:2, 1:2) = .02 * eye(2); % Adjust process noise for position
+                validation_sigma = 5; % Set validation sigma for GNN
+                current_class = GNN_PF(GT(:, 1), 10000, F_PF, Q_PF, H, pointlikelihood_image, "Debug", DEBUG, "DynamicPlot", DYNAMIC_PLOT, "ValidationSigma", validation_sigma);
 
             else
                 error('Unknown data association method: %s', DA);
@@ -230,6 +256,10 @@ function main(varargin)
             performance{1}.particles = current_class.particles; % Store initial particles
             performance{1}.weights = current_class.weights; % Store initial weights
             [performance{1}.x, performance{1}.P] = current_class.getGaussianEstimate(); % Initial Gaussian estimate
+
+            % Store initial measurements (empty for first timestep)
+            performance{1}.measurements_original = [];
+            performance{1}.measurements_used = [];
 
         case 'HMM'
             %% --- Hidden Markov Model Setup ---
@@ -242,13 +272,14 @@ function main(varargin)
 
             if DA == "PDA"
                 fprintf("with PDA data association\n");
-                current_class = PDA_HMM(GT(1:2, 1), A_slow, pointlikelihood_image, "Debug", DEBUG, "DynamicPlot", true);
+                validation_sigma = 5; % Set validation sigma for PDA
+                current_class = PDA_HMM(GT(1:2, 1), A_slow, pointlikelihood_image, "Debug", DEBUG, "DynamicPlot", DYNAMIC_PLOT, "ValidationSigma", validation_sigma);
 
             elseif DA == "GNN"
                 fprintf("with GNN data association\n");
                 % Note: GNN_HMM would need to be implemented if desired
-                error('GNN data association not implemented for HMM filter yet');
-                % current_class = GNN_HMM(GT(1:2, 1), A_transition, pointlikelihood_image, "Debug", DEBUG, "DynamicPlot", true);
+                validation_sigma = 5; % Set validation sigma for GNN
+                current_class = GNN_HMM(GT(1:2, 1), A_slow, pointlikelihood_image, "Debug", DEBUG, "DynamicPlot", DYNAMIC_PLOT, "ValidationSigma", validation_sigma);
 
             else
                 error('Unknown data association method: %s', DA);
@@ -260,9 +291,12 @@ function main(varargin)
             performance{1}.likelihood_prob = []; % No likelihood at initialization
             performance{1}.posterior_prob = current_class.ptarget_prob; % Same as initial distribution
 
+            % Store initial measurements (empty for first timestep)
+            performance{1}.measurements_original = [];
+            performance{1}.measurements_used = [];
+
         otherwise
             error('Unknown filter type: %s', filter_type);
-            exit(1);
 
     end
 
@@ -276,6 +310,10 @@ function main(varargin)
                 %% --- Kalman Filter Timestep ---
                 current_meas = z{i}; % Use original measurements
 
+                % Store original measurements for visualization
+                performance{i}.measurements_original = current_meas;
+                performance{i}.measurements_used = current_meas; % KF uses all measurements
+
                 % Perform Timestep Update using new standardized API
                 current_class.timestep(current_meas, GT(:, i)); % Pass ground truth for visualization
 
@@ -286,6 +324,19 @@ function main(varargin)
                 %% --- Hybrid Particle Filter Timestep ---
                 % current_meas = GT_meas(:, i); % Use ground truth measurements for testing
                 current_meas = z{i}; % Use original measurements
+
+                % Store original measurements for visualization
+                performance{i}.measurements_original = current_meas;
+
+                % Get the actual used measurements by calling the validation method
+                [measurements_used, ~] = current_class.Validation(current_meas);
+                performance{i}.measurements_used = measurements_used;
+
+                % Debug: Print measurement filtering info
+                if DEBUG && ~isempty(current_meas)
+                    fprintf('  Step %d: %d original measurements, %d used measurements\n', ...
+                        i, size(current_meas, 2), size(measurements_used, 2));
+                end
 
                 % Perform Timestep Update (includes dynamic plotting if enabled)
                 current_class.timestep(current_meas, GT(:, i)); % Pass ground truth for visualization
@@ -299,8 +350,21 @@ function main(varargin)
 
             case 'HMM'
                 %% --- Hidden Markov Model Timestep ---
-                current_meas = GT_meas(:, i); % Use ground truth measurements for testing
-                % current_meas = z{i}; % Use original measurements
+                % current_meas = GT_meas(:, i); % Use ground truth measurements for testing
+                current_meas = z{i}; % Use original measurements
+
+                % Store original measurements for visualization
+                performance{i}.measurements_original = current_meas;
+
+                % Get the actual used measurements by calling the validation method
+                [measurements_used, ~] = current_class.Validation(current_meas);
+                performance{i}.measurements_used = measurements_used;
+
+                % Debug: Print measurement filtering info
+                if DEBUG && ~isempty(current_meas)
+                    fprintf('  Step %d: %d original measurements, %d used measurements\n', ...
+                        i, size(current_meas, 2), size(measurements_used, 2));
+                end
 
                 % Perform Timestep Update (includes dynamic plotting if enabled)
                 current_class.timestep(current_meas, GT(1:2, i)); % Pass ground truth for visualization
@@ -315,24 +379,28 @@ function main(varargin)
                 error('Unknown filter type in timestep loop: %s', filter_type);
         end
 
-        %% ========== FINAL PLOTTING AND VISUALIZATION ==========
-        if INTERACTIVE
-            %% --- Interactive Plotting ---
-            fprintf('Generating interactive plot...\n');
-            mWidar_FilterPlot_Interactive(performance, Data, 0:dt:10, filter_type); % Interactive plotting function with slider
-            fprintf('Interactive plot is ready! Use the slider and controls to navigate through timesteps.\n');
-            fprintf('Close the figure window when you are done.\n');
-        elseif ANIMATION
-            %% --- Animation Plotting ---
-            fprintf('Generating animation plot...\n');
-            saveString = filter_type + "_" + DATASET + ".gif";
-            mWidar_FilterPlot_Distribution(performance, Data, 0:dt:10, filter_type, fullfile("..", "figures", "DA_Track", saveString)); % Animation plotting function
-        else
-            %% --- No Plotting Mode ---
-            fprintf('No final plotting requested (FinalPlot = "none").\n');
-        end
+    end % End of for loop
 
-        %% --- Future Enhancements ---
-        % NEES(current_class,initial_state,A,10,M,G)
+    %% ========== FINAL PLOTTING AND VISUALIZATION ==========
+    if INTERACTIVE
+        %% --- Interactive Plotting ---
+        fprintf('Generating interactive plot...\n');
+        mWidar_FilterPlot_Interactive(performance, Data, 0:dt:10, filter_type, validation_sigma); % Interactive plotting function with slider
+        fprintf('Interactive plot is ready! Use the slider and controls to navigate through timesteps.\n');
+        fprintf('Close the figure window when you are done.\n');
+    elseif ANIMATION
+        %% --- Animation Plotting ---
+        fprintf('Generating animation plot...\n');
+        saveString = filter_type + "_" + DATASET + "_" + DA + ".gif";
 
-    end % End of main function
+        % Animation plotting function
+        mWidar_FilterPlot_Distribution(performance, Data, 0:dt:10, filter_type, validation_sigma, fullfile("..", "figures", "DA_Track", saveString));
+    else
+        %% --- No Plotting Mode ---
+        fprintf('No final plotting requested (FinalPlot = "none").\n');
+    end
+
+    %% --- Future Enhancements ---
+    % NEES(current_class,initial_state,A,10,M,G)
+
+end

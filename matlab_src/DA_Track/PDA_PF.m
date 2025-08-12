@@ -1,22 +1,28 @@
 classdef PDA_PF < DA_Filter
-    % PDA_PF Probabilistic Data Association Particle Filter
+    % PDA_PF Sequential Importance Resampling Probabilistic Data Association Particle Filter
     %
     % DESCRIPTION:
-    %   Implements a hybrid particle filter combining PDA data association
-    %   with particle filtering for single target tracking. Supports both
-    %   standard Gaussian likelihood and precomputed spatial likelihood
-    %   lookup tables for radar/sensor fusion applications.
+    %   Implements a hybrid SIR particle filter combining PDA data association
+    %   with Sequential Importance Resampling for single target tracking. 
+    %   Supports both standard Gaussian likelihood and precomputed spatial 
+    %   likelihood lookup tables for radar/sensor fusion applications.
+    %
+    %   SIR ALGORITHM:
+    %   1. Prediction: Propagate particles through dynamics
+    %   2. Update: Multiply previous weights by new likelihood and normalize
+    %   3. Resample: If ESS < configurable threshold, resample and reset to uniform weights
     %
     % PROPERTIES:
     %   N_p, N_x, N_z        - Filter dimensions (particles, states, measurements)
     %   particles, weights   - Particle filter state [N_x x N_p], [N_p x 1]
     %   F, Q, H             - System model matrices
     %   pointlikelihood_image - Precomputed likelihood lookup table
+    %   PD, PFA             - Detection probability and false alarm probability
     %   debug, validate     - Control flags for debugging and validation
     %
     % METHODS:
     %   PDA_PF              - Constructor
-    %   timestep            - Process single time step with PDA algorithm
+    %   timestep            - Process single time step with SIR PDA algorithm
     %   prediction          - Particle prediction step
     %   resample            - Bootstrap particle resampling
     %
@@ -53,19 +59,25 @@ classdef PDA_PF < DA_Filter
         % Validation Parameters
         validation_sigma_bounds = 2 % Number of sigma bounds for measurement gating (default: 2)
 
+        % Detection Model Parameters
+        PD = 0.95 % Detection probability (probability of detecting true target)
+        PFA = 0.05 % False alarm probability (probability of false measurement)
+
+        % SIR Resampling Parameters
+        ESS_threshold_percentage = 0.95 % ESS threshold as percentage of N_p for resampling (default: 95% - behaves like bootstrap)
+
         % Dynamic Plotting (inherited from DA_Filter)
         dynamic_figure_handle % Figure handle for dynamic plotting
     end
 
     methods
 
-        function obj = PDA_PF(x0, N_particles, F, Q, H, pointlikelihood_image, varargin)
-            % PDA_PF Constructor for Probabilistic Data Association Particle Filter
+        function obj = PDA_PF(x0, N_particles, F, Q, H, pointlikelihood_image, varargin) % PDA_PF Constructor for SIR Probabilistic Data Association Particle Filter
             %
             % SYNTAX:
             %   obj = PDA_PF(x0, N_particles, F, Q, H)
             %   obj = PDA_PF(x0, N_particles, F, Q, H, pointlikelihood_image)
-            %   obj = PDA_PF(..., 'Debug', true, 'DynamicPlot', true, 'ValidationSigma', 3)
+            %   obj = PDA_PF(..., 'Debug', true, 'DynamicPlot', true, 'ValidationSigma', 3, 'ESSThreshold', 0.15)
             %
             % INPUTS:
             %   x0                  - Initial state estimate [N_x x 1]
@@ -74,15 +86,20 @@ classdef PDA_PF < DA_Filter
             %   Q                   - Process noise covariance [N_x x N_x]
             %   H                   - Measurement matrix [N_z x N_x]
             %   pointlikelihood_image - (optional) Precomputed likelihood lookup table [128^2 x 128^2]
-            %   varargin            - Name-value pairs: 'Debug', true/false, 'DynamicPlot', true/false, 'ValidationSigma', numeric
+            %   varargin            - Name-value pairs: 
+            %                        'Debug', true/false 
+            %                        'DynamicPlot', true/false 
+            %                        'ValidationSigma', numeric
+            %                        'ESSThreshold', numeric (0-1, default: 0.20)
             %
             % OUTPUTS:
-            %   obj - Initialized PDA_PF object
+            %   obj - Initialized SIR PDA_PF object
             %
             % DESCRIPTION:
-            %   Creates and initializes a PDA particle filter with uniform particle
+            %   Creates and initializes a SIR PDA particle filter with uniform particle
             %   distribution around the initial state. Uses provided likelihood
-            %   table for hybrid filtering applications.
+            %   table for hybrid filtering applications. Implements Sequential
+            %   Importance Resampling with configurable ESS threshold.
             %
             % NOTE:
             %   Load likelihood table in calling script using:
@@ -105,6 +122,7 @@ classdef PDA_PF < DA_Filter
             obj.debug = options.Debug;
             obj.DynamicPlot = options.DynamicPlot;
             obj.validation_sigma_bounds = options.ValidationSigma;
+
 
             % Initialize basic properties
             obj.N_p = N_particles;
@@ -138,6 +156,7 @@ classdef PDA_PF < DA_Filter
                 if obj.debug
                     fprintf('\n=== PDA_PF INITIALIZATION ===\n');
                     fprintf('Particles: %d, States: %d, Measurements: %d\n', N_particles, obj.N_x, obj.N_z);
+                    fprintf('ESS Threshold: %.1f%% (%d particles)\n', 100 * obj.ESS_threshold_percentage, round(obj.ESS_threshold_percentage * obj.N_p));
                     fprintf('Likelihood table: %dx%d (expected: %dx%d)\n', rows, cols, expected_dim, expected_dim);
                     fprintf('============================\n\n');
                 end
@@ -157,7 +176,7 @@ classdef PDA_PF < DA_Filter
 
         %% ========== TIMESTEP ==========
         function timestep(obj, z, varargin)
-            % TIMESTEP Implements the PDA-PF algorithm for a single timestep
+            % TIMESTEP Implements the SIR PDA-PF algorithm for a single timestep
             %
             % SYNTAX:
             %   obj.timestep(z)
@@ -168,15 +187,16 @@ classdef PDA_PF < DA_Filter
             %   true_state - (optional) True state for visualization
             %
             % DESCRIPTION:
-            %   Executes one timestep of the PDA-PF algorithm including:
-            %   0. Initialization - Resample particles if weights are non-uniform
+            %   Executes one timestep of the SIR PDA-PF algorithm including:
             %   1. Prediction Step - Propagate particles through dynamics model
             %   2. Validation Step - Gate measurements using particle estimate
             %   3. Measurement Update - Update particle weights using all measurements
-            %   4. Visualization - Update dynamic plot if enabled
+            %   4. Resampling - Resample if ESS falls below configurable threshold
+            %   5. Visualization - Update dynamic plot if enabled
             %
             % ALGORITHM NOTES:
-            %   - Resampling only occurs if weights are non-uniform
+            %   - Uses Sequential Importance Resampling (SIR) paradigm
+            %   - Resampling occurs at END of timestep if ESS < threshold
             %   - Gating uses configurable sigma bounds based on current state estimate
             %   - PDA combines all measurements for weight updates
             %   - Supports optional real-time visualization
@@ -184,7 +204,7 @@ classdef PDA_PF < DA_Filter
             % See also prediction, measurement_update, resample
 
             if obj.debug
-                fprintf('\n=== PDA-PF TIMESTEP START ===\n');
+                fprintf('\n=== SIR PDA-PF TIMESTEP START ===\n');
                 fprintf('Input: %d measurements\n', size(z, 2));
 
                 if ~isempty(z)
@@ -196,22 +216,6 @@ classdef PDA_PF < DA_Filter
                 end
 
                 fprintf('------------------------------\n');
-            end
-
-            % Step 0: Initialization
-            % Resample the particles if necessary (only if weights are not uniform)
-            % This will only NOT be called if
-            %    1) This is the first timestep (weights are uniform by default)
-            %    2) The weights are already uniform (no measurement updates yet)
-            if any(obj.weights ~= 1 / length(obj.weights))
-                % print effective sample size
-                ESS = 1 / sum(obj.weights .^ 2);
-
-                if obj.debug
-                    fprintf('[RESAMPLING] ESS: %.2f, resampling particles...\n', ESS);
-                end
-
-                obj.resample();
             end
 
             % Step 1: Prediction Step
@@ -227,8 +231,12 @@ classdef PDA_PF < DA_Filter
             end
 
             % Step 2: Validation step - Gate measurements using particle filter estimate
+            % Store original measurements for visualization
+            z_original = z;
+            
             % COMMENT OUT THIS BLOCK TO DISABLE GATING
-            [z_to_process, has_valid_meas] = obj.Validation(z);
+            % [z_to_process, has_valid_meas] = obj.Validation(z);
+            z_to_process = z;
 
             % END GATING BLOCK - COMMENT OUT TO HERE TO DISABLE GATING
 
@@ -237,24 +245,56 @@ classdef PDA_PF < DA_Filter
 
             % Step 3: Data Association Step -- Simplified, no beta computation needed
 
-            % Step 4: Measurement Update Step
+            % Step 4: Measurement Update Step (SIR: multiply by previous weights)
             obj.measurement_update(z_to_process);
+
+            % Step 5: SIR Resampling - Check ESS and resample if needed
+            ESS = 1 / sum(obj.weights .^ 2);
+            ESS_threshold = obj.ESS_threshold_percentage * obj.N_p;
+            
+            if ESS < ESS_threshold
+                if obj.debug
+                    fprintf('\n');
+                    fprintf('╔════════════════════════════════════════╗\n');
+                    fprintf('║          SIR RESAMPLING TRIGGER        ║\n');
+                    fprintf('║                                        ║\n');
+                    fprintf('║  ESS: %6.1f < Threshold: %6.1f      ║\n', ESS, ESS_threshold);
+                    fprintf('║  ESS Percentage: %5.1f%% < %.0f%%        ║\n', 100 * ESS / obj.N_p, 100 * obj.ESS_threshold_percentage);
+                    fprintf('║                                        ║\n');
+                    fprintf('║        RESAMPLING PARTICLES...         ║\n');
+                    fprintf('╚════════════════════════════════════════╝\n');
+                end
+                
+                obj.resample();
+                
+                if obj.debug
+                    fprintf('╔════════════════════════════════════════╗\n');
+                    fprintf('║         RESAMPLING COMPLETE            ║\n');
+                    fprintf('║     Weights reset to uniform           ║\n');
+                    fprintf('╚════════════════════════════════════════╝\n');
+                    fprintf('\n');
+                end
+            else
+                if obj.debug
+                    fprintf('[SIR] ESS: %.1f (%.1f%%) >= Threshold: %.1f (%.0f%%) - No resampling needed\n', ...
+                        ESS, 100 * ESS / obj.N_p, ESS_threshold, 100 * obj.ESS_threshold_percentage);
+                end
+            end
 
             if obj.debug
                 [x_est, P_est] = obj.getGaussianEstimate();
                 fprintf('\nOutput: State estimate [%.4f, %.4f] m\n', x_est(1), x_est(2));
                 fprintf('        Covariance trace: %.6f\n', trace(P_est));
-                fprintf('=== PDA-PF TIMESTEP END ===\n\n');
+                fprintf('=== SIR PDA-PF TIMESTEP END ===\n\n');
             end
 
             % Update dynamic plot if enabled
             if obj.DynamicPlot
-
                 if nargin > 2
                     true_state = varargin{1};
-                    obj.updateDynamicPlot(z_to_process, true_state);
+                    obj.updateDynamicPlot(z_to_process, true_state, z_original);
                 else
-                    obj.updateDynamicPlot(z_to_process);
+                    obj.updateDynamicPlot(z_to_process, [], z_original);
                 end
 
             end
@@ -362,61 +402,9 @@ classdef PDA_PF < DA_Filter
 
         end
 
-        %% ========== PROBABILISTIC DATA ASSOCIATION ==========
-        function [beta] = Data_Association(obj, z_hat, O, S)
-            % DATA_ASSOCIATION Compute association probabilities for validated measurements
-            %
-            % SYNTAX:
-            %   beta = obj.Data_Association(z_hat, O, S)
-            %
-            % INPUTS:
-            %   z_hat - Predicted measurement [N_z x 1]
-            %   O     - Validated measurements [N_z x N_valid]
-            %   S     - Innovation covariance matrix [N_z x N_z]
-            %
-            % OUTPUTS:
-            %   beta  - Association probabilities [N_valid+1 x 1]
-            %           beta(1) = P(all clutter)
-            %           beta(i+1) = P(measurement i is target-originated)
-            %
-            % DESCRIPTION:
-            %   This function is currently not implemented. The PDA-PF uses
-            %   a simplified approach where all measurements contribute to
-            %   the weight update in the measurement_update function.
-            %
-            % NOTE:
-            %   Implementation would compute beta weights using detection
-            %   probability (PD), gate probability (PG), and clutter density.
-            %
-            % See also measurement_update, Validation
-
-            % % Tuning parameters
-            % lambda = 2.5;
-            % PD = 0.95;
-            % PG = 0.95;
-
-            % % Pre allocate space
-            % likelihood = zeros(1, size(valid_z, 2));
-            % beta = zeros(1, size(valid_z, 2));
-
-            % % Compute likelihood of each validated measurment
-            % for j = 1:size(valid_z, 2)
-            %     likelihood(j) = (mvnpdf(valid_z(:, j), z_hat, S) * PD) / lambda;
-            % end
-
-            % sum_likelihood = sum(likelihood, 2); % sum
-
-            % for j = 1:size(valid_z, 2)
-            %     beta(j) = likelihood(j) / (1 - PD * PG + sum_likelihood); % Compute beta values
-            % end
-
-            % beta0 = (1 - PD * PG) / (1 - PD * PG + sum_likelihood); % beta0 -> probability of no detections being true
-
-        end
-
-        %% ========== MEASUREMENT UPDATE ==========
+        %% ========== MEASUREMENT UPDATE (PDA) ==========
         function measurement_update(obj, z)
-            % MEASUREMENT_UPDATE Update particle weights based on measurement likelihood (PDA)
+            % MEASUREMENT_UPDATE Update particle weights based on measurement likelihood (SIR PDA)
             %
             % SYNTAX:
             %   obj.measurement_update(z)
@@ -425,22 +413,24 @@ classdef PDA_PF < DA_Filter
             %   z    - Current measurements [N_z x N_measurements] (after gating)
             %
             % DESCRIPTION:
-            %   Implements simplified PDA weight update: w_final = sum(w_measurement_i)
-            %   Sums likelihood contributions from all measurements.
+            %   Implements SIR PDA weight update: w_new = w_old * likelihood_total
+            %   Sums likelihood contributions from all measurements plus clutter hypothesis.
             %   Handles missed detection case when z is empty.
+            %   Uses SIR paradigm: multiply previous weights by new likelihood and normalize.
             %
             % MODIFIES:
             %   obj.weights - Updated and normalized particle weights [N_p x 1]
             %
-            % See also timestep, prediction, likelihoodLookup
+            % See also timestep, computeWeightsForMeasurement, computeNormalizationConstants
+
+            % Store previous weights for SIR update
+            previous_weights = obj.weights;
 
             % Handle missed detection case (no valid measurements after gating)
             if isempty(z)
-
                 if obj.debug
                     fprintf('[MEASUREMENT UPDATE] No measurements - missed detection case\n');
                 end
-
                 % Keep weights unchanged for missed detection
                 return;
             end
@@ -456,88 +446,66 @@ classdef PDA_PF < DA_Filter
                 fprintf('[MEASUREMENT UPDATE] Processing %d measurements:\n', size(z, 2));
             end
 
-            % Initialize total likelihood accumulator
-            likelihood_total = zeros(obj.N_p, 1);
-
-            % Add contribution from clutter (uniform over all particles)
-            PD = .95; % Probability of detection
-            % FIXME: Consider PFA larger (significantly)
-            PFA = 0.05; % Probability of false alarm
-            clutter_likelihood = (1 - PD) * PFA / (obj.N_p);
-
-            % Likelihood total starts with clutter contribution
+            % Initialize total likelihood with clutter hypothesis
+            clutter_likelihood = (1 - obj.PD) * obj.PFA / obj.N_p;
             likelihood_total = clutter_likelihood * ones(obj.N_p, 1);
 
             if obj.debug
                 fprintf('[CLUTTER] Added clutter contribution: %.8f per particle\n', clutter_likelihood);
             end
 
-            % Add contribution from each measurement
-            for i = 1:size(z, 2)
+            % TEMPORARY FIX: CATEGORICCAL SCALING 
+            % Get normalization constants for each measurement hypothesis
+            normalization_constants = obj.computeNormalizationConstants(z);
+            normalization_constants = normalization_constants / sum(normalization_constants); % Normalize
 
+            likelihood_total = clutter_likelihood * normalization_constants(end); % Start with clutter contribution
+
+            % Add contribution from each measurement using helper function
+            for i = 1:size(z, 2)
                 if obj.debug
                     fprintf('  Meas %d: [%.3f, %.3f] -> ', i, z(1, i), z(2, i));
                 end
 
-                % Get likelihood for this measurement
-                likelihood_i = obj.likelihoodLookup(z(:, i));
+                % Get weights for this measurement (already includes PD/N_p scaling)
+                measurement_weights = obj.computeWeightsForMeasurement(z(:, i));
 
-                % Add contribution (no beta weighting in simplified version)
-                likelihood_total = likelihood_total + likelihood_i;
-
+                % Add contribution to total likelihood (PDA: sum all measurements)
+                likelihood_total = likelihood_total + measurement_weights; % * normalization_constants(i);
             end
 
-            % Apply Gaussian weighting (using centroid of measurements for now)
-            if size(z, 2) > 0
-                z_centroid = mean(z, 2); % Simple centroid approach
-                sf = 0.15;
-                dx = obj.particles(1, :) - z_centroid(1); % [1 x N_p]
-                dy = obj.particles(2, :) - z_centroid(2); % [1 x N_p]
-                dist_sq = dx .^ 2 + dy .^ 2; % [1 x N_p]
-                gauss_weights = exp(-dist_sq / (2 * sf ^ 2)); % [1 x N_p]
-
-                % Apply Gaussian weighting
-                likelihood_total = likelihood_total .* gauss_weights';
-
-                if obj.debug
-                    fprintf('[GAUSSIAN MASK] Applied around centroid [%.3f, %.3f]\n', ...
-                        z_centroid(1), z_centroid(2));
-                end
-
-            end
-
-            % Final weight update and normalization
-            new_weights = likelihood_total + eps;
+            % SIR weight update: multiply previous weights by new likelihood
+            new_weights = previous_weights .* likelihood_total + eps;
             obj.weights = new_weights / sum(new_weights);
 
             % Debug: Print final weight stats
             if obj.debug
-                fprintf('[MEASUREMENT UPDATE] Complete. Weights: min=%.6f, max=%.6f, sum=%.6f\n', ...
+                fprintf('[SIR MEASUREMENT UPDATE] Complete. Weights: min=%.6f, max=%.6f, sum=%.6f\n', ...
                     min(obj.weights), max(obj.weights), sum(obj.weights));
             end
 
         end
 
-        function weight_updates = computeIndividualWeightUpdates(obj, z)
-            % COMPUTEINDIVIDUALWEIGHTUPDATES Compute separate weight updates for each measurement (for GNN)
+        function normalization_constants = computeNormalizationConstants(obj, z)
+            % COMPUTENORMALIZATIONCONSTANTS Compute normalization constants for each measurement hypothesis (for GNN)
             %
             % SYNTAX:
-            %   weight_updates = obj.computeIndividualWeightUpdates(z)
+            %   normalization_constants = obj.computeNormalizationConstants(z)
             %
             % INPUTS:
             %   z - Current measurements [N_z x N_measurements]
             %
             % OUTPUTS:
-            %   weight_updates - Cell array of weight updates for each measurement
-            %                   weight_updates{i} contains [N_p x 1] weights for measurement i
-            %                   weight_updates{end} contains clutter weights (uniform)
+            %   normalization_constants - Vector of normalization constants [N_measurements + 1 x 1]
+            %                           normalization_constants(i) = sum_p w_p^(i) for measurement i
+            %                           normalization_constants(end) = clutter hypothesis constant
             %
             % DESCRIPTION:
-            %   Computes individual normalized weight updates for each measurement separately.
-            %   Used by GNN algorithm to compare and select the best measurement association.
-            %   Each weight update includes both likelihood lookup and Gaussian weighting.
+            %   Computes normalization constants for GNN-style data association by calculating
+            %   the sum of particle weights for each measurement hypothesis separately.
+            %   Uses proper detection model and marginalizes out particle dimension.
             %
-            % See also measurement_update, likelihoodLookup
+            % See also computeWeightsForMeasurement, measurement_update
 
             % Check if likelihood image is available
             if isempty(obj.pointlikelihood_image)
@@ -546,40 +514,31 @@ classdef PDA_PF < DA_Filter
             end
 
             N_measurements = size(z, 2);
-            weight_updates = cell(N_measurements + 1, 1); % +1 for clutter
+            normalization_constants = zeros(N_measurements + 1, 1); % +1 for clutter
 
-            % Compute weight update for each measurement individually
+            % Compute normalization constant for each measurement individually
             for i = 1:N_measurements
-                % Get likelihood for this measurement
-                likelihood_i = obj.likelihoodLookup(z(:, i));
-
-                % Apply Gaussian weighting for this specific measurement
-                sf = 0.15;
-                dx = obj.particles(1, :) - z(1, i); % [1 x N_p]
-                dy = obj.particles(2, :) - z(2, i); % [1 x N_p]
-                dist_sq = dx .^ 2 + dy .^ 2; % [1 x N_p]
-                gauss_weights = exp(-dist_sq / (2 * sf ^ 2)); % [1 x N_p]
-
-                % Combine likelihoods and Gaussian weights
-                combined_weights = likelihood_i .* gauss_weights' + eps;
-
-                % Normalize this individual weight update
-                weight_updates{i} = combined_weights / sum(combined_weights);
+                % Get weights for this measurement using helper function
+                measurement_weights = obj.computeWeightsForMeasurement(z(:, i));
+                
+                % Marginalize out particles (sum across all particles)
+                normalization_constants(i) = sum(measurement_weights);
 
                 if obj.debug
-                    fprintf('[GNN] Measurement %d individual weights: min=%.6f, max=%.6f\n', ...
-                        i, min(weight_updates{i}), max(weight_updates{i}));
+                    fprintf('[GNN] Measurement %d normalization constant: %.6f\n', ...
+                        i, normalization_constants(i));
                 end
-
             end
 
-            % Add clutter weight update (uniform distribution)
-            clutter_weights = ones(obj.N_p, 1) / obj.N_p;
-            weight_updates{end} = clutter_weights;
+            % Add clutter hypothesis normalization constant
+            % Clutter hypothesis: (1-PD) * PFA / N_p
+            clutter_constant = (1 - obj.PD) * obj.PFA / obj.N_p;
+            normalization_constants(end) = clutter_constant;
 
             if obj.debug
-                fprintf('[GNN] Computed %d individual weight updates (%d measurements + clutter)\n', ...
-                    length(weight_updates), N_measurements);
+                fprintf('[GNN] Clutter hypothesis constant: %.6f\n', clutter_constant);
+                fprintf('[GNN] Computed %d normalization constants (%d measurements + clutter)\n', ...
+                    length(normalization_constants), N_measurements);
             end
 
         end
@@ -649,6 +608,40 @@ classdef PDA_PF < DA_Filter
             if size(likelihood_raw, 1) == 1 && size(likelihood_raw, 2) == obj.N_p
                 likelihood_raw = likelihood_raw';
             end
+
+        end
+
+        function weights = computeWeightsForMeasurement(obj, z)
+            % COMPUTEWEIGHTSFORMEASUREMENT Compute particle weights for a single measurement
+            %
+            % SYNTAX:
+            %   weights = obj.computeWeightsForMeasurement(z)
+            %
+            % INPUTS:
+            %   z - Single measurement [N_z x 1]
+            %
+            % OUTPUTS:
+            %   weights - Particle weights for this measurement [N_p x 1]
+            %
+            % DESCRIPTION:
+            %   Abstracts the common pattern of computing particle weights for a measurement
+            %   using likelihood lookup and Gaussian weighting. Used by both measurement_update
+            %   and computeIndividualWeightUpdates to avoid code duplication.
+            %
+            % See also measurement_update, computeIndividualWeightUpdates, likelihoodLookup
+
+            % Get likelihood for this measurement
+            likelihood = obj.likelihoodLookup(z);
+
+            % Apply Gaussian weighting
+            sf = 0.15;
+            dx = obj.particles(1, :) - z(1); % [1 x N_p]
+            dy = obj.particles(2, :) - z(2); % [1 x N_p]
+            dist_sq = dx .^ 2 + dy .^ 2; % [1 x N_p]
+            gauss_weights = exp(-dist_sq / (2 * sf ^ 2)); % [1 x N_p]
+
+            % Combine likelihood and Gaussian weights with detection probability scaling
+            weights = (obj.PD / obj.N_p) * (likelihood .* gauss_weights') + eps;
 
         end
 
@@ -724,6 +717,40 @@ classdef PDA_PF < DA_Filter
         end
 
         % Helper functions
+        function setDetectionModel(obj, PD, PFA)
+            % SETDETECTIONMODEL Set detection model parameters
+            %
+            % SYNTAX:
+            %   obj.setDetectionModel(PD, PFA)
+            %
+            % INPUTS:
+            %   PD  - Detection probability (0 < PD <= 1)
+            %   PFA - False alarm probability (0 <= PFA < 1)
+            %
+            % DESCRIPTION:
+            %   Updates the detection model parameters used in PDA data association.
+            %   These parameters affect the weight hypothesis and clutter hypothesis
+            %   calculations in the normalization constants computation.
+            %
+            % See also computeNormalizationConstants, measurement_update
+            
+            % Validate inputs
+            if PD <= 0 || PD > 1
+                error('PDA_PF:InvalidPD', 'Detection probability PD must be in range (0, 1]');
+            end
+            
+            if PFA < 0 || PFA >= 1
+                error('PDA_PF:InvalidPFA', 'False alarm probability PFA must be in range [0, 1)');
+            end
+            
+            obj.PD = PD;
+            obj.PFA = PFA;
+            
+            if obj.debug
+                fprintf('[DETECTION MODEL] Updated: PD=%.3f, PFA=%.3f\n', obj.PD, obj.PFA);
+            end
+        end
+
         function loadLikelihoodData(obj, likelihood_file_path)
             % LOADLIKELIHOODDATA Load precomputed likelihood lookup table for hybrid PF
             %
@@ -877,7 +904,7 @@ classdef PDA_PF < DA_Filter
         end
 
         %% ========== VISUALIZATION ==========
-        function visualize(obj, figure_handle, title_str, measurements, true_state)
+        function visualize(obj, figure_handle, title_str, measurements, true_state, all_measurements)
             % VISUALIZE Plot current particle distribution and state estimates
             %
             % SYNTAX:
@@ -886,12 +913,14 @@ classdef PDA_PF < DA_Filter
             %   obj.visualize(figure_handle, title_str)
             %   obj.visualize(figure_handle, title_str, measurements)
             %   obj.visualize(figure_handle, title_str, measurements, true_state)
+            %   obj.visualize(figure_handle, title_str, measurements, true_state, all_measurements)
             %
             % INPUTS:
-            %   figure_handle - (optional) Figure handle to plot in
-            %   title_str     - (optional) Title string for plot
-            %   measurements  - (optional) Current measurements [N_z x N_meas]
-            %   true_state    - (optional) True state for comparison [N_x x 1]
+            %   figure_handle    - (optional) Figure handle to plot in
+            %   title_str        - (optional) Title string for plot
+            %   measurements     - (optional) Used measurements [N_z x N_meas] (after gating)
+            %   true_state       - (optional) True state for comparison [N_x x 1]
+            %   all_measurements - (optional) All measurements [N_z x N_meas] (before gating)
             %
             % DESCRIPTION:
             %   Creates visualization of particle filter state with subplots for:
@@ -926,192 +955,141 @@ classdef PDA_PF < DA_Filter
                 true_state = [];
             end
 
+            if nargin < 6
+                all_measurements = [];
+            end
+
             % Get current state estimate
             [mean_state, state_cov] = obj.getGaussianEstimate();
 
             % Compute effective sample size for main title
             eff_sample_size = 1 / sum(obj.weights .^ 2);
+            
+            % Determine colorbar bounds based on weight distribution
+            uniform_threshold = 1e-6; % Threshold for considering weights uniform
+            weight_range = max(obj.weights) - min(obj.weights);
+            uniform_weight = 1 / obj.N_p;
+            
+            if weight_range < uniform_threshold
+                % Weights are uniform - set bounds to [0, 2/N_p] for better visibility
+                colorbar_min = 0;
+                colorbar_max = 2 * uniform_weight;
+            else
+                % Weights are not uniform - set bounds to [0, max(weight)]
+                colorbar_min = 0;
+                colorbar_max = max(obj.weights);
+            end
 
             % Define spatial bounds (matching test_hybrid_PF)
             Xbounds = [-2, 2];
             Ybounds = [0, 4];
 
-            % Subplot 1: Position with full scene view and inset zoom
+            % Subplot 1: Position with full scene view
             ax1 = subplot(1, 3, 1);
+            set(ax1, 'Position', [0.08, 0.15, 0.25, 0.7]); % Wider subplots
             cla;
 
             % Scatter plot of particle positions colored by weights
             h_scatter = scatter(obj.particles(1, :), obj.particles(2, :), 20, obj.weights, ...
                 'filled', 'MarkerFaceAlpha', 0.6);
+            caxis([colorbar_min, colorbar_max]); % Set consistent color limits
             hold on
 
             % Plot particle filter estimate
-            plot(mean_state(1), mean_state(2), 'ro', 'MarkerSize', 10, 'LineWidth', 3, ...
-                'DisplayName', 'PF Estimate');
+            plot(mean_state(1), mean_state(2), 'ro', 'MarkerSize', 10, 'LineWidth', 3);
 
-            % Plot covariance ellipses (1σ and 3σ)
+            % Plot covariance ellipses (1σ and validation bounds)
             pos_cov = state_cov(1:2, 1:2); % Position covariance only
 
-            % 1σ covariance ellipse (solid white)
+            % 1σ covariance ellipse (solid black)
             ellipse_1sigma = obj.computeCovarianceEllipse(mean_state(1:2), pos_cov, 1);
-            plot(ellipse_1sigma(1, :), ellipse_1sigma(2, :), 'w-', 'LineWidth', 2, ...
-                'DisplayName', '1\sigma Covariance');
+            plot(ellipse_1sigma(1, :), ellipse_1sigma(2, :), 'k-', 'LineWidth', 2);
 
-            % 3σ covariance ellipse (dotted white)
+            % Validation sigma covariance ellipse (dotted black)
             ellipse_validation = obj.computeCovarianceEllipse(mean_state(1:2), pos_cov, obj.validation_sigma_bounds);
-            plot(ellipse_validation(1, :), ellipse_validation(2, :), 'w:', 'LineWidth', 2, ...
-                'DisplayName', 'Validation');
+            plot(ellipse_validation(1, :), ellipse_validation(2, :), 'k:', 'LineWidth', 2);
 
             % Plot true state if provided
             if ~isempty(true_state)
                 plot(true_state(1), true_state(2), 'd', 'Color', 'm', ...
-                    'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'm', ...
-                    'DisplayName', 'True Position');
+                    'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'm');
             end
 
-            % Plot measurements if provided
+            % Plot all measurements first (orange +) if provided
+            if ~isempty(all_measurements)
+                plot(all_measurements(1, :), all_measurements(2, :), '+', 'Color', [1 0.5 0], ...
+                    'MarkerSize', 8, 'LineWidth', 2);
+            end
+
+            % Plot used measurements (red +) if provided - these will appear on top
             if ~isempty(measurements)
-                % Plot all measurements with a single legend entry in bright orange
-                plot(measurements(1, :), measurements(2, :), '+', 'Color', [1 0.5 0], ...
-                    'MarkerSize', 8, 'LineWidth', 2, 'DisplayName', 'Measurements');
-
-                % Draw rectangle indicating inset zoom region around first measurement
-                if size(measurements, 2) > 0
-                    current_meas = measurements(:, 1);
-                    zoom_rect = rectangle('Position', [current_meas(1) - 0.3, current_meas(2) - 0.3, 0.6, 0.6], ...
-                        'EdgeColor', 'k', 'LineWidth', 1, 'LineStyle', '--');
-                end
-
+                plot(measurements(1, :), measurements(2, :), '+', 'Color', 'r', ...
+                    'MarkerSize', 8, 'LineWidth', 2);
             end
 
             title('Position', 'Interpreter', 'latex');
             xlabel('X (m)'), ylabel('Y (m)');
             xlim(Xbounds), ylim(Ybounds);
             axis square;
-            legend('Location', 'northwest');
-
-            % Create inset zoom window if measurements are provided
-            if ~isempty(measurements) && size(measurements, 2) > 0
-                current_meas = measurements(:, 1);
-
-                % Define inset location in data coordinates (positioned in upper right)
-                inset_x_range = [0.5, 1.8];
-                inset_y_range = [2.7, 3.9];
-
-                % Convert data coordinates to normalized figure coordinates
-                ax1_pos = get(ax1, 'Position');
-                xlims = get(ax1, 'XLim');
-                ylims = get(ax1, 'YLim');
-
-                % Normalize inset position within the main subplot
-                inset_left_norm = (inset_x_range(1) - xlims(1)) / (xlims(2) - xlims(1));
-                inset_bottom_norm = (inset_y_range(1) - ylims(1)) / (ylims(2) - ylims(1));
-                inset_width_norm = (inset_x_range(2) - inset_x_range(1)) / (xlims(2) - xlims(1));
-                inset_height_norm = (inset_y_range(2) - inset_y_range(1)) / (ylims(2) - ylims(1));
-
-                % Convert to figure coordinates
-                inset_pos = [ax1_pos(1) + inset_left_norm * ax1_pos(3), ...
-                                 ax1_pos(2) + inset_bottom_norm * ax1_pos(4), ...
-                                 inset_width_norm * ax1_pos(3), ...
-                                 inset_height_norm * ax1_pos(4)];
-
-                inset_ax = axes('Position', inset_pos);
-                scatter(obj.particles(1, :), obj.particles(2, :), 15, obj.weights, ...
-                    'filled', 'MarkerFaceAlpha', 0.7);
-                hold on
-                plot(mean_state(1), mean_state(2), 'ro', 'MarkerSize', 8, 'LineWidth', 2);
-
-                % Add covariance ellipses to inset
-                ellipse_1sigma = obj.computeCovarianceEllipse(mean_state(1:2), pos_cov, 1);
-                plot(ellipse_1sigma(1, :), ellipse_1sigma(2, :), 'w-', 'LineWidth', 1.5);
-
-                ellipse_3sigma = obj.computeCovarianceEllipse(mean_state(1:2), pos_cov, 3);
-                plot(ellipse_3sigma(1, :), ellipse_3sigma(2, :), 'w:', 'LineWidth', 1.5);
-
-                if ~isempty(true_state)
-                    plot(true_state(1), true_state(2), 'd', 'Color', 'm', ...
-                        'MarkerSize', 6, 'LineWidth', 1.5, 'MarkerFaceColor', 'm');
-                end
-
-                plot(current_meas(1), current_meas(2), '+', 'Color', [1 0.5 0], ...
-                    'MarkerSize', 8, 'LineWidth', 2);
-
-                xlim([current_meas(1) - 0.3, current_meas(1) + 0.3]);
-                ylim([current_meas(2) - 0.3, current_meas(2) + 0.3]);
-                axis square;
-                set(inset_ax, 'FontSize', 8, 'Box', 'on', 'XTick', [], 'YTick', []);
-
-                % Store inset handle for later use
-                inset_handle = inset_ax;
-
-                % Return focus to main subplot
-                axes(ax1);
-            end
 
             % Subplot 2: Velocity estimates (if state dimension >= 4)
             if obj.N_x >= 4
-                subplot(1, 3, 2);
+                ax2 = subplot(1, 3, 2);
+                set(ax2, 'Position', [0.36, 0.15, 0.25, 0.7]); % Wider subplots
                 cla;
 
                 scatter(obj.particles(3, :), obj.particles(4, :), 20, obj.weights, ...
                     'filled', 'MarkerFaceAlpha', 0.6);
+                caxis([colorbar_min, colorbar_max]); % Set consistent color limits
                 hold on
-                plot(mean_state(3), mean_state(4), 'ro', 'MarkerSize', 10, 'LineWidth', 3, ...
-                    'DisplayName', 'PF Estimate');
+                plot(mean_state(3), mean_state(4), 'ro', 'MarkerSize', 10, 'LineWidth', 3);
 
                 % Plot velocity covariance ellipses
                 vel_cov = state_cov(3:4, 3:4); % Velocity covariance
                 ellipse_1sigma_vel = obj.computeCovarianceEllipse(mean_state(3:4), vel_cov, 1);
-                plot(ellipse_1sigma_vel(1, :), ellipse_1sigma_vel(2, :), 'w-', 'LineWidth', 2, ...
-                    'DisplayName', '1\sigma Covariance');
+                plot(ellipse_1sigma_vel(1, :), ellipse_1sigma_vel(2, :), 'k-', 'LineWidth', 2);
 
-                ellipse_3sigma_vel = obj.computeCovarianceEllipse(mean_state(3:4), vel_cov, 3);
-                plot(ellipse_3sigma_vel(1, :), ellipse_3sigma_vel(2, :), 'w:', 'LineWidth', 2, ...
-                    'DisplayName', '3\sigma Covariance');
+                ellipse_validation_vel = obj.computeCovarianceEllipse(mean_state(3:4), vel_cov, obj.validation_sigma_bounds);
+                plot(ellipse_validation_vel(1, :), ellipse_validation_vel(2, :), 'k:', 'LineWidth', 2);
 
                 if ~isempty(true_state) && length(true_state) >= 4
                     plot(true_state(3), true_state(4), 'd', 'Color', 'm', ...
-                        'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'm', ...
-                        'DisplayName', 'True Velocity');
+                        'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'm');
                 end
 
                 title('Velocity', 'Interpreter', 'latex');
                 xlabel('V_x (m/s)'), ylabel('V_y (m/s)');
                 axis square;
-                legend('Location', 'northwest');
             end
 
             % Subplot 3: Acceleration estimates (if state dimension >= 6)
             if obj.N_x >= 6
-                subplot(1, 3, 3);
+                ax3 = subplot(1, 3, 3);
+                set(ax3, 'Position', [0.64, 0.15, 0.25, 0.7]); % Wider subplots
                 cla;
 
                 scatter(obj.particles(5, :), obj.particles(6, :), 20, obj.weights, ...
                     'filled', 'MarkerFaceAlpha', 0.6);
+                caxis([colorbar_min, colorbar_max]); % Set consistent color limits
                 hold on
-                plot(mean_state(5), mean_state(6), 'ro', 'MarkerSize', 10, 'LineWidth', 3, ...
-                    'DisplayName', 'PF Estimate');
+                plot(mean_state(5), mean_state(6), 'ro', 'MarkerSize', 10, 'LineWidth', 3);
 
                 % Plot acceleration covariance ellipses
                 acc_cov = state_cov(5:6, 5:6); % Acceleration covariance
                 ellipse_1sigma_acc = obj.computeCovarianceEllipse(mean_state(5:6), acc_cov, 1);
-                plot(ellipse_1sigma_acc(1, :), ellipse_1sigma_acc(2, :), 'w-', 'LineWidth', 2, ...
-                    'DisplayName', '1\sigma Covariance');
+                plot(ellipse_1sigma_acc(1, :), ellipse_1sigma_acc(2, :), 'k-', 'LineWidth', 2);
 
-                ellipse_3sigma_acc = obj.computeCovarianceEllipse(mean_state(5:6), acc_cov, 3);
-                plot(ellipse_3sigma_acc(1, :), ellipse_3sigma_acc(2, :), 'w:', 'LineWidth', 2, ...
-                    'DisplayName', '3\sigma Covariance');
+                ellipse_validation_acc = obj.computeCovarianceEllipse(mean_state(5:6), acc_cov, obj.validation_sigma_bounds);
+                plot(ellipse_validation_acc(1, :), ellipse_validation_acc(2, :), 'k:', 'LineWidth', 2);
 
                 if ~isempty(true_state) && length(true_state) >= 6
                     plot(true_state(5), true_state(6), 'd', 'Color', 'm', ...
-                        'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'm', ...
-                        'DisplayName', 'True Acceleration');
+                        'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'm');
                 end
 
                 title('Acceleration', 'Interpreter', 'latex');
                 xlabel('A_x (m/s^2)'), ylabel('A_y (m/s^2)');
                 axis square;
-                legend('Location', 'northwest');
             end
 
             % Add main title with filter name, timestep, and effective sample size
@@ -1134,18 +1112,61 @@ classdef PDA_PF < DA_Filter
 
             sgtitle(main_title, 'FontSize', 14, 'FontWeight', 'bold', 'Interpreter', 'latex');
 
-            % Add colorbar spanning reduced height on the right
+            % Add colorbar spanning height on the right
             if obj.N_x >= 4 % Only add colorbar if we have multiple subplots
-                cb = colorbar('Position', [0.92, 0.25, 0.02, 0.5]);
+                cb = colorbar('Position', [0.92, 0.15, 0.02, 0.7]);
                 cb.Label.String = 'Particle Weight';
                 cb.Label.Interpreter = 'latex';
+                
+                % Set colorbar limits based on weight distribution
+                caxis([colorbar_min, colorbar_max]);
             end
 
-            % Bring inset axes to front if it exists
-            if exist('inset_handle', 'var') && isvalid(inset_handle)
-                uistack(inset_handle, 'top');
-            end
+        end
 
+        function updateDynamicPlot(obj, measurements, true_state, all_measurements)
+            % UPDATEDYNAMICPLOT Update dynamic plot during timestep execution (PDA_PF override)
+            %
+            % SYNTAX:
+            %   obj.updateDynamicPlot(measurements)
+            %   obj.updateDynamicPlot(measurements, true_state)
+            %   obj.updateDynamicPlot(measurements, true_state, all_measurements)
+            %
+            % INPUTS:
+            %   measurements     - Used measurements [N_z x N_measurements] (after gating)
+            %   true_state       - (optional) True state for comparison
+            %   all_measurements - (optional) All measurements [N_z x N_measurements] (before gating)
+            %
+            % DESCRIPTION:
+            %   Updates the dynamic visualization if enabled. Overrides parent method
+            %   to support displaying both all measurements and used measurements.
+            
+            if ~obj.DynamicPlot || isempty(obj.dynamic_figure_handle) || ...
+               ~isvalid(obj.dynamic_figure_handle)
+                return;
+            end
+            
+            % Handle optional arguments
+            if nargin < 3 || isempty(true_state)
+                true_state = [];
+            end
+            
+            if nargin < 4
+                all_measurements = [];
+            end
+            
+            % Increment timestep counter
+            obj.timestep_counter = obj.timestep_counter + 1;
+            
+            % Create title with timestep information
+            title_str = sprintf('%s Real-time Tracking (Step %d)', ...
+                class(obj), obj.timestep_counter);
+            
+            % Call PDA_PF-specific visualization with both measurement sets
+            obj.visualize(obj.dynamic_figure_handle, title_str, measurements, true_state, all_measurements);
+            
+            drawnow; % Force immediate update
+            pause(0.01); % Small pause for smooth animation
         end
 
         function ellipse_points = computeCovarianceEllipse(obj, mean_pos, cov_matrix, n_sigma)

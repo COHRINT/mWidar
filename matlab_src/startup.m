@@ -1,5 +1,5 @@
 % Default plotting settings for mWidar project
-set(0, 'DefaultFigureColormap', autumn(64))
+set(0, 'DefaultFigureColormap', parula(64))
 
 % LaTeX interpreter settings for publication-quality plots
 set(groot,'defaulttextinterpreter','latex');  
@@ -7,7 +7,8 @@ set(groot, 'defaultAxesTickLabelInterpreter','latex');
 set(groot, 'defaultLegendInterpreter','latex');
 
 % Figure and axes settings
-set(groot, 'defaultFigureColor', 'white');
+set(groot, 'defaultFigureColor', [0.94, 0.94, 0.94]); % Light gray background
+set(groot, 'defaultAxesColor', [0.94, 0.94, 0.94]); % Light gray axes background
 set(groot, 'defaultFigurePosition', [100, 100, 800, 600]);
 set(groot, 'defaultFigurePaperType', 'usletter');
 set(groot, 'defaultFigurePaperPositionMode', 'auto');
