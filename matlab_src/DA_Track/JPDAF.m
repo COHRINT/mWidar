@@ -27,11 +27,11 @@ classdef JPDAF
         function [X, P] = timestep(obj,x_prior,P_prior,z)
             [x_minus, z_hat, P_minus, S] = obj.prediction(x_prior, P_prior);
             [valid_z, meas, V] = obj.Validation(S, z_hat,z); % Currently not using valid_z to see if it works without gating
-            hypothesis = obj.generate_hypotheses(z);
-            L = obj.meas_liklihood(z_hat,S,z);
-            joint_probs = obj.compute_joint_probs(hypothesis,L,z,V);
-            beta = obj.compute_marginal_probs(hypothesis,joint_probs,z);
-            [X,P] = obj.measurment_step(beta,P_minus, x_minus, z_hat, meas, z,S);
+            hypothesis = obj.generate_hypotheses(valid_z);
+            L = obj.meas_liklihood(z_hat,S,valid_z);
+            joint_probs = obj.compute_joint_probs(hypothesis,L,valid_z,V); % Issues here?
+            beta = obj.compute_marginal_probs(hypothesis,joint_probs,valid_z);
+            [X,P] = obj.measurment_step(beta,P_minus, x_minus, z_hat, meas, valid_z,S);
 
         end
 
@@ -80,7 +80,7 @@ classdef JPDAF
         function [valid_z, meas, V] = Validation(obj, S, z_hat,z)
             meas = true(obj.t); % default
             gamma = chi2inv(0.05/2, 2); % Threshold, same for all tracks
-            valid_z = cell(1,obj.t);
+            valid_z = [];
             V = zeros(1,obj.t);
 
             for i = 1:obj.t
@@ -89,17 +89,17 @@ classdef JPDAF
                     Nu = (detection - z_hat{i})' / S{i} * (detection - z_hat{i}); % Validation ellipse (NIS statistic)
     
                     if Nu < gamma % Validation gate
-                        valid_z{i} = [valid_z{i} detection]; % Append new measurment onto validated list
+                        valid_z = [valid_z detection]; % Append new measurment onto validated list
                     end
     
                 end
-    
-                if isempty(valid_z)
-                    fprintf('No Valid Measurments \n')
-                    meas(i) = false; % missed detection
-                end
 
                 V = pi*gamma*sqrt(det(S{1})); % Volume of validation region
+            end
+            
+            if size(valid_z,2) ~= obj.t
+                    fprintf('At least one obj not detected \n')
+                    meas(i) = false; % missed detection
             end
             
         end
@@ -118,7 +118,7 @@ classdef JPDAF
 
             % Trim to only keep valid hypotheses
             valid = arrayfun(@(i) obj.isValidAssignment(all(i,:)), 1:size(all,1));
-            hypothesis = all(valid,:); 
+            hypothesis = all(valid,:);  % n_hyp given by (m choose t)*2 + 2m+1
         end
 
         %%% Valid hypotheses
@@ -134,7 +134,7 @@ classdef JPDAF
 
             for i = 1:obj.t
                 for j = 1:size(z,2)
-                    L(i,j) = obj.PD * mvnpdf(z(:,j),z_hat{i},S{i});
+                    L(i,j) = mvnpdf(z(:,j),z_hat{i},S{i});
                 end
             end
         end
@@ -143,34 +143,33 @@ classdef JPDAF
         function joint_probs = compute_joint_probs(obj,hypothesis,L,z,V)
             m = size(z,2);
             n_hyp = size(hypothesis,1);
-            lambda = zeros(obj.t,1);
-
+            P_D = obj.PD;
             joint_probs = zeros(n_hyp,1);
-                for h = 1:n_hyp
-                    theta = hypothesis(h,:);
-                    p = 1;
-                    used = false(1,m);
-            
-                    for i = 1:obj.t
-                        j = theta(i);
-                        if j == 0
-                            p = p*(1-obj.PD);
-                        elseif ~used(j)
-                            p = p*L(i,j);
-                            used(j) = true;
-                        else
-                            p = 0;
-                            break;
-                        end
-                    end
-                    num_false = m - sum(theta > 0);
-                    lambda = num_false/V;
-                    p = p*(lambda/V) * num_false;
-                    joint_probs(h) = p;
-                end
+
+            for h = 1:n_hyp % Loop through hypothesis
+                theta = hypothesis(h,:); % Current hypothesis
                 
-                % normalize
-                joint_probs = joint_probs/sum(joint_probs);
+                used_theta = theta(theta>0);
+                f = numel(used_theta); % Number of measurments used
+                
+                joint_prob = 1; % Joint probability for this specific hyp
+                lambda = 0.25;
+
+                
+                for i = 1:obj.t % Loop through tracks
+                    j = theta(i); % Detection j assigned to track i
+                    if j == 0 % Missed detection
+                        joint_prob = joint_prob*(1-P_D); % Prob of missed detection (delta_t = 0)
+                    else % Detected measurment (Tau = 1)
+                        joint_prob = joint_prob * (lambda)^-1 * L(i,j) * obj.PD; % (delta_t = 1)
+                    end
+
+                end
+                joint_probs(h) = joint_prob;
+            end
+
+            joint_probs = joint_probs/sum(joint_probs);
+                
         end
 
         %%% Marginal association probabilities
@@ -178,6 +177,7 @@ classdef JPDAF
             m = size(z,2);
             beta = zeros(obj.t,m+1);
             n_hyp = size(hypothesis,1);
+
             for h = 1:n_hyp
                 theta = hypothesis(h,:);
                 for i = 1:obj.t
