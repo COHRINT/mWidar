@@ -35,7 +35,7 @@ function [y, Signal] = sim_mWidar_image(n_t, GT, M, G, detector, NOISE_FLAG)
 
         for j = 1:n_GT
 
-            X = GT(:, j);
+            X = GT{:, j};
 
             px = X(1, i);
             py = X(2, i);
@@ -80,20 +80,21 @@ function [y, Signal] = sim_mWidar_image(n_t, GT, M, G, detector, NOISE_FLAG)
         end
 
         pvinds = sub2ind([npx npx], peak_x, peak_y);
-
-        figure(99), clf, hold on, view(2)
-
+        % 
+        % figure(99), clf, hold on, view(2)
+        % 
         % for j = 1:n_GT
-
-        %     X = GT(:, j);
-
+        % 
+        %     X = GT{:, j};
+        % 
         %     px = X(1, i);
         %     py = X(2, i);
-
+        % 
         %     plot3(px, py, 1000 * ones(length(GT), 1), 'mx', 'MarkerSize', 10, 'LineWidth', 10)
         %     plot3(pxgrid(pvinds), pygrid(pvinds), 1000 * ones(length(peak_x), 1), 'ms', 'MarkerSize', 12, 'LineWidth', 1.2)
         %     surface(pxgrid, pygrid, sim_signal, 'EdgeColor', 'none')
-
+        %     pause(0.1)
+        % 
         % end
 
         y{i} = [pxgrid(pvinds)'; pygrid(pvinds)'];

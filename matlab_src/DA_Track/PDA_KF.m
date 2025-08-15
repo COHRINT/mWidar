@@ -196,7 +196,7 @@ classdef PDA_KF < DA_Filter
             %   obj.x_predicted - Predicted state [N_x x 1]
             %   obj.P_predicted - Predicted covariance [N_x x N_x]
             %   obj.z_predicted - Predicted measurement [N_z x 1]
-            %   obj.S_innovation - Innovation covariance [N_z x N_z]
+            %   obj.S_innovation - Innovation covariance [N_z x N_z]    
             %
             % See also timestep, measurement_update
 
