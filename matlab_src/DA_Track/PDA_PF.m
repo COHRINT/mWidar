@@ -77,7 +77,7 @@ classdef PDA_PF < DA_Filter
             % SYNTAX:
             %   obj = PDA_PF(x0, N_particles, F, Q, H)
             %   obj = PDA_PF(x0, N_particles, F, Q, H, pointlikelihood_image)
-            %   obj = PDA_PF(..., 'Debug', true, 'DynamicPlot', true, 'ValidationSigma', 3, 'ESSThreshold', 0.15)
+            %   obj = PDA_PF(..., 'Debug', true, 'DynamicPlot', true, 'ValidationSigma', 3, 'ESSThreshold', 0.15, 'UniformInit', true)
             %
             % INPUTS:
             %   x0                  - Initial state estimate [N_x x 1]
@@ -91,19 +91,25 @@ classdef PDA_PF < DA_Filter
             %                        'DynamicPlot', true/false 
             %                        'ValidationSigma', numeric
             %                        'ESSThreshold', numeric (0-1, default: 0.20)
+            %                        'UniformInit', true/false (default: false)
             %
             % OUTPUTS:
             %   obj - Initialized SIR PDA_PF object
             %
             % DESCRIPTION:
-            %   Creates and initializes a SIR PDA particle filter with uniform particle
-            %   distribution around the initial state. Uses provided likelihood
-            %   table for hybrid filtering applications. Implements Sequential
-            %   Importance Resampling with configurable ESS threshold.
+            %   Creates and initializes a SIR PDA particle filter with particle
+            %   distribution around the initial state or uniformly over entire space.
+            %   Uses provided likelihood table for hybrid filtering applications. 
+            %   Implements Sequential Importance Resampling with configurable ESS threshold.
             %
             % NOTE:
             %   Load likelihood table in calling script using:
             %   load('supplemental/precalc_imagegridHMMEmLike.mat', 'pointlikelihood_image');
+            %   
+            %   When 'UniformInit' is true, particles are initialized uniformly over:
+            %   Position: x ∈ [-2, 2], y ∈ [0, 4]
+            %   Velocity: vx, vy ∈ [-2, 2]
+            %   Acceleration: ax, ay ∈ [-2, 2]
             %
             % See also timestep, prediction, resample
 
@@ -117,8 +123,24 @@ classdef PDA_PF < DA_Filter
                 pointlikelihood_image = [];
             end
 
-            % Parse options using parent class utility
-            options = DA_Filter.parseFilterOptions(varargin{:});
+            % Parse UniformInit flag first (before calling parent parseFilterOptions)
+            uniform_init = false; % Default to false for backwards compatibility
+            filtered_varargin = {};
+            
+            % Filter out UniformInit parameter and collect remaining arguments
+            i = 1;
+            while i <= length(varargin)
+                if i < length(varargin) && strcmpi(varargin{i}, 'UniformInit')
+                    uniform_init = varargin{i+1};
+                    i = i + 2; % Skip both parameter name and value
+                else
+                    filtered_varargin{end+1} = varargin{i};
+                    i = i + 1;
+                end
+            end
+
+            % Parse remaining options using parent class utility
+            options = DA_Filter.parseFilterOptions(filtered_varargin{:});
             obj.debug = options.Debug;
             obj.DynamicPlot = options.DynamicPlot;
             obj.validation_sigma_bounds = options.ValidationSigma;
@@ -129,14 +151,69 @@ classdef PDA_PF < DA_Filter
             obj.N_x = size(x0, 1);
             obj.N_z = size(H, 1);
 
-            % Initialize particles with small spread around initial guess
-            % init_spread = [0.1, 0.1, 0.25, 0.25, 0.5, 0.5]; % Position, velocity, acceleration spreads
-            obj.particles = repmat(x0(:), 1, N_particles);
+            % Initialize particles - either uniform over space or around initial guess
+            if uniform_init
+                % Uniform initialization over entire space
+                if obj.debug
+                    fprintf('[UNIFORM INIT] Initializing particles uniformly over entire space\n');
+                end
+                
+                % Define bounds for uniform initialization
+                pos_bounds = [-2, 2; 0, 4];      % [x_min, x_max; y_min, y_max]
+                vel_bounds = [-2, 2; -2, 2];     % [vx_min, vx_max; vy_min, vy_max] 
+                acc_bounds = [-2, 2; -2, 2];     % [ax_min, ax_max; ay_min, ay_max]
+                
+                % Initialize particles uniformly
+                obj.particles = zeros(obj.N_x, N_particles);
+                
+                % Position (x, y)
+                obj.particles(1, :) = pos_bounds(1,1) + (pos_bounds(1,2) - pos_bounds(1,1)) * rand(1, N_particles);
+                obj.particles(2, :) = pos_bounds(2,1) + (pos_bounds(2,2) - pos_bounds(2,1)) * rand(1, N_particles);
+                
+                % Velocity (vx, vy) if state dimension >= 4
+                if obj.N_x >= 4
+                    obj.particles(3, :) = vel_bounds(1,1) + (vel_bounds(1,2) - vel_bounds(1,1)) * rand(1, N_particles);
+                    obj.particles(4, :) = vel_bounds(2,1) + (vel_bounds(2,2) - vel_bounds(2,1)) * rand(1, N_particles);
+                end
+                
+                % Acceleration (ax, ay) if state dimension >= 6
+                if obj.N_x >= 6
+                    obj.particles(5, :) = acc_bounds(1,1) + (acc_bounds(1,2) - acc_bounds(1,1)) * rand(1, N_particles);
+                    obj.particles(6, :) = acc_bounds(2,1) + (acc_bounds(2,2) - acc_bounds(2,1)) * rand(1, N_particles);
+                end
+                
+                if obj.debug
+                    fprintf('[UNIFORM INIT] Particles initialized over bounds:\n');
+                    fprintf('  Position: x ∈ [%.1f, %.1f], y ∈ [%.1f, %.1f]\n', pos_bounds(1,:), pos_bounds(2,:));
+                    if obj.N_x >= 4
+                        fprintf('  Velocity: vx ∈ [%.1f, %.1f], vy ∈ [%.1f, %.1f]\n', vel_bounds(1,:), vel_bounds(2,:));
+                    end
+                    if obj.N_x >= 6
+                        fprintf('  Acceleration: ax ∈ [%.1f, %.1f], ay ∈ [%.1f, %.1f]\n', acc_bounds(1,:), acc_bounds(2,:));
+                    end
+                end
+                
+            else
+                % Standard initialization with small spread around initial guess
+                if obj.debug
+                    fprintf('[STANDARD INIT] Initializing particles around initial state\n');
+                end
+                
+                init_spread = [0.1, 0.1, 0.25, 0.25, 0.5, 0.5]; % Position, velocity, acceleration spreads
+                obj.particles = repmat(x0(:), 1, N_particles);
 
-            % Add Gaussian noise to each state component
-            % for i = 1:obj.N_x
-            %     obj.particles(i, :) = obj.particles(i, :);% + init_spread(i) * randn(1, N_particles);
-            % end
+                % Add Gaussian noise to each state component to provide diversity
+                for i = 1:obj.N_x
+                    obj.particles(i, :) = obj.particles(i, :) + init_spread(i) * randn(1, N_particles);
+                end
+                
+                % OPTIONAL: Initialize velocity and acceleration to zero mean if ground truth is suspect
+                % Uncomment these lines if ground truth initial velocity/acceleration seem wrong:
+                % obj.particles(3, :) = 0 + init_spread(3) * randn(1, N_particles); % vx ~ N(0, 0.25²)
+                % obj.particles(4, :) = 0 + init_spread(4) * randn(1, N_particles); % vy ~ N(0, 0.25²) 
+                % obj.particles(5, :) = 0 + init_spread(5) * randn(1, N_particles); % ax ~ N(0, 0.5²)
+                % obj.particles(6, :) = 0 + init_spread(6) * randn(1, N_particles); % ay ~ N(0, 0.5²)
+            end
 
             obj.weights = ones(N_particles, 1) / N_particles;
 
@@ -374,31 +451,40 @@ classdef PDA_PF < DA_Filter
                 return;
             end
 
-            % Get current particle filter estimate for gating
-            [x_est, P_est] = obj.getGaussianEstimate();
-            z_hat = x_est(1:2); % Predicted measurement (only position)
-            S = P_est(1:2, 1:2); % Use position covariance only
+            % % Get current particle filter estimate for gating
+            % [x_est, P_est] = obj.getGaussianEstimate();
+            % z_hat = x_est(1:2); % Predicted measurement (only position)
+            % S = P_est(1:2, 1:2); % Use position covariance only
 
-            % Compute sigma bounds for gating using configurable parameter
-            sigma_bounds = obj.validation_sigma_bounds * sqrt(diag(S));
-            lower_bound = z_hat - sigma_bounds;
-            upper_bound = z_hat + sigma_bounds;
+            % % Compute sigma bounds for gating using configurable parameter
+            % sigma_bounds = obj.validation_sigma_bounds * sqrt(diag(S));
+            % lower_bound = z_hat - sigma_bounds;
+            % upper_bound = z_hat + sigma_bounds;
 
-            % Apply gating: Keep measurements within sigma bounds
-            in_bounds = all(z >= lower_bound & z <= upper_bound, 1);
-            z_valid = z(:, in_bounds);
+            % % Apply gating: Keep measurements within sigma bounds
+            % in_bounds = all(z >= lower_bound & z <= upper_bound, 1);
+            % z_valid = z(:, in_bounds);
+            % has_valid_meas = ~isempty(z_valid);
+
+            % NEW GATING SCHEMA
+            normalization_constants = obj.computeNormalizationConstants(z);
+            
+            % Create a binary mask for validation measurements -- threshold is the false 
+            %   alarm rate (last hypothesis)
+            threshold = normalization_constants(end);
+            z_valid = z(:, normalization_constants(1:end-1) > threshold);
             has_valid_meas = ~isempty(z_valid);
 
-            if obj.debug
-                fprintf('[GATING] Input: %d measurements, Output: %d valid measurements\n', ...
-                    size(z, 2), size(z_valid, 2));
+            % if obj.debug
+            %     fprintf('[GATING] Input: %d measurements, Output: %d valid measurements\n', ...
+            %         size(z, 2), size(z_valid, 2));
 
-                if obj.debug && size(z, 2) > 0
-                    fprintf('[GATING] Using %.1f-sigma bounds: x=[%.3f, %.3f], y=[%.3f, %.3f]\n', ...
-                        obj.validation_sigma_bounds, lower_bound(1), upper_bound(1), lower_bound(2), upper_bound(2));
-                end
+            %     if obj.debug && size(z, 2) > 0
+            %         fprintf('[GATING] Using %.1f-sigma bounds: x=[%.3f, %.3f], y=[%.3f, %.3f]\n', ...
+            %             obj.validation_sigma_bounds, lower_bound(1), upper_bound(1), lower_bound(2), upper_bound(2));
+            %     end
 
-            end
+            % end
 
         end
 

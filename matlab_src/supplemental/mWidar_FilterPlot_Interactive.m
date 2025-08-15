@@ -503,15 +503,14 @@ RIGHT SUBPLOT: Filter-specific distribution:
                     x_max = x_center + y_range / 2;
                 end
                 
-                xlim([x_min, x_max]);
-                ylim([y_min, y_max]);
+                % Use pinned axis limits instead of auto-zoom
+                xlim([-2 2]);
+                ylim([0 4]);
         end
         
-        % Set standard axis limits for KF and HMM (HybridPF sets its own limits above)
-        if ~strcmp(filter_type, 'HybridPF')
-            xlim([-2 2]);
-            ylim([0 4]);
-        end
+        % Set standard axis limits for all filter types (pinned as requested)
+        xlim([-2 2]);
+        ylim([0 4]);
         xlabel('X (m)', 'Interpreter', 'latex');
         ylabel('Y (m)', 'Interpreter', 'latex');
         axis square;

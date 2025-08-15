@@ -10,13 +10,13 @@ load(fullfile('supplemental', 'Final_Test_Tracks', 'MultObj', 'JPDAF_test_traj_3
 
 P0 = diag([0.25 0.25 0.5 0.5 0.5 0.5]); % State Cov, constant for each obj
 
-% State Transition MAtrix
-A = [0 0 1 0 0 0;
-    0 0 0 1 0 0;
-    0 0 0 0 1 0;
-    0 0 0 0 0 1;
-    0 0 0 0 0 0;
-    0 0 0 0 0 0];
+% State Transition Matrix
+A = [0 1 0 0 0 0;    % dx/dt = vx
+    0 0 1 0 0 0;     % dvx/dt = ax  
+    0 0 0 0 0 0;     % dax/dt = 0 (constant acceleration)
+    0 0 0 0 1 0;     % dy/dt = vy
+    0 0 0 0 0 1;     % dvy/dt = ay
+    0 0 0 0 0 0];    % day/dt = 0 (constant acceleration)
 
 dt = 0.1;
 

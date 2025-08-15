@@ -73,7 +73,7 @@ classdef GNN_PF < DA_Filter
             % SYNTAX:
             %   obj = GNN_PF(x0, N_particles, F, Q, H)
             %   obj = GNN_PF(x0, N_particles, F, Q, H, pointlikelihood_image)
-            %   obj = GNN_PF(..., 'Debug', true, 'DynamicPlot', true, 'ValidationSigma', 3)
+            %   obj = GNN_PF(..., 'Debug', true, 'DynamicPlot', true, 'ValidationSigma', 3, 'UniformInit', true)
             %
             % INPUTS:
             %   x0                  - Initial state estimate [N_x x 1]
@@ -82,20 +82,26 @@ classdef GNN_PF < DA_Filter
             %   Q                   - Process noise covariance [N_x x N_x]
             %   H                   - Measurement matrix [N_z x N_x]
             %   pointlikelihood_image - (optional) Precomputed likelihood lookup table [128^2 x 128^2]
-            %   varargin            - Name-value pairs: 'Debug', true/false, 'DynamicPlot', true/false, 'ValidationSigma', numeric
+            %   varargin            - Name-value pairs: 'Debug', true/false, 'DynamicPlot', true/false, 'ValidationSigma', numeric, 'UniformInit', true/false
             %
             % OUTPUTS:
             %   obj - Initialized GNN_PF object
             %
             % DESCRIPTION:
-            %   Creates and initializes a GNN particle filter with uniform particle
-            %   distribution around the initial state. Uses provided likelihood
-            %   table for hybrid filtering applications. Detection model uses default
-            %   values: PD = 0.9 (detection probability), PFA = 0.1 (false alarm probability).
+            %   Creates and initializes a GNN particle filter with particle
+            %   distribution around the initial state or uniformly over entire space.
+            %   Uses provided likelihood table for hybrid filtering applications. 
+            %   Detection model uses default values: PD = 0.9 (detection probability), 
+            %   PFA = 0.1 (false alarm probability).
             %
             % NOTE:
             %   Load likelihood table in calling script using:
             %   load('supplemental/precalc_imagegridHMMEmLike.mat', 'pointlikelihood_image');
+            %   
+            %   When 'UniformInit' is true, particles are initialized uniformly over:
+            %   Position: x ∈ [-2, 2], y ∈ [0, 4]
+            %   Velocity: vx, vy ∈ [-2, 2]
+            %   Acceleration: ax, ay ∈ [-2, 2]
             %
             % See also timestep, prediction, resample
 
@@ -109,8 +115,24 @@ classdef GNN_PF < DA_Filter
                 pointlikelihood_image = [];
             end
 
-            % Parse options using parent class utility
-            options = DA_Filter.parseFilterOptions(varargin{:});
+            % Parse UniformInit flag first (before calling parent parseFilterOptions)
+            uniform_init = false; % Default to false for backwards compatibility
+            filtered_varargin = {};
+            
+            % Filter out UniformInit parameter and collect remaining arguments
+            i = 1;
+            while i <= length(varargin)
+                if i < length(varargin) && strcmpi(varargin{i}, 'UniformInit')
+                    uniform_init = varargin{i+1};
+                    i = i + 2; % Skip both parameter name and value
+                else
+                    filtered_varargin{end+1} = varargin{i};
+                    i = i + 1;
+                end
+            end
+
+            % Parse remaining options using parent class utility
+            options = DA_Filter.parseFilterOptions(filtered_varargin{:});
             obj.debug = options.Debug;
             obj.DynamicPlot = options.DynamicPlot;
             obj.validation_sigma_bounds = options.ValidationSigma;
@@ -120,14 +142,69 @@ classdef GNN_PF < DA_Filter
             obj.N_x = size(x0, 1);
             obj.N_z = size(H, 1);
 
-            % Initialize particles with small spread around initial guess
-            % init_spread = [0.1, 0.1, 0.25, 0.25, 0.5, 0.5]; % Position, velocity, acceleration spreads
-            obj.particles = repmat(x0(:), 1, N_particles);
+            % Initialize particles - either uniform over space or around initial guess
+            if uniform_init
+                % Uniform initialization over entire space
+                if obj.debug
+                    fprintf('[UNIFORM INIT] Initializing particles uniformly over entire space\n');
+                end
+                
+                % Define bounds for uniform initialization
+                pos_bounds = [-2, 2; 0, 4];      % [x_min, x_max; y_min, y_max]
+                vel_bounds = [-2, 2; -2, 2];     % [vx_min, vx_max; vy_min, vy_max] 
+                acc_bounds = [-2, 2; -2, 2];     % [ax_min, ax_max; ay_min, ay_max]
+                
+                % Initialize particles uniformly
+                obj.particles = zeros(obj.N_x, N_particles);
+                
+                % Position (x, y)
+                obj.particles(1, :) = pos_bounds(1,1) + (pos_bounds(1,2) - pos_bounds(1,1)) * rand(1, N_particles);
+                obj.particles(2, :) = pos_bounds(2,1) + (pos_bounds(2,2) - pos_bounds(2,1)) * rand(1, N_particles);
+                
+                % Velocity (vx, vy) if state dimension >= 4
+                if obj.N_x >= 4
+                    obj.particles(3, :) = vel_bounds(1,1) + (vel_bounds(1,2) - vel_bounds(1,1)) * rand(1, N_particles);
+                    obj.particles(4, :) = vel_bounds(2,1) + (vel_bounds(2,2) - vel_bounds(2,1)) * rand(1, N_particles);
+                end
+                
+                % Acceleration (ax, ay) if state dimension >= 6
+                if obj.N_x >= 6
+                    obj.particles(5, :) = acc_bounds(1,1) + (acc_bounds(1,2) - acc_bounds(1,1)) * rand(1, N_particles);
+                    obj.particles(6, :) = acc_bounds(2,1) + (acc_bounds(2,2) - acc_bounds(2,1)) * rand(1, N_particles);
+                end
+                
+                if obj.debug
+                    fprintf('[UNIFORM INIT] Particles initialized over bounds:\n');
+                    fprintf('  Position: x ∈ [%.1f, %.1f], y ∈ [%.1f, %.1f]\n', pos_bounds(1,:), pos_bounds(2,:));
+                    if obj.N_x >= 4
+                        fprintf('  Velocity: vx ∈ [%.1f, %.1f], vy ∈ [%.1f, %.1f]\n', vel_bounds(1,:), vel_bounds(2,:));
+                    end
+                    if obj.N_x >= 6
+                        fprintf('  Acceleration: ax ∈ [%.1f, %.1f], ay ∈ [%.1f, %.1f]\n', acc_bounds(1,:), acc_bounds(2,:));
+                    end
+                end
+                
+            else
+                % Standard initialization with small spread around initial guess
+                if obj.debug
+                    fprintf('[STANDARD INIT] Initializing particles around initial state\n');
+                end
+                
+                init_spread = [0.1, 0.1, 0.25, 0.25, 0.5, 0.5]; % Position, velocity, acceleration spreads
+                obj.particles = repmat(x0(:), 1, N_particles);
 
-            % Add Gaussian noise to each state component
-            % for i = 1:obj.N_x
-            %     obj.particles(i, :) = obj.particles(i, :);% + init_spread(i) * randn(1, N_particles);
-            % end
+                % Add Gaussian noise to each state component to provide diversity
+                for i = 1:obj.N_x
+                    obj.particles(i, :) = obj.particles(i, :) + init_spread(i) * randn(1, N_particles);
+                end
+                
+                % OPTIONAL: Initialize velocity and acceleration to zero mean if ground truth is suspect
+                % Uncomment these lines if ground truth initial velocity/acceleration seem wrong:
+                % obj.particles(3, :) = 0 + init_spread(3) * randn(1, N_particles); % vx ~ N(0, 0.25²)
+                % obj.particles(4, :) = 0 + init_spread(4) * randn(1, N_particles); % vy ~ N(0, 0.25²) 
+                % obj.particles(5, :) = 0 + init_spread(5) * randn(1, N_particles); % ax ~ N(0, 0.5²)
+                % obj.particles(6, :) = 0 + init_spread(6) * randn(1, N_particles); % ay ~ N(0, 0.5²)
+            end
 
             obj.weights = ones(N_particles, 1) / N_particles;
 

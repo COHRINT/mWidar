@@ -524,7 +524,11 @@ classdef GNN_KF < DA_Filter
             title(title_str, 'Interpreter', 'latex');
             legend('Location', 'best');
             grid on;
-            axis equal;
+            
+            % Set pinned axis limits for consistent positioning
+            xlim([-2 2]);
+            ylim([0 4]);
+            axis square;
         end
 
     end

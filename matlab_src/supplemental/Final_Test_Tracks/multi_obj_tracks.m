@@ -16,12 +16,12 @@ detector = "peaks2";
 
 % X will be our ground truth state time history
 
-A = [0 0 1 0 0 0;
-    0 0 0 1 0 0;
-    0 0 0 0 1 0;
-    0 0 0 0 0 1;
-    0 0 0 0 0 0;
-    0 0 0 0 0 0];
+A = [0 1 0 0 0 0;    % dx/dt = vx
+    0 0 1 0 0 0;     % dvx/dt = ax  
+    0 0 0 0 0 0;     % dax/dt = 0 (constant acceleration)
+    0 0 0 0 1 0;     % dy/dt = vy
+    0 0 0 0 0 1;     % dvy/dt = ay
+    0 0 0 0 0 0];    % day/dt = 0 (constant acceleration)
 
 x0 = cell(1,2);
 X = cell(1,2);
