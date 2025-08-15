@@ -69,8 +69,8 @@ each targets gaussian distribution as a heatmap.
 
     for t = 1:n_t
         for k = 1:n_k
-            X{t,k} = Filter{t,k}.x;
-            P{t,k} = Filter{t,k}.P;
+            X{t,k} = Filter{k}.x(:,t);
+            P{t,k} = Filter{k}.P{t};
         end
     end
 
