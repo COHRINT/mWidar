@@ -13,7 +13,7 @@ function main(varargin)
     %   FinalPlot (name-value)    - Plot mode: "interactive", "animation", or "none" (default: "none")
     %   Debug (name-value)        - Enable debug output: true or false (default: false)
     %   DynamicPlot (name-value)  - Enable dynamic plotting during filtering: true or false (default: false)
-    %   InitializeTrue (name-value) - Enable true/uninformative initialization: true or false (default: false)
+    %   InitializeTrue (name-value) - Enable true/uninformative initialization: true or false (default: true)
 
     %% ========== COMMAND LINE ARGUMENT PARSING ==========
 
@@ -47,7 +47,7 @@ function main(varargin)
     FinalPlot = "none";
     DEBUG = false;
     DYNAMIC_PLOT = false;
-    INITIALIZE_TRUE = false;
+    INITIALIZE_TRUE = true;
 
     %% --- Process Name-Value Pairs ---
     % Parse name-value pairs
@@ -142,13 +142,18 @@ function main(varargin)
     GT = Data.GT;
     GT_meas = GT(1:2, :);
     z = Data.y;
-    % signal = Data.signal;
+    signal = Data.signal;
 
     % Store original measurements for visualization (before any filtering)
     Data.y_original = Data.y; % Keep original measurements for plotting
 
     n_k = size(GT, 2);
     performance = cell(1, n_k);
+
+    % Create measurements struct for composite likelihood (HybridPF)
+    measurements = struct();
+    measurements.z = Data.y;        % Cell array of detection measurements [2 x N_meas] for each timestep
+    measurements.signal = signal;   % Cell array of mWidar signals [128 x 128] for each timestep
 
     % Initialize validation sigma parameter (will be set based on filter type)
     validation_sigma = 2; % Default value
@@ -160,30 +165,28 @@ function main(varargin)
     %% --- Define Kalman Filter Matrices ---
     % Define KF Matrices state vector - {x,y,vx,vy,ax,ay}
     % Correct continuous-time dynamics matrix for constant acceleration model
-    A = [0 1 0 0 0 0;    % dx/dt = vx
-         0 0 1 0 0 0;    % dvx/dt = ax  
-         0 0 0 0 0 0;    % dax/dt = 0 (constant acceleration)
-         0 0 0 0 1 0;    % dy/dt = vy
-         0 0 0 0 0 1;    % dvy/dt = ay
-         0 0 0 0 0 0];   % day/dt = 0 (constant acceleration)
+    A = [0, 0, 1, 0, 0, 0;
+         0, 0, 0, 1, 0, 0;
+         0, 0, 0, 0, 1, 0;
+         0, 0, 0, 0, 0, 1;
+         0, 0, 0, 0, 0, 0;
+         0, 0, 0, 0, 0, 0];
 
     F_KF = expm(A * dt);
 
     %% --- Define Particle Filter Matrices ---
     % Use the direct discrete-time formulation (matches test_hybrid_PF)
-    F_PF = [1, 0, dt, 0, dt ^ 2/2, 0;
-            0, 1, 0, dt, 0, dt ^ 2/2;
-            0, 0, 1, 0, dt, 0;
-            0, 0, 0, 1, 0, dt;
-            0, 0, 0, 0, 1, 0;
-            0, 0, 0, 0, 0, 1];
+    F_PF = [1, 0, dt, 0, dt ^ 2/2, 0; % x
+            0, 1, 0, dt, 0, dt ^ 2/2; % y
+            0, 0, 1, 0, dt, 0; % vx
+            0, 0, 0, 1, 0, dt; % vy
+            0, 0, 0, 0, 1, 0; % ax
+            0, 0, 0, 0, 0, 1]; % ay
 
     %% --- Define Noise Matrices ---
-    Q = 1e-2 * eye(6);
-    Q(3,3) = 1e-6; % Set process noise for acceleration
-    Q(4,4) = 1e-6; % Set process noise for acceleration
-    Q(5,5) = 1e-6; % Set process noise for acceleration
-    Q(6,6) = 1e-6; % Set process noise for acceleration
+    Q = eye(6) * 1e-1;
+    Q_KF = diag([1e-4, 1e-4, 1e-3, 1e-3, 1e-2, 1e-2]);
+    Q_PF = diag([1e-3, 1e-3, 1e-2, 1e-2, 1e-1, 1e-1]);
 
     R = 0.1 * eye(2);
 
@@ -206,18 +209,20 @@ function main(varargin)
                 % True initialization: zero mean with very large covariance
                 initial_state = zeros(size(GT(:, 1))); % Zero mean for all states
                 initial_covariance = diag([100, 100, 10, 10, 5, 5]); % Very large covariance
-                
+
                 if DEBUG
                     fprintf("with TRUE INITIALIZATION (zero mean, large covariance)\n");
                 end
+
             else
                 % Standard initialization using ground truth
                 initial_state = GT(:, 1);
                 initial_covariance = P0;
-                
+
                 if DEBUG
                     fprintf("with STANDARD INITIALIZATION (GT-based)\n");
                 end
+
             end
 
             if DA == "PDA"
@@ -238,36 +243,31 @@ function main(varargin)
             performance{1}.measurements_original = [];
             performance{1}.measurements_used = [];
 
+
         case 'HybridPF'
             %% --- Hybrid Particle Filter Setup ---
             fprintf("Using Hybrid Particle Filter ")
+            load(fullfile('supplemental', 'precalc_imagegridHMMEmLikeMag.mat'), 'pointlikelihood_image');
+            pointlikelihood_mag = pointlikelihood_image;
+            clear pointlikelihood_image;
             load(fullfile('supplemental', 'precalc_imagegridHMMEmLike.mat'), 'pointlikelihood_image');
 
             if DA == "PDA"
                 fprintf("with PDA data association\n");
-
-                Q_PF = Q;
-                % Q_PF(1:2, 1:2) = .001 * eye(2); % Adjust process noise for position
                 validation_sigma = 5; % Set validation sigma for PDA
-                                current_class = PDA_PF(GT(:, 1), 10000, F_PF, Q_PF, H, pointlikelihood_image, "Debug", DEBUG, "DynamicPlot", DYNAMIC_PLOT, "ValidationSigma", validation_sigma, "UniformInit", INITIALIZE_TRUE);
-                current_class.setDetectionModel(0.99, 0.80); % Set default detection model parameters
-                current_class.ESS_threshold_percentage = .20;
-
-                %% --- Optional: Challenging Initialization ---
-                % The uniform initialization is now handled automatically via the 'UniformInit' flag
-                % Set UNIFORM_INIT_PF = true to enable uniform particle initialization over:
-                % Position: x ∈ [-2, 2], y ∈ [0, 4]
-                % Velocity: vx, vy ∈ [-2, 2] 
-                % Acceleration: ax, ay ∈ [-2, 2]
+                current_class = PDA_PF(GT(:, 1), 10000, F_PF, Q_PF, H, pointlikelihood_image, pointlikelihood_mag, "Debug", DEBUG, "DynamicPlot", DYNAMIC_PLOT, "ValidationSigma", validation_sigma, "UniformInit", INITIALIZE_TRUE);
+                current_class.setDetectionModel(0.99, 0.2); % Set default detection model parameters
+                current_class.ESS_threshold_percentage = .10;
+                % Enable composite likelihood mode for comprehensive visualization
+                current_class.composite_likelihood = true;
+                % Set GIF filename if desired (uncomment to enable GIF output)
+                % current_class.gif_filename = 'main_output.gif';
 
             elseif DA == "GNN"
                 fprintf("with GNN data association\n");
-                % current_class.debug = DEBUG;
                 Q_PF = Q;
-                % Q_PF(1:2, 1:2) = .02 * eye(2); % Adjust process noise for position
                 validation_sigma = 5; % Set validation sigma for GNN
                 current_class = GNN_PF(GT(:, 1), 10000, F_PF, Q_PF, H, pointlikelihood_image, "Debug", DEBUG, "DynamicPlot", DYNAMIC_PLOT, "ValidationSigma", validation_sigma, "UniformInit", INITIALIZE_TRUE);
-
             else
                 error('Unknown data association method: %s', DA);
             end
@@ -276,8 +276,6 @@ function main(varargin)
             performance{1}.particles = current_class.particles; % Store initial particles
             performance{1}.weights = current_class.weights; % Store initial weights
             [performance{1}.x, performance{1}.P] = current_class.getGaussianEstimate(); % Initial Gaussian estimate
-
-            % Store initial measurements (empty for first timestep)
             performance{1}.measurements_original = [];
             performance{1}.measurements_used = [];
 
@@ -294,23 +292,33 @@ function main(varargin)
             if INITIALIZE_TRUE
                 % Use center of field as dummy initial position (will be overridden)
                 initial_position = [0; 2]; % Center of [-2,2] x [0,4] space
-                
+
                 if DEBUG
                     fprintf("with TRUE INITIALIZATION (uniform over field)\n");
                 end
+
             else
                 % Standard initialization using ground truth
                 initial_position = GT(1:2, 1);
-                
+
                 if DEBUG
                     fprintf("with STANDARD INITIALIZATION (GT-based)\n");
                 end
+
             end
 
             if DA == "PDA"
                 fprintf("with PDA data association\n");
                 validation_sigma = 5; % Set validation sigma for PDA
                 current_class = PDA_HMM(initial_position, A_slow, pointlikelihood_image, "Debug", DEBUG, "DynamicPlot", DYNAMIC_PLOT, "ValidationSigma", validation_sigma);
+
+                current_class.setDetectionModel(0.99, 0.2); % Set default detection model parameters
+                current_class.ESS_threshold_percentage = .10;
+                
+                % Enable composite likelihood mode for comprehensive visualization
+                current_class.composite_likelihood = true;
+                fprintf('-> Enabled composite likelihood mode for comprehensive visualization\n');
+                current_class.gif_filename = 'coolgifTraj.gif'; % No GIF by default
 
             elseif DA == "GNN"
                 fprintf("with GNN data association\n");
@@ -321,14 +329,15 @@ function main(varargin)
             else
                 error('Unknown data association method: %s', DA);
             end
-            
+
             % Override with uniform distribution if true initialization is requested
             if INITIALIZE_TRUE
                 current_class.ptarget_prob = ones(current_class.npx2, 1) / current_class.npx2;
-                
+
                 if DEBUG
                     fprintf("-> Overrode with uniform distribution over entire field\n");
                 end
+
             end
 
             %% --- Initialize Performance Storage ---
@@ -347,6 +356,7 @@ function main(varargin)
     end
 
     %% ========== STATE ESTIMATION LOOP ==========
+
     for i = 2:n_k
         fprintf('Processing time step %d/%d\n', i, n_k);
 
@@ -355,76 +365,49 @@ function main(varargin)
             case "KF"
                 %% --- Kalman Filter Timestep ---
                 current_meas = z{i}; % Use original measurements
-
-                % Store original measurements for visualization
                 performance{i}.measurements_original = current_meas;
                 performance{i}.measurements_used = current_meas; % KF uses all measurements
-
-                % Perform Timestep Update using new standardized API
                 current_class.timestep(current_meas, GT(:, i)); % Pass ground truth for visualization
-
-                %% --- Update Performance Metrics ---
                 [performance{i}.x, performance{i}.P] = current_class.getGaussianEstimate();
 
             case 'HybridPF'
                 %% --- Hybrid Particle Filter Timestep ---
-                % current_meas = GT_meas(:, i); % Use ground truth measurements for testing
-                current_meas = z{i}; % Use original measurements
-
-                % Store original measurements for visualization
-                performance{i}.measurements_original = current_meas;
-
-                % Get the actual used measurements by calling the validation method
-                [measurements_used, ~] = current_class.Validation(current_meas);
+                current_meas_raw = measurements.z{i};
+                current_signal = measurements.signal{i};
+                performance{i}.measurements_original = current_meas_raw;
+                [measurements_used, ~] = current_class.Validation(current_meas_raw);
                 performance{i}.measurements_used = measurements_used;
-
-                % Debug: Print measurement filtering info
-                if DEBUG && ~isempty(current_meas)
-                    fprintf('  Step %d: %d original measurements, %d used measurements\n', ...
-                        i, size(current_meas, 2), size(measurements_used, 2));
+                measurement_struct = struct();
+                measurement_struct.det = current_meas_raw;
+                measurement_struct.mag = current_signal;
+                if DEBUG && ~isempty(current_meas_raw)
+                    fprintf('  Step %d: %d original measurements, %d used measurements, signal size %dx%d\n', ...
+                        i, size(current_meas_raw, 2), size(measurements_used, 2), size(current_signal, 1), size(current_signal, 2));
                 end
-
-                % Perform Timestep Update (includes dynamic plotting if enabled)
-                current_class.timestep(current_meas, GT(:, i)); % Pass ground truth for visualization
-
-                %% --- Update Performance Metrics ---
-                performance{i}.particles = current_class.particles; % Store particles
-                performance{i}.weights = current_class.weights; % Store weights
-
-                % Update Gaussian estimate
+                current_class.timestep(measurement_struct, GT(:, i));
+                performance{i}.particles = current_class.particles;
+                performance{i}.weights = current_class.weights;
                 [performance{i}.x, performance{i}.P] = current_class.getGaussianEstimate();
 
             case 'HMM'
                 %% --- Hidden Markov Model Timestep ---
-                % current_meas = GT_meas(:, i); % Use ground truth measurements for testing
-                current_meas = z{i}; % Use original measurements
-
-                % Store original measurements for visualization
+                current_meas = z{i};
                 performance{i}.measurements_original = current_meas;
-
-                % Get the actual used measurements by calling the validation method
                 [measurements_used, ~] = current_class.Validation(current_meas);
                 performance{i}.measurements_used = measurements_used;
-
-                % Debug: Print measurement filtering info
                 if DEBUG && ~isempty(current_meas)
                     fprintf('  Step %d: %d original measurements, %d used measurements\n', ...
                         i, size(current_meas, 2), size(measurements_used, 2));
                 end
-
-                % Perform Timestep Update (includes dynamic plotting if enabled)
-                current_class.timestep(current_meas, GT(1:2, i)); % Pass ground truth for visualization
-
-                %% --- Update Performance Metrics ---
+                current_class.timestep(current_meas, GT(1:2, i));
                 [performance{i}.x, performance{i}.P] = current_class.getGaussianEstimate();
-                performance{i}.prior_prob = current_class.prior_prob; % Store prior distribution
-                performance{i}.likelihood_prob = current_class.likelihood_prob; % Store likelihood distribution
-                performance{i}.posterior_prob = current_class.posterior_prob; % Store posterior distribution
+                performance{i}.prior_prob = current_class.prior_prob;
+                performance{i}.likelihood_prob = current_class.likelihood_prob;
+                performance{i}.posterior_prob = current_class.posterior_prob;
 
             otherwise
                 error('Unknown filter type in timestep loop: %s', filter_type);
         end
-
     end % End of for loop
 
     %% ========== FINAL PLOTTING AND VISUALIZATION ==========
@@ -445,6 +428,69 @@ function main(varargin)
         %% --- No Plotting Mode ---
         fprintf('No final plotting requested (FinalPlot = "none").\n');
     end
+
+%% ========== FINAL SUMMARY ==========
+    fprintf('\n=== EXPERIMENT COMPLETED ===\n');
+    fprintf('Filter: %s-%s\n', filter_type, DA);
+    fprintf('Dataset: %s\n', DATASET);
+    fprintf('Timesteps processed: %d\n', n_k);
+    fprintf('Performance metrics stored for all timesteps: Yes\n');
+
+    %% ========== SAVE CAPTURED FRAMES ANIMATION ==========
+    if DYNAMIC_PLOT && current_class.hasFrames()
+        fprintf('\n=== SAVING CAPTURED FRAMES ANIMATION ===\n');
+        
+        % Create animation directory if it doesn't exist
+        animation_dir = fullfile("..", "figures", "DA_Track", "captured_animations");
+        if ~exist(animation_dir, 'dir')
+            mkdir(animation_dir);
+            fprintf('Created captured animation directory: %s\n', animation_dir);
+        end
+        
+        % Generate filename for captured frames animation (GIF only)
+        gif_filename = sprintf('%s_%s_%s_captured.gif', filter_type, DATASET, DA);
+        gif_path = fullfile(animation_dir, gif_filename);
+        
+        % Save animation from captured frames as GIF
+        current_class.saveAnimation(char(gif_path), 'FrameRate', 5);
+        
+        % Clear frames to free memory
+        current_class.clearFrames();
+        
+        fprintf('Captured frames GIF saved to: %s\n', gif_path);
+        fprintf('===========================================\n');
+    else
+        if ~DYNAMIC_PLOT
+            fprintf('\nNo animation to save - DYNAMIC_PLOT was disabled.\n');
+        else
+            fprintf('\nNo frames captured - check if plotting occurred correctly.\n');
+            fprintf('Captured frame count: %d\n', current_class.getFrameCount());
+        end
+    end
+
+    %% ========== FINAL ANIMATION GENERATION ==========
+    if ANIMATION
+        fprintf('Generating final animation...\n');
+        
+        % Create traj_plots directory if it doesn't exist
+        traj_plots_dir = fullfile("..", "figures", "DA_Track", "traj_plots");
+        if ~exist(traj_plots_dir, 'dir')
+            mkdir(traj_plots_dir);
+            fprintf('Created trajectory plots directory: %s\n', traj_plots_dir);
+        end
+        
+        saveString = filter_type + "_" + DATASET + "_" + DA + ".gif";
+        animation_path = fullfile(traj_plots_dir, saveString);
+
+        % Animation plotting function - use actual simulation time vector
+        time_vector = 0:dt:(n_k-1)*dt;
+        mWidar_FilterPlot_Distribution(performance, Data, time_vector, filter_type, validation_sigma, animation_path);
+        fprintf('Final animation saved to: %s\n', animation_path);
+    end
+
+    fprintf('===================================\n');
+
+
 
     %% --- Future Enhancements ---
     % NEES(current_class,initial_state,A,10,M,G)

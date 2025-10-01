@@ -385,10 +385,10 @@ RIGHT SUBPLOT: Filter-specific distribution:
                 [imind, cm] = rgb2ind(im, 256);
                 
                 if k == 1
-                    imwrite(imind, cm, gif_path, 'gif', 'Loopcount', inf, 'DelayTime', 0.1);
+                    imwrite(imind, cm, gif_path, 'gif', 'Loopcount', inf, 'DelayTime', 0.2);
                     fprintf('Started saving GIF: %s\n', gif_path);
                 else
-                    imwrite(imind, cm, gif_path, 'gif', 'WriteMode', 'append', 'DelayTime', 0.1);
+                    imwrite(imind, cm, gif_path, 'gif', 'WriteMode', 'append', 'DelayTime', 0.2);
                 end
                 fprintf('Frame %d/%d saved\n', k, n_k);
             catch ME

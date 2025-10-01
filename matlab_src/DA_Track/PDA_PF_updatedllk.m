@@ -1,10 +1,10 @@
-classdef PDA_PF < DA_Filter
-    % PDA_PF Sequential Importance Resampling Probabilistic Data Association Particle Filter
+classdef PDA_PF_updatedllk < DA_Filter
+    % PDA_PF_updatedllk Sequential Importance Resampling Probabilistic Data Association Particle Filter
     %
     % DESCRIPTION:
     %   Implements a hybrid SIR particle filter combining PDA data association
-    %   with Sequential Importance Resampling for single target tracking.
-    %   Supports both standard Gaussian likelihood and precomputed spatial
+    %   with Sequential Importance Resampling for single target tracking. 
+    %   Supports both standard Gaussian likelihood and precomputed spatial 
     %   likelihood lookup tables for radar/sensor fusion applications.
     %
     %   SIR ALGORITHM:
@@ -17,7 +17,6 @@ classdef PDA_PF < DA_Filter
     %   particles, weights   - Particle filter state [N_x x N_p], [N_p x 1]
     %   F, Q, H             - System model matrices
     %   pointlikelihood_image - Precomputed likelihood lookup table
-    %   pointlikelihood_mag   - Precomputed likelihood magnitude lookup table (hybrid likelihood)]
     %   PD, PFA             - Detection probability and false alarm probability
     %   debug, validate     - Control flags for debugging and validation
     %
@@ -51,7 +50,6 @@ classdef PDA_PF < DA_Filter
 
         % Likelihood Model
         pointlikelihood_image % Precomputed likelihood lookup table [128^2 x 128^2]
-        pointlikelihood_mag   % Precomputed likelihood magnitude lookup table (hybrid likelihood) [128^2 x 2]
 
         % Control Flags (inherited from DA_Filter)
         debug = false % Enable debug output and validation
@@ -66,36 +64,20 @@ classdef PDA_PF < DA_Filter
         PFA = 0.05 % False alarm probability (probability of false measurement)
 
         % SIR Resampling Parameters
-        ESS_threshold_percentage = 0.95 % ESS threshold as percentage of N_p for resampling (default: 95 % - behaves like bootstrap)
+        ESS_threshold_percentage = 0.95 % ESS threshold as percentage of N_p for resampling (default: 95% - behaves like bootstrap)
 
         % Dynamic Plotting (inherited from DA_Filter)
         dynamic_figure_handle % Figure handle for dynamic plotting
-
-        % Updated Likelihood
-        composite_likelihood
-        
-        % Visualization Storage (for comprehensive likelihood breakdown)
-        current_signal = [] % Current mWidar signal [128 x 128]
-        detection_likelihood_field = [] % Detection likelihood field [128^2 x 1]
-        magnitude_likelihood_field = [] % Magnitude likelihood field [128^2 x 1]
-        combined_likelihood_field = [] % Combined likelihood field [128^2 x 1]
-        current_measurement = [] % Current measurement position [2 x 1]
-        particle_detection_likelihoods = [] % Individual particle detection likelihoods [N_p x 1]
-        particle_magnitude_likelihoods = [] % Individual particle magnitude likelihoods [N_p x 1]
-
-        % Update GIF filename for dynamic plotting (inherited from DA_Filter)
-        gif_filename = '' % Filename for saving dynamic plot as GIF (empty = no GIF)
-        gif_frame_counter = 0; % Frame counter for GIF creation
     end
 
     methods
 
-        function obj = PDA_PF(x0, N_particles, F, Q, H, pointlikelihood_image, pointlikelihood_mag, varargin) % PDA_PF Constructor for SIR Probabilistic Data Association Particle Filter
+        function obj = PDA_PF_updatedllk(x0, N_particles, F, Q, H, pointlikelihood_image, varargin) % PDA_PF_updatedllk Constructor for SIR Probabilistic Data Association Particle Filter
             %
             % SYNTAX:
-            %   obj = PDA_PF(x0, N_particles, F, Q, H)
-            %   obj = PDA_PF(x0, N_particles, F, Q, H, pointlikelihood_image)
-            %   obj = PDA_PF(..., 'Debug', true, 'DynamicPlot', true, 'ValidationSigma', 3, 'ESSThreshold', 0.15, 'UniformInit', true)
+            %   obj = PDA_PF_updatedllk(x0, N_particles, F, Q, H)
+            %   obj = PDA_PF_updatedllk(x0, N_particles, F, Q, H, pointlikelihood_image)
+            %   obj = PDA_PF_updatedllk(..., 'Debug', true, 'DynamicPlot', true, 'ValidationSigma', 3, 'ESSThreshold', 0.15, 'UniformInit', true)
             %
             % INPUTS:
             %   x0                  - Initial state estimate [N_x x 1]
@@ -104,27 +86,26 @@ classdef PDA_PF < DA_Filter
             %   Q                   - Process noise covariance [N_x x N_x]
             %   H                   - Measurement matrix [N_z x N_x]
             %   pointlikelihood_image - (optional) Precomputed likelihood lookup table [128^2 x 128^2]
-            %   pointlikelihood_mag   - (optional) Precomputed likelihood magnitude lookup table (hybrid likelihood) [128^2 x 2]
-            %   varargin            - Name-value pairs:
-            %                        'Debug', true/false
-            %                        'DynamicPlot', true/false
+            %   varargin            - Name-value pairs: 
+            %                        'Debug', true/false 
+            %                        'DynamicPlot', true/false 
             %                        'ValidationSigma', numeric
             %                        'ESSThreshold', numeric (0-1, default: 0.20)
             %                        'UniformInit', true/false (default: false)
             %
             % OUTPUTS:
-            %   obj - Initialized SIR PDA_PF object
+            %   obj - Initialized SIR PDA_PF_updatedllk object
             %
             % DESCRIPTION:
-            %   Creates and initializes a SIR PDA particle filter with particle
+            %   Creates and initializes a SIR PDA_PF_updatedllk particle filter with particle
             %   distribution around the initial state or uniformly over entire space.
-            %   Uses provided likelihood table for hybrid filtering applications.
+            %   Uses provided likelihood table for hybrid filtering applications. 
             %   Implements Sequential Importance Resampling with configurable ESS threshold.
             %
             % NOTE:
             %   Load likelihood table in calling script using:
             %   load('supplemental/precalc_imagegridHMMEmLike.mat', 'pointlikelihood_image');
-            %
+            %   
             %   When 'UniformInit' is true, particles are initialized uniformly over:
             %   Position: x ∈ [-2, 2], y ∈ [0, 4]
             %   Velocity: vx, vy ∈ [-2, 2]
@@ -134,7 +115,7 @@ classdef PDA_PF < DA_Filter
 
             % Validate inputs
             if nargin < 5
-                error('PDA_PF:InvalidInput', 'Minimum 5 inputs required: {x0, N_particles, F, Q, H}');
+                error('PDA_PF_updatedllk:InvalidInput', 'Minimum 5 inputs required: {x0, N_particles, F, Q, H}');
             end
 
             if nargin < 6 || isempty(pointlikelihood_image)
@@ -142,31 +123,20 @@ classdef PDA_PF < DA_Filter
                 pointlikelihood_image = [];
             end
 
-            if nargin < 7 || isempty(pointlikelihood_mag)
-                % Initialize with empty matrix - will be set later if needed
-                pointlikelihood_mag = [];
-                obj.composite_likelihood = false;
-            else
-                obj.composite_likelihood = true;
-            end
-
             % Parse UniformInit flag first (before calling parent parseFilterOptions)
             uniform_init = false; % Default to false for backwards compatibility
             filtered_varargin = {};
-
+            
             % Filter out UniformInit parameter and collect remaining arguments
             i = 1;
-
             while i <= length(varargin)
-
                 if i < length(varargin) && strcmpi(varargin{i}, 'UniformInit')
-                    uniform_init = varargin{i + 1};
+                    uniform_init = varargin{i+1};
                     i = i + 2; % Skip both parameter name and value
                 else
-                    filtered_varargin{end + 1} = varargin{i};
+                    filtered_varargin{end+1} = varargin{i};
                     i = i + 1;
                 end
-
             end
 
             % Parse remaining options using parent class utility
@@ -174,6 +144,7 @@ classdef PDA_PF < DA_Filter
             obj.debug = options.Debug;
             obj.DynamicPlot = options.DynamicPlot;
             obj.validation_sigma_bounds = options.ValidationSigma;
+
 
             % Initialize basic properties
             obj.N_p = N_particles;
@@ -186,51 +157,48 @@ classdef PDA_PF < DA_Filter
                 if obj.debug
                     fprintf('[UNIFORM INIT] Initializing particles uniformly over entire space\n');
                 end
-
+                
                 % Define bounds for uniform initialization
-                pos_bounds = [-2, 2; 0.5, 4]; % [x_min, x_max; y_min, y_max] - y >= 0.5
-                vel_bounds = [-2, 2; -2, 2]; % [vx_min, vx_max; vy_min, vy_max]
-                acc_bounds = [-2, 2; -2, 2]; % [ax_min, ax_max; ay_min, ay_max]
-
+                pos_bounds = [-2, 2; 0, 4];      % [x_min, x_max; y_min, y_max]
+                vel_bounds = [-2, 2; -2, 2];     % [vx_min, vx_max; vy_min, vy_max] 
+                acc_bounds = [-2, 2; -2, 2];     % [ax_min, ax_max; ay_min, ay_max]
+                
                 % Initialize particles uniformly
                 obj.particles = zeros(obj.N_x, N_particles);
-
-                % Position (x, y) - ensure y >= 0.5
-                obj.particles(1, :) = pos_bounds(1, 1) + (pos_bounds(1, 2) - pos_bounds(1, 1)) * rand(1, N_particles);
-                obj.particles(2, :) = pos_bounds(2, 1) + (pos_bounds(2, 2) - pos_bounds(2, 1)) * rand(1, N_particles);
-
+                
+                % Position (x, y)
+                obj.particles(1, :) = pos_bounds(1,1) + (pos_bounds(1,2) - pos_bounds(1,1)) * rand(1, N_particles);
+                obj.particles(2, :) = pos_bounds(2,1) + (pos_bounds(2,2) - pos_bounds(2,1)) * rand(1, N_particles);
+                
                 % Velocity (vx, vy) if state dimension >= 4
                 if obj.N_x >= 4
-                    obj.particles(3, :) = vel_bounds(1, 1) + (vel_bounds(1, 2) - vel_bounds(1, 1)) * rand(1, N_particles);
-                    obj.particles(4, :) = vel_bounds(2, 1) + (vel_bounds(2, 2) - vel_bounds(2, 1)) * rand(1, N_particles);
+                    obj.particles(3, :) = vel_bounds(1,1) + (vel_bounds(1,2) - vel_bounds(1,1)) * rand(1, N_particles);
+                    obj.particles(4, :) = vel_bounds(2,1) + (vel_bounds(2,2) - vel_bounds(2,1)) * rand(1, N_particles);
                 end
-
+                
                 % Acceleration (ax, ay) if state dimension >= 6
                 if obj.N_x >= 6
-                    obj.particles(5, :) = acc_bounds(1, 1) + (acc_bounds(1, 2) - acc_bounds(1, 1)) * rand(1, N_particles);
-                    obj.particles(6, :) = acc_bounds(2, 1) + (acc_bounds(2, 2) - acc_bounds(2, 1)) * rand(1, N_particles);
+                    obj.particles(5, :) = acc_bounds(1,1) + (acc_bounds(1,2) - acc_bounds(1,1)) * rand(1, N_particles);
+                    obj.particles(6, :) = acc_bounds(2,1) + (acc_bounds(2,2) - acc_bounds(2,1)) * rand(1, N_particles);
                 end
-
+                
                 if obj.debug
                     fprintf('[UNIFORM INIT] Particles initialized over bounds:\n');
-                    fprintf('  Position: x ∈ [%.1f, %.1f], y ∈ [%.1f, %.1f]\n', pos_bounds(1, :), pos_bounds(2, :));
-
+                    fprintf('  Position: x ∈ [%.1f, %.1f], y ∈ [%.1f, %.1f]\n', pos_bounds(1,:), pos_bounds(2,:));
                     if obj.N_x >= 4
-                        fprintf('  Velocity: vx ∈ [%.1f, %.1f], vy ∈ [%.1f, %.1f]\n', vel_bounds(1, :), vel_bounds(2, :));
+                        fprintf('  Velocity: vx ∈ [%.1f, %.1f], vy ∈ [%.1f, %.1f]\n', vel_bounds(1,:), vel_bounds(2,:));
                     end
-
                     if obj.N_x >= 6
-                        fprintf('  Acceleration: ax ∈ [%.1f, %.1f], ay ∈ [%.1f, %.1f]\n', acc_bounds(1, :), acc_bounds(2, :));
+                        fprintf('  Acceleration: ax ∈ [%.1f, %.1f], ay ∈ [%.1f, %.1f]\n', acc_bounds(1,:), acc_bounds(2,:));
                     end
-
                 end
-
+                
             else
                 % Standard initialization with small spread around initial guess
                 if obj.debug
                     fprintf('[STANDARD INIT] Initializing particles around initial state\n');
                 end
-
+                
                 init_spread = [0.1, 0.1, 0.25, 0.25, 0.5, 0.5]; % Position, velocity, acceleration spreads
                 obj.particles = repmat(x0(:), 1, N_particles);
 
@@ -239,13 +207,10 @@ classdef PDA_PF < DA_Filter
                     obj.particles(i, :) = obj.particles(i, :) + init_spread(i) * randn(1, N_particles);
                 end
                 
-                % Ensure all particles have y >= 0.5
-                obj.particles(2, obj.particles(2, :) < 0.5) = 0.5;
-
                 % OPTIONAL: Initialize velocity and acceleration to zero mean if ground truth is suspect
                 % Uncomment these lines if ground truth initial velocity/acceleration seem wrong:
                 % obj.particles(3, :) = 0 + init_spread(3) * randn(1, N_particles); % vx ~ N(0, 0.25²)
-                % obj.particles(4, :) = 0 + init_spread(4) * randn(1, N_particles); % vy ~ N(0, 0.25²)
+                % obj.particles(4, :) = 0 + init_spread(4) * randn(1, N_particles); % vy ~ N(0, 0.25²) 
                 % obj.particles(5, :) = 0 + init_spread(5) * randn(1, N_particles); % ax ~ N(0, 0.5²)
                 % obj.particles(6, :) = 0 + init_spread(6) * randn(1, N_particles); % ay ~ N(0, 0.5²)
             end
@@ -259,7 +224,6 @@ classdef PDA_PF < DA_Filter
 
             % Store likelihood lookup table
             obj.pointlikelihood_image = pointlikelihood_image;
-            obj.pointlikelihood_mag = pointlikelihood_mag;
 
             % Validate dimensions if likelihood image is provided
             if ~isempty(pointlikelihood_image)
@@ -270,41 +234,20 @@ classdef PDA_PF < DA_Filter
                     fprintf('\n=== PDA_PF INITIALIZATION ===\n');
                     fprintf('Particles: %d, States: %d, Measurements: %d\n', N_particles, obj.N_x, obj.N_z);
                     fprintf('ESS Threshold: %.1f%% (%d particles)\n', 100 * obj.ESS_threshold_percentage, round(obj.ESS_threshold_percentage * obj.N_p));
-                    fprintf('Detection likelihood table: %dx%d (expected: %dx%d)\n', rows, cols, expected_dim, expected_dim);
-                    
-                    % Validate magnitude likelihood dimensions if provided
-                    if ~isempty(pointlikelihood_mag)
-                        [mag_rows, mag_cols] = size(obj.pointlikelihood_mag);
-                        fprintf('Magnitude likelihood table: %dx%d (expected: %dx2)\n', mag_rows, mag_cols, expected_dim);
-                        
-                        if mag_rows ~= expected_dim || mag_cols ~= 2
-                            warning('PDA_PF:MagDimensionMismatch', ...
-                                'Magnitude likelihood dimensions (%dx%d) do not match expected size (%dx2)', ...
-                                mag_rows, mag_cols, expected_dim);
-                        end
-                        
-                        fprintf('Composite likelihood enabled: Yes\n');
-                    else
-                        fprintf('Composite likelihood enabled: No\n');
-                    end
-                    
+                    fprintf('Likelihood table: %dx%d (expected: %dx%d)\n', rows, cols, expected_dim, expected_dim);
                     fprintf('============================\n\n');
                 end
 
                 if rows ~= expected_dim || cols ~= expected_dim
-                    warning('PDA_PF:DimensionMismatch', ...
+                    warning('PDA_PF_updatedllk:DimensionMismatch', ...
                         'Likelihood model dimensions (%dx%d) do not match expected grid size (%dx%d)', ...
                         rows, cols, expected_dim, expected_dim);
                 end
 
             end
 
-            % Initialize dynamic plotting if enabled with larger size for comprehensive 2x5 likelihood visualization
-            obj.initializeDynamicPlot('PDA-PF Dynamic Tracking', [100, 100, 1800, 800]);
-
-            % Initialize GIF filename to empty (no GIF by default)
-            obj.gif_filename = '';
-            obj.gif_frame_counter = 0;
+            % Initialize dynamic plotting if enabled with shorter height for 1x3 square axes
+            obj.initializeDynamicPlot('PDA-PF Dynamic Tracking', [100, 100, 1400, 600]);
 
         end
 
@@ -317,7 +260,7 @@ classdef PDA_PF < DA_Filter
             %   obj.timestep(z, true_state)
             %
             % INPUTS:
-            %   z          - Measurements: either [2 x N_measurements] matrix or struct with .det and .mag fields
+            %   z          - Measurements [2 x N_measurements]
             %   true_state - (optional) True state for visualization
             %
             % DESCRIPTION:
@@ -328,10 +271,6 @@ classdef PDA_PF < DA_Filter
             %   4. Resampling - Resample if ESS falls below configurable threshold
             %   5. Visualization - Update dynamic plot if enabled
             %
-            % MEASUREMENT FORMAT:
-            %   - Legacy: z as [2 x N_measurements] matrix
-            %   - New: z as struct with z.det [2 x N_measurements] and z.mag [128 x 128]
-            %
             % ALGORITHM NOTES:
             %   - Uses Sequential Importance Resampling (SIR) paradigm
             %   - Resampling occurs at END of timestep if ESS < threshold
@@ -341,40 +280,14 @@ classdef PDA_PF < DA_Filter
             %
             % See also prediction, measurement_update, resample
 
-            % Handle both legacy measurement format and new struct format
-            if isstruct(z)
-                % New format: measurement struct with .det and .mag fields
-                z_det = z.det;
-                z_mag = z.mag;
-                measurement_struct_format = true;
-                
-                % Store signal data for comprehensive visualization
-                if obj.composite_likelihood && ~isempty(z_mag)
-                    obj.current_signal = z_mag;
-                    if obj.debug
-                        fprintf('Stored signal data for comprehensive visualization\n');
-                    end
-                end
-            else
-                % Legacy format: direct measurement matrix
-                z_det = z;
-                z_mag = [];
-                measurement_struct_format = false;
-            end
-
             if obj.debug
                 fprintf('\n=== SIR PDA-PF TIMESTEP START ===\n');
-                if measurement_struct_format
-                    fprintf('Input: measurement struct format with %d detections and %dx%d signal\n', ...
-                        size(z_det, 2), size(z_mag, 1), size(z_mag, 2));
-                else
-                    fprintf('Input: legacy format with %d measurements\n', size(z_det, 2));
-                end
+                fprintf('Input: %d measurements\n', size(z, 2));
 
-                if ~isempty(z_det)
+                if ~isempty(z)
 
-                    for i = 1:size(z_det, 2)
-                        fprintf('  Meas %d: [%.3f, %.3f]\n', i, z_det(1, i), z_det(2, i));
+                    for i = 1:size(z, 2)
+                        fprintf('  Meas %d: [%.3f, %.3f]\n', i, z(1, i), z(2, i));
                     end
 
                 end
@@ -395,41 +308,28 @@ classdef PDA_PF < DA_Filter
             end
 
             % Step 2: Validation step - Gate measurements using particle filter estimate
-            % Store original measurements for visualization (use detections)
-            z_original = z_det;
-
+            % Store original measurements for visualization
+            z_original = z;
+            
             % COMMENT OUT THIS BLOCK TO DISABLE GATING
-            % z_to_process = z_det;
-            [z_to_process, has_valid_meas] = obj.Validation(z_det);
-
-            if obj.debug
-
-                if has_valid_meas
-                    fprintf('[GATING] %d valid measurements after gating\n', size(z_to_process, 2));
-                else
-                    fprintf('[GATING] No valid measurements after gating - proceeding with missed detection\n');
-                end
-
-            end
-
-            % Store current measurement for visualization (use first valid measurement if available)
-            if obj.composite_likelihood && has_valid_meas && ~isempty(z_to_process)
-                obj.current_measurement = z_to_process(:, 1); % Store first measurement for visualization
-            end
+            % [z_to_process, has_valid_meas] = obj.Validation(z);
+            z_to_process = z;
 
             % END GATING BLOCK - COMMENT OUT TO HERE TO DISABLE GATING
 
-            % Step 3: Data Association Step -- Included implicitly in measurement update
+            % UNCOMMENT THIS LINE TO DISABLE GATING (and comment out the block above)
+            % z_to_process = z; % Use all measurements without gating
+
+            % Step 3: Data Association Step -- Simplified, no beta computation needed
 
             % Step 4: Measurement Update Step (SIR: multiply by previous weights)
-            obj.measurement_update(z_to_process, z_mag);
+            obj.measurement_update(z_to_process);
 
             % Step 5: SIR Resampling - Check ESS and resample if needed
             ESS = 1 / sum(obj.weights .^ 2);
             ESS_threshold = obj.ESS_threshold_percentage * obj.N_p;
-
+            
             if ESS < ESS_threshold
-
                 if obj.debug
                     fprintf('\n');
                     fprintf('╔════════════════════════════════════════╗\n');
@@ -441,9 +341,9 @@ classdef PDA_PF < DA_Filter
                     fprintf('║        RESAMPLING PARTICLES...         ║\n');
                     fprintf('╚════════════════════════════════════════╝\n');
                 end
-
+                
                 obj.resample();
-
+                
                 if obj.debug
                     fprintf('╔════════════════════════════════════════╗\n');
                     fprintf('║         RESAMPLING COMPLETE            ║\n');
@@ -451,14 +351,11 @@ classdef PDA_PF < DA_Filter
                     fprintf('╚════════════════════════════════════════╝\n');
                     fprintf('\n');
                 end
-
             else
-
                 if obj.debug
                     fprintf('[SIR] ESS: %.1f (%.1f%%) >= Threshold: %.1f (%.0f%%) - No resampling needed\n', ...
                         ESS, 100 * ESS / obj.N_p, ESS_threshold, 100 * obj.ESS_threshold_percentage);
                 end
-
             end
 
             if obj.debug
@@ -470,7 +367,6 @@ classdef PDA_PF < DA_Filter
 
             % Update dynamic plot if enabled
             if obj.DynamicPlot
-
                 if nargin > 2
                     true_state = varargin{1};
                     obj.updateDynamicPlot(z_to_process, true_state, z_original);
@@ -514,9 +410,6 @@ classdef PDA_PF < DA_Filter
             % Add process noise to each particle
             process_noise = mvnrnd(zeros(1, obj.N_x), obj.Q, obj.N_p)';
             obj.particles = obj.particles + process_noise;
-            
-            % Ensure all particles maintain y >= 0.5 after prediction
-            obj.particles(2, obj.particles(2, :) < 0.5) = 0.5;
 
         end
 
@@ -535,15 +428,14 @@ classdef PDA_PF < DA_Filter
             %   has_valid_meas - Boolean flag indicating if any measurements passed validation
             %
             % DESCRIPTION:
-            %   Applies gating based on the probability of detection -- if the probability
-            % of a detection is less than that of a false alarm (as defined by hyperparameters
-            % PD and PFA), the measurements is rejected. Otherwise, it is accepted and
-            % passed to the measurement update step.
+            %   Applies configurable sigma gating to filter measurements that fall within
+            %   bounds around the current particle filter state estimate. Uses position-only
+            %   gating based on current state covariance and obj.validation_sigma_bounds.
             %
             % ALGORITHM:
-            %   1. Calculate normalization Constants of measurements (p(z))
-            %   2. Compare each constant to the false alarm rate (last hypothesis)
-            %   3. Accept measurements with p(z) > PFA
+            %   1. Get current particle filter estimate (mean and covariance)
+            %   2. Compute sigma bounds based on obj.validation_sigma_bounds and position uncertainty
+            %   3. Accept measurements within bounds: lower_bound <= z <= upper_bound
             %
             % See also timestep, measurement_update
 
@@ -559,69 +451,79 @@ classdef PDA_PF < DA_Filter
                 return;
             end
 
+            % % Get current particle filter estimate for gating
+            % [x_est, P_est] = obj.getGaussianEstimate();
+            % z_hat = x_est(1:2); % Predicted measurement (only position)
+            % S = P_est(1:2, 1:2); % Use position covariance only
+
+            % % Compute sigma bounds for gating using configurable parameter
+            % sigma_bounds = obj.validation_sigma_bounds * sqrt(diag(S));
+            % lower_bound = z_hat - sigma_bounds;
+            % upper_bound = z_hat + sigma_bounds;
+
+            % % Apply gating: Keep measurements within sigma bounds
+            % in_bounds = all(z >= lower_bound & z <= upper_bound, 1);
+            % z_valid = z(:, in_bounds);
+            % has_valid_meas = ~isempty(z_valid);
+
             % NEW GATING SCHEMA
             normalization_constants = obj.computeNormalizationConstants(z);
-
-            % Create a binary mask for validation measurements -- threshold is the false
+            
+            % Create a binary mask for validation measurements -- threshold is the false 
             %   alarm rate (last hypothesis)
             threshold = normalization_constants(end);
-            z_valid = z(:, normalization_constants(1:end - 1) > threshold);
+            z_valid = z(:, normalization_constants(1:end-1) > threshold);
             has_valid_meas = ~isempty(z_valid);
 
-            if obj.debug
-                fprintf('[GATING] Input: %d measurements, Output: %d valid measurements\n', ...
-                    size(z, 2), size(z_valid, 2));
+            % if obj.debug
+            %     fprintf('[GATING] Input: %d measurements, Output: %d valid measurements\n', ...
+            %         size(z, 2), size(z_valid, 2));
 
-            end
+            %     if obj.debug && size(z, 2) > 0
+            %         fprintf('[GATING] Using %.1f-sigma bounds: x=[%.3f, %.3f], y=[%.3f, %.3f]\n', ...
+            %             obj.validation_sigma_bounds, lower_bound(1), upper_bound(1), lower_bound(2), upper_bound(2));
+            %     end
+
+            % end
 
         end
 
         %% ========== MEASUREMENT UPDATE (PDA) ==========
-        function measurement_update(obj, z, z_mag)
+        function measurement_update(obj, z)
             % MEASUREMENT_UPDATE Update particle weights based on measurement likelihood (SIR PDA)
             %
             % SYNTAX:
             %   obj.measurement_update(z)
-            %   obj.measurement_update(z, z_mag)
             %
             % INPUTS:
             %   z    - Current measurements [N_z x N_measurements] (after gating)
-            %   z_mag - (optional) mWidar signal [128 x 128] for composite likelihood
             %
             % DESCRIPTION:
             %   Implements SIR PDA weight update: w_new = w_old * likelihood_total
             %   Sums likelihood contributions from all measurements plus clutter hypothesis.
             %   Handles missed detection case when z is empty.
             %   Uses SIR paradigm: multiply previous weights by new likelihood and normalize.
-            %   If z_mag is provided and magnitude likelihood is available, uses composite likelihood.
             %
             % MODIFIES:
             %   obj.weights - Updated and normalized particle weights [N_p x 1]
             %
             % See also timestep, computeWeightsForMeasurement, computeNormalizationConstants
 
-            % Handle optional z_mag parameter for backwards compatibility
-            if nargin < 3
-                z_mag = [];
-            end
-
             % Store previous weights for SIR update
             previous_weights = obj.weights;
 
             % Handle missed detection case (no valid measurements after gating)
             if isempty(z)
-
                 if obj.debug
                     fprintf('[MEASUREMENT UPDATE] No measurements - missed detection case\n');
                 end
-
                 % Keep weights unchanged for missed detection
                 return;
             end
 
             % Check if likelihood image is available
             if isempty(obj.pointlikelihood_image)
-                error('PDA_PF:NoLikelihoodData', ...
+                error('PDA_PF_updatedllk:NoLikelihoodData', ...
                 'Likelihood lookup table not provided. Load and pass to constructor.');
             end
 
@@ -638,54 +540,8 @@ classdef PDA_PF < DA_Filter
                 fprintf('[CLUTTER] Added clutter contribution: %.8f per particle\n', clutter_likelihood);
             end
 
-            % PRE-COMPUTE MAGNITUDE LIKELIHOOD ONCE (not per measurement!)
-            % This is the key fix - magnitude likelihood should only be computed once per timestep
-            if obj.composite_likelihood && ~isempty(obj.pointlikelihood_mag) && ~isempty(z_mag)
-                % Define spatial grid parameters
-                npx = 128;
-                xgrid = linspace(-2, 2, npx);
-                ygrid = linspace(0, 4, npx);
-                
-                % Vectorized grid point finding for all particles
-                [~, px_indices] = min(abs(obj.particles(1, :)' - xgrid), [], 2); % [N_p x 1]
-                [~, py_indices] = min(abs(obj.particles(2, :)' - ygrid), [], 2); % [N_p x 1]
-                
-                % Enforce boundary constraints
-                px_indices = max(1, min(npx, px_indices));
-                py_indices = max(1, min(npx, py_indices));
-                
-                % Convert to linear indices for all particles
-                particle_linear_indices = sub2ind([npx, npx], py_indices, px_indices); % [N_p x 1]
-                
-                % Magnitude likelihood lookup and calculation (computed ONCE per timestep)
-                likelihood_mag_values = obj.pointlikelihood_mag(particle_linear_indices, :); % [N_p x 2]
-                % Flip z_mag for correct orientation
-                % z_mag = flipud(z_mag);
-                magnitude_likelihood = 10*normpdf(z_mag(particle_linear_indices), likelihood_mag_values(:, 1), likelihood_mag_values(:, 2));
-                magnitude_likelihood = magnitude_likelihood(:); % Ensure column vector
-                
-                if obj.debug
-                    fprintf('[MAGNITUDE LIKELIHOOD] Computed once for timestep: min/max/mean = %.2e / %.2e / %.2e\n', ...
-                        min(magnitude_likelihood), max(magnitude_likelihood), mean(magnitude_likelihood));
-
-                            fprintf("DEBUGGING -- THIS IS THE RANGE OF THE MAG LIKELIHOODS\n")
-            
-                end
-                
-                % Store for visualization
-                obj.particle_magnitude_likelihoods = magnitude_likelihood;
-                obj.current_signal = z_mag;
-            else
-                % No composite likelihood available - use constant magnitude likelihood (no effect)
-                magnitude_likelihood = ones(obj.N_p, 1);
-                obj.particle_magnitude_likelihoods = magnitude_likelihood; % No magnitude data
-                
-                if obj.debug
-                    fprintf('[MAGNITUDE LIKELIHOOD] Using constant (no composite likelihood available)\n');
-                end
-            end
-
-            % Normalization constants needed for clutter hypothesis
+            % TEMPORARY FIX: CATEGORICCAL SCALING 
+            % Get normalization constants for each measurement hypothesis
             normalization_constants = obj.computeNormalizationConstants(z);
             normalization_constants = normalization_constants / sum(normalization_constants); % Normalize
 
@@ -693,16 +549,12 @@ classdef PDA_PF < DA_Filter
 
             % Add contribution from each measurement using helper function
             for i = 1:size(z, 2)
-
                 if obj.debug
                     fprintf('  Meas %d: [%.3f, %.3f] -> ', i, z(1, i), z(2, i));
                 end
 
-                % Get detection-only weights for this measurement
-                detection_weights = obj.computeWeightsForMeasurement(z(:, i));
-                
-                % Multiply by magnitude likelihood on the back end (as suggested)
-                measurement_weights = detection_weights;% .* magnitude_likelihood;
+                % Get weights for this measurement (already includes PD/N_p scaling)
+                measurement_weights = obj.computeWeightsForMeasurement(z(:, i));
 
                 % Add contribution to total likelihood (PDA: sum all measurements)
                 likelihood_total = likelihood_total + measurement_weights; % * normalization_constants(i);
@@ -720,17 +572,14 @@ classdef PDA_PF < DA_Filter
 
         end
 
-        function normalization_constants = computeNormalizationConstants(obj, z, z_mag)
-            % COMPUTENORMALIZATIONCONSTANTS Compute normalization constants for each
-            % measurement hypothesis (including clutter)
+        function normalization_constants = computeNormalizationConstants(obj, z)
+            % COMPUTENORMALIZATIONCONSTANTS Compute normalization constants for each measurement hypothesis (for GNN)
             %
             % SYNTAX:
             %   normalization_constants = obj.computeNormalizationConstants(z)
-            %   normalization_constants = obj.computeNormalizationConstants(z, z_mag)
             %
             % INPUTS:
             %   z - Current measurements [N_z x N_measurements]
-            %   z_mag - (optional) mWidar signal [128 x 128] for composite likelihood
             %
             % OUTPUTS:
             %   normalization_constants - Vector of normalization constants [N_measurements + 1 x 1]
@@ -741,19 +590,12 @@ classdef PDA_PF < DA_Filter
             %   Computes normalization constants for GNN-style data association by calculating
             %   the sum of particle weights for each measurement hypothesis separately.
             %   Uses proper detection model and marginalizes out particle dimension.
-            %   This is also used for gating decision in the Validation step, as well
-            %   as for normalizing weights in the measurement update step.
             %
             % See also computeWeightsForMeasurement, measurement_update
 
-            % Handle optional z_mag parameter for backwards compatibility
-            if nargin < 3
-                z_mag = [];
-            end
-
             % Check if likelihood image is available
             if isempty(obj.pointlikelihood_image)
-                error('PDA_PF:NoLikelihoodData', ...
+                error('PDA_PF_updatedllk:NoLikelihoodData', ...
                 'Likelihood lookup table not provided. Load and pass to constructor.');
             end
 
@@ -763,20 +605,15 @@ classdef PDA_PF < DA_Filter
             % Compute normalization constant for each measurement individually
             for i = 1:N_measurements
                 % Get weights for this measurement using helper function
-
                 measurement_weights = obj.computeWeightsForMeasurement(z(:, i));
-
-                fprintf("Size of measuremnt_weights");
-                disp(size(measurement_weights))
-
+                
                 % Marginalize out particles (sum across all particles)
                 normalization_constants(i) = sum(measurement_weights);
 
                 if obj.debug
-                    fprintf('[PDA] Measurement %d normalization constant: %.6f\n', ...
+                    fprintf('[GNN] Measurement %d normalization constant: %.6f\n', ...
                         i, normalization_constants(i));
                 end
-
             end
 
             % Add clutter hypothesis normalization constant
@@ -822,7 +659,7 @@ classdef PDA_PF < DA_Filter
 
             % Debug: Print measurement indices
             if obj.debug
-                fprintf('    Likelihood Computation: Grid indices: x=%d, y=%d, linear=%d\n', ...
+                fprintf('    Grid indices: x=%d, y=%d, linear=%d\n', ...
                     meas_x_idx, meas_y_idx, meas_linear_idx);
             end
 
@@ -839,13 +676,13 @@ classdef PDA_PF < DA_Filter
 
             % Bounds checking with informative error messages
             if meas_linear_idx > size(obj.pointlikelihood_image, 1) || meas_linear_idx < 1
-                error('PDA_PF:MeasurementOutOfBounds', ...
+                error('PDA_PF_updatedllk:MeasurementOutOfBounds', ...
                     'Measurement linear index %d out of bounds [1, %d]. Measurement may be outside spatial grid.', ...
                     meas_linear_idx, size(obj.pointlikelihood_image, 1));
             end
 
             if any(particle_linear_indices > size(obj.pointlikelihood_image, 2)) || any(particle_linear_indices < 1)
-                error('PDA_PF:ParticlesOutOfBounds', ...
+                error('PDA_PF_updatedllk:ParticlesOutOfBounds', ...
                     'Particle linear indices out of bounds [1, %d]. Some particles may be outside spatial grid.', ...
                     size(obj.pointlikelihood_image, 2));
             end
@@ -861,7 +698,7 @@ classdef PDA_PF < DA_Filter
         end
 
         function weights = computeWeightsForMeasurement(obj, z)
-            % COMPUTEWEIGHTSFORMEASUREMENT Compute particle weights for a single measurement (DETECTION ONLY)
+            % COMPUTEWEIGHTSFORMEASUREMENT Compute particle weights for a single measurement
             %
             % SYNTAX:
             %   weights = obj.computeWeightsForMeasurement(z)
@@ -870,27 +707,17 @@ classdef PDA_PF < DA_Filter
             %   z - Single measurement [N_z x 1]
             %
             % OUTPUTS:
-            %   weights - Particle weights for this measurement [N_p x 1] (DETECTION ONLY)
+            %   weights - Particle weights for this measurement [N_p x 1]
             %
             % DESCRIPTION:
-            %   Computes detection-only particle weights for a measurement.
-            %   Magnitude likelihood is handled separately in the measurement update function.
+            %   Abstracts the common pattern of computing particle weights for a measurement
+            %   using likelihood lookup and Gaussian weighting. Used by both measurement_update
+            %   and computeIndividualWeightUpdates to avoid code duplication.
             %
             % See also measurement_update, computeIndividualWeightUpdates, likelihoodLookup
 
-            % Always use detection-only likelihood (magnitude handled separately)
-            if obj.debug
-                fprintf('    Computing detection-only weights\n');
-            end
-
-            % Store current measurement
-            obj.current_measurement = z;
-
-            % Get detection-only likelihood for this measurement
+            % Get likelihood for this measurement
             likelihood = obj.likelihoodLookup(z);
-            
-            % Store individual particle likelihoods for visualization
-            obj.particle_detection_likelihoods = likelihood;
 
             % Apply Gaussian weighting
             sf = 0.15;
@@ -992,23 +819,22 @@ classdef PDA_PF < DA_Filter
             %   calculations in the normalization constants computation.
             %
             % See also computeNormalizationConstants, measurement_update
-
+            
             % Validate inputs
             if PD <= 0 || PD > 1
-                error('PDA_PF:InvalidPD', 'Detection probability PD must be in range (0, 1]');
+                error('PDA_PF_updatedllk:InvalidPD', 'Detection probability PD must be in range (0, 1]');
             end
-
+            
             if PFA < 0 || PFA >= 1
-                error('PDA_PF:InvalidPFA', 'False alarm probability PFA must be in range [0, 1)');
+                error('PDA_PF_updatedllk:InvalidPFA', 'False alarm probability PFA must be in range [0, 1)');
             end
-
+            
             obj.PD = PD;
             obj.PFA = PFA;
-
+            
             if obj.debug
                 fprintf('[DETECTION MODEL] Updated: PD=%.3f, PFA=%.3f\n', obj.PD, obj.PFA);
             end
-
         end
 
         function loadLikelihoodData(obj, likelihood_file_path)
@@ -1035,7 +861,7 @@ classdef PDA_PF < DA_Filter
             try
                 % Check if file exists
                 if ~exist(likelihood_file_path, 'file')
-                    error('PDA_PF:FileNotFound', ...
+                    error('PDA_PF_updatedllk:FileNotFound', ...
                         'Likelihood file not found: %s', likelihood_file_path);
                 end
 
@@ -1044,7 +870,7 @@ classdef PDA_PF < DA_Filter
 
                 % Validate that the expected variable exists
                 if ~isfield(likelihood_data, 'pointlikelihood_image')
-                    error('PDA_PF:InvalidData', ...
+                    error('PDA_PF_updatedllk:InvalidData', ...
                         'Variable "pointlikelihood_image" not found in file: %s', likelihood_file_path);
                 end
 
@@ -1061,7 +887,7 @@ classdef PDA_PF < DA_Filter
                 end
 
                 if rows ~= expected_dim || cols ~= expected_dim
-                    warning('PDA_PF:DimensionMismatch', ...
+                    warning('PDA_PF_updatedllk:DimensionMismatch', ...
                         'Likelihood model dimensions (%dx%d) do not match expected grid size (%dx%d)', ...
                         rows, cols, expected_dim, expected_dim);
                 end
@@ -1078,7 +904,7 @@ classdef PDA_PF < DA_Filter
                     fprintf('===============================\n\n');
                 end
 
-                error('PDA_PF:LoadError', ...
+                error('PDA_PF_updatedllk:LoadError', ...
                     'Failed to load likelihood data: %s', ME.message);
             end
 
@@ -1150,9 +976,6 @@ classdef PDA_PF < DA_Filter
 
             % Resample particles directly
             obj.particles = obj.particles(:, indsampsout);
-            
-            % Ensure all particles have y >= 0.5 after resampling
-            obj.particles(2, obj.particles(2, :) < 0.5) = 0.5;
 
             % Set uniform weights
             obj.weights = (1 / obj.N_p) * ones(size(obj.weights));
@@ -1227,12 +1050,12 @@ classdef PDA_PF < DA_Filter
 
             % Compute effective sample size for main title
             eff_sample_size = 1 / sum(obj.weights .^ 2);
-
+            
             % Determine colorbar bounds based on weight distribution
             uniform_threshold = 1e-6; % Threshold for considering weights uniform
             weight_range = max(obj.weights) - min(obj.weights);
             uniform_weight = 1 / obj.N_p;
-
+            
             if weight_range < uniform_threshold
                 % Weights are uniform - set bounds to [0, 2/N_p] for better visibility
                 colorbar_min = 0;
@@ -1256,8 +1079,6 @@ classdef PDA_PF < DA_Filter
             h_scatter = scatter(obj.particles(1, :), obj.particles(2, :), 20, obj.weights, ...
                 'filled', 'MarkerFaceAlpha', 0.6);
             caxis([colorbar_min, colorbar_max]); % Set consistent color limits
-            cb1 = colorbar;
-            set(cb1, 'TickLabelFormat', '%.4f');
             hold on
 
             % Plot particle filter estimate
@@ -1306,8 +1127,6 @@ classdef PDA_PF < DA_Filter
                 scatter(obj.particles(3, :), obj.particles(4, :), 20, obj.weights, ...
                     'filled', 'MarkerFaceAlpha', 0.6);
                 caxis([colorbar_min, colorbar_max]); % Set consistent color limits
-                cb2 = colorbar;
-                set(cb2, 'TickLabelFormat', '%.4f');
                 hold on
                 plot(mean_state(3), mean_state(4), 'ro', 'MarkerSize', 10, 'LineWidth', 3);
 
@@ -1338,8 +1157,6 @@ classdef PDA_PF < DA_Filter
                 scatter(obj.particles(5, :), obj.particles(6, :), 20, obj.weights, ...
                     'filled', 'MarkerFaceAlpha', 0.6);
                 caxis([colorbar_min, colorbar_max]); % Set consistent color limits
-                cb3 = colorbar;
-                set(cb3, 'TickLabelFormat', '%.4f');
                 hold on
                 plot(mean_state(5), mean_state(6), 'ro', 'MarkerSize', 10, 'LineWidth', 3);
 
@@ -1379,14 +1196,14 @@ classdef PDA_PF < DA_Filter
                 main_title = sprintf('%s (ESS: %.1f)', filter_name, eff_sample_size);
             end
 
-            % sgtitle(main_title, 'FontSize', 14, 'FontWeight', 'bold', 'Interpreter', 'latex');
+            sgtitle(main_title, 'FontSize', 14, 'FontWeight', 'bold', 'Interpreter', 'latex');
 
             % Add colorbar spanning height on the right
             if obj.N_x >= 4 % Only add colorbar if we have multiple subplots
                 cb = colorbar('Position', [0.92, 0.15, 0.02, 0.7]);
                 cb.Label.String = 'Particle Weight';
                 cb.Label.Interpreter = 'latex';
-                set(cb, 'TickLabelFormat', '%.4f');
+                
                 % Set colorbar limits based on weight distribution
                 caxis([colorbar_min, colorbar_max]);
             end
@@ -1407,483 +1224,39 @@ classdef PDA_PF < DA_Filter
             %   all_measurements - (optional) All measurements [N_z x N_measurements] (before gating)
             %
             % DESCRIPTION:
-            %   Updates the dynamic visualization with comprehensive likelihood breakdown.
-            %   Shows 2x5 panel layout with detection, magnitude, combined likelihood fields
-            %   plus analysis panels similar to test_hybrid_PF visualization.
-
+            %   Updates the dynamic visualization if enabled. Overrides parent method
+            %   to support displaying both all measurements and used measurements.
+            
             if ~obj.DynamicPlot || isempty(obj.dynamic_figure_handle) || ...
-                    ~isvalid(obj.dynamic_figure_handle)
+               ~isvalid(obj.dynamic_figure_handle)
                 return;
             end
-
+            
             % Handle optional arguments
             if nargin < 3 || isempty(true_state)
                 true_state = [];
             end
-
+            
             if nargin < 4
                 all_measurements = [];
             end
-
+            
             % Increment timestep counter
             obj.timestep_counter = obj.timestep_counter + 1;
-
-            % Check if we have particle likelihood data
-            % Always show comprehensive visualization if particle likelihood data is available
-            if isempty(obj.particle_detection_likelihoods)
-                % Fallback to simple visualization if no particle likelihood data available
-                title_str = sprintf('%s Real-time Tracking (Step %d)', ...
-                    class(obj), obj.timestep_counter);
-                obj.visualize(obj.dynamic_figure_handle, title_str, measurements, true_state, all_measurements);
-                drawnow;
-                obj.captureFrame();
-                pause(0.01);
-                return;
-            end
-
-            % Determine if we have magnitude/signal data (composite likelihood mode)
-            has_magnitude_data = ~isempty(obj.particle_magnitude_likelihoods);
-
-            % Set figure and clear for comprehensive visualization
-            figure(obj.dynamic_figure_handle);
-            clf;
-
-            % Create 2x5 tiled layout for comprehensive likelihood visualization
-            t = tiledlayout(2, 5, 'TileSpacing', 'compact', 'Padding', 'compact');
             
-            % Set overall title with mode indication
-            if has_magnitude_data
-                mode_str = 'Hybrid Likelihood (Particle-Based)';
-            else
-                mode_str = 'Detection-Only Likelihood (Particle-Based)';
-            end
-            % title(t, sprintf('%s Real-time Tracking - %s (Step %d)', class(obj), mode_str, obj.timestep_counter), ...
-            %       'Interpreter', 'latex', 'FontSize', 14);
-
-            % Get current measurement (first measurement if multiple)
-            if ~isempty(measurements)
-                current_meas = measurements(:, 1);
-            else
-                current_meas = [0; 2]; % Default center position
-            end
-
-            % Get current particle distribution
-            particles = obj.particles;
-            weights = obj.weights;
-            mean_state = particles * weights;
-
-            % Convert sparse likelihood data to full if needed
-            det_likes = obj.particle_detection_likelihoods;
-            if issparse(det_likes)
-                det_likes = full(det_likes);
-            end
+            % Create title with timestep information
+            title_str = sprintf('%s Real-time Tracking (Step %d)', ...
+                class(obj), obj.timestep_counter);
             
-            % Ensure det_likes is a column vector
-            if size(det_likes, 1) == 1
-                det_likes = det_likes';
-            end
+            % Call PDA_PF-specific visualization with both measurement sets
+            obj.visualize(obj.dynamic_figure_handle, title_str, measurements, true_state, all_measurements);
             
-            % Handle magnitude likelihood data if available
-            if has_magnitude_data
-                mag_likes = obj.particle_magnitude_likelihoods;
-                if issparse(mag_likes)
-                    mag_likes = full(mag_likes);
-                end
-                % Ensure mag_likes is a column vector
-                if size(mag_likes, 1) == 1
-                    mag_likes = mag_likes';
-                end
-                combined_likes = det_likes .* mag_likes;
-            else
-                mag_likes = [];
-                combined_likes = det_likes; % Use detection only for "combined"
-            end
-            
-            % Ensure combined_likes is a column vector for scatter
-            if size(combined_likes, 1) == 1
-                combined_likes = combined_likes';
-            end
-            mean_state = particles * weights;
-
-            % Row 1: Particle Likelihood Visualizations
-            % Tile 1: Particles colored by Detection Likelihood
-            nexttile(1);
-            scatter(particles(1, :), particles(2, :), 40, det_likes, 'filled', 'MarkerFaceAlpha', 0.7);
-            hold on;
-            plot(current_meas(1), current_meas(2), '+', 'Color', [0.2 0.2 0.2], 'MarkerSize', 12, 'LineWidth', 3);
-            plot(mean_state(1), mean_state(2), 'ro', 'MarkerSize', 10, 'LineWidth', 2);
-            if ~isempty(true_state)
-                plot(true_state(1), true_state(2), 'mo', 'MarkerSize', 8, 'LineWidth', 2);
-            end
-            title('Detection Likelihood', 'Interpreter', 'latex');
-            xlabel('$X$ (m)', 'Interpreter', 'latex');
-            ylabel('$Y$ (m)', 'Interpreter', 'latex');
-            xlim([-2, 2]); ylim([0, 4]);
-            axis square;
-            colorbar;
-            colormap(gca, 'hot');
-
-            % Tile 2: Particles colored by Magnitude Likelihood  
-            nexttile(2);
-            if has_magnitude_data
-                scatter(particles(1, :), particles(2, :), 40, mag_likes, 'filled', 'MarkerFaceAlpha', 0.7);
-                hold on;
-                plot(current_meas(1), current_meas(2), '+', 'Color', [0.2 0.2 0.2], 'MarkerSize', 12, 'LineWidth', 3);
-                plot(mean_state(1), mean_state(2), 'ro', 'MarkerSize', 10, 'LineWidth', 2);
-                if ~isempty(true_state)
-                    plot(true_state(1), true_state(2), 'mo', 'MarkerSize', 8, 'LineWidth', 2);
-                end
-                title('Magnitude Likelihood', 'Interpreter', 'latex');
-                xlabel('$X$ (m)', 'Interpreter', 'latex');
-                ylabel('$Y$ (m)', 'Interpreter', 'latex');
-                xlim([-2, 2]); ylim([0, 4]);
-                axis square;
-                colorbar;
-                colormap(gca, 'cool');
-            else
-                % Show detection particles with note
-                scatter(particles(1, :), particles(2, :), 40, det_likes, 'filled', 'MarkerFaceAlpha', 0.3);
-                hold on;
-                plot(current_meas(1), current_meas(2), '+', 'Color', [0.2 0.2 0.2], 'MarkerSize', 12, 'LineWidth', 3);
-                text(0.5, 0.5, {'Magnitude Likelihood', 'Not Available', '(Detection-Only Mode)'}, ...
-                     'HorizontalAlignment', 'center', 'VerticalAlignment', 'middle', ...
-                     'Units', 'normalized', 'FontSize', 12, 'Color', [0.5 0.5 0.5]);
-                title('Magnitude Likelihood - N/A', 'Interpreter', 'latex');
-                xlabel('$X$ (m)', 'Interpreter', 'latex');
-                ylabel('$Y$ (m)', 'Interpreter', 'latex');
-                xlim([-2, 2]); ylim([0, 4]);
-                axis square;
-            end
-
-
-            % Tile 3: Particles colored by Combined Likelihood
-            nexttile(3);
-            scatter(particles(1, :), particles(2, :), 40, combined_likes, 'filled', 'MarkerFaceAlpha', 0.7);
-            hold on;
-            plot(current_meas(1), current_meas(2), '+', 'Color', [0.2 0.2 0.2], 'MarkerSize', 12, 'LineWidth', 3);
-            plot(mean_state(1), mean_state(2), 'ro', 'MarkerSize', 10, 'LineWidth', 2);
-            if ~isempty(true_state)
-                plot(true_state(1), true_state(2), 'mo', 'MarkerSize', 8, 'LineWidth', 2);
-            end
-            if has_magnitude_data
-                title('Combined Likelihood', 'Interpreter', 'latex');
-                colormap(gca, 'parula');
-            else
-                title('Detection-Only Likelihood', 'Interpreter', 'latex');
-                colormap(gca, 'hot');
-            end
-            xlabel('$X$ (m)', 'Interpreter', 'latex');
-            ylabel('$Y$ (m)', 'Interpreter', 'latex');
-            xlim([-2, 2]); ylim([0, 4]);
-            axis square;
-            colorbar;
-
-            % Tile 4: mWidar Signal with Detections
-            nexttile(4);
-            if has_magnitude_data && ~isempty(obj.current_signal)
-                % Display mWidar signal as background
-                npx = 128;
-                xvec = linspace(-2, 2, npx);
-                yvec = linspace(0, 4, npx);
-                signal_normalized = obj.current_signal / max(obj.current_signal(:));
-                imagesc(xvec, yvec, reshape(signal_normalized, [npx, npx]));
-                set(gca, 'YDir', 'normal');
-                hold on;
-                
-                % Overlay all measurements (detections) prominently
-                if ~isempty(all_measurements)
-                    plot(all_measurements(1, :), all_measurements(2, :), 'wo', 'MarkerSize', 10, 'LineWidth', 2, 'MarkerFaceColor', 'yellow');
-                end
-                if ~isempty(measurements)
-                    plot(measurements(1, :), measurements(2, :), 'ro', 'MarkerSize', 12, 'LineWidth', 3, 'MarkerFaceColor', 'red');
-                end
-                
-                % Add current measurement with distinct marker
-                plot(current_meas(1), current_meas(2), 'r*', 'MarkerSize', 15, 'LineWidth', 3);
-                
-                % Show state estimate
-                plot(mean_state(1), mean_state(2), 'bs', 'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'blue');
-                if ~isempty(true_state)
-                    plot(true_state(1), true_state(2), 'mo', 'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'magenta');
-                end
-                
-                title('mWidar Signal + Detections', 'Interpreter', 'latex');
-                xlabel('$X$ (m)', 'Interpreter', 'latex');
-                ylabel('$Y$ (m)', 'Interpreter', 'latex');
-                xlim([-2, 2]); ylim([0, 4]);
-                axis square;
-                colorbar;
-                colormap(gca, 'parula');
-            else
-                % Show detections without signal background (Detection-only mode)
-                % Create a simple background grid for context
-                npx = 128;
-                xvec = linspace(-2, 2, npx);
-                yvec = linspace(0, 4, npx);
-                [X, Y] = meshgrid(xvec, yvec);
-                background = 0.1 * ones(size(X)); % Light background
-                imagesc(xvec, yvec, background);
-                set(gca, 'YDir', 'normal');
-                hold on;
-                
-                % Overlay all measurements (detections) prominently
-                if ~isempty(all_measurements)
-                    plot(all_measurements(1, :), all_measurements(2, :), 'ko', 'MarkerSize', 10, 'LineWidth', 2, 'MarkerFaceColor', 'yellow');
-                end
-                if ~isempty(measurements)
-                    plot(measurements(1, :), measurements(2, :), 'ro', 'MarkerSize', 12, 'LineWidth', 3, 'MarkerFaceColor', 'red');
-                end
-                
-                % Add current measurement with distinct marker
-                plot(current_meas(1), current_meas(2), 'r*', 'MarkerSize', 15, 'LineWidth', 3);
-                
-                % Show state estimate
-                plot(mean_state(1), mean_state(2), 'bs', 'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'blue');
-                if ~isempty(true_state)
-                    plot(true_state(1), true_state(2), 'mo', 'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'magenta');
-                end
-                
-                text(0.5, 0.05, 'Signal Not Available (Detection-Only Mode)', ...
-                     'HorizontalAlignment', 'center', 'Units', 'normalized', ...
-                     'FontSize', 10, 'Color', [0.5 0.5 0.5], 'BackgroundColor', 'white');
-                title('Detections Only', 'Interpreter', 'latex');
-                xlabel('$X$ (m)', 'Interpreter', 'latex');
-                ylabel('$Y$ (m)', 'Interpreter', 'latex');
-                xlim([-2, 2]); ylim([0, 4]);
-                axis square;
-                colorbar;
-            end
-
-            % Tile 5: Particles colored by Final Weights
-            nexttile(5);
-            scatter(particles(1, :), particles(2, :), 40, weights, 'filled', 'MarkerFaceAlpha', 0.7);
-            hold on;
-            plot(mean_state(1), mean_state(2), 'ro', 'MarkerSize', 10, 'LineWidth', 3);
-            if ~isempty(true_state)
-                plot(true_state(1), true_state(2), 'o', 'Color', [0.2 0.2 0.2], ...
-                     'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', [0.7 0.7 0.7]);
-            end
-            plot(current_meas(1), current_meas(2), '+', 'Color', [0.2 0.2 0.2], ...
-                 'MarkerSize', 12, 'LineWidth', 3);
-            title('Particle Weights', 'Interpreter', 'latex');
-            xlabel('$X$ (m)', 'Interpreter', 'latex');
-            ylabel('$Y$ (m)', 'Interpreter', 'latex');
-            xlim([-2, 2]); ylim([0, 4]);
-            axis square;
-            colorbar;
-            colormap(gca, 'parula');
-
-            % Row 2: Analysis and Comparison
-            if has_magnitude_data && ~isempty(obj.particle_detection_likelihoods) && ~isempty(obj.particle_magnitude_likelihoods)
-                % Tile 6: Detection vs Magnitude Likelihood Scatter (Hybrid Mode)
-                nexttile(6);
-                scatter(obj.particle_detection_likelihoods, obj.particle_magnitude_likelihoods, ...
-                        20, weights, 'filled', 'MarkerFaceAlpha', 0.7);
-                hold on;
-                max_val = max([max(obj.particle_detection_likelihoods), max(obj.particle_magnitude_likelihoods)]);
-                min_val = min([min(obj.particle_detection_likelihoods), min(obj.particle_magnitude_likelihoods)]);
-                plot([min_val, max_val], [min_val, max_val], 'k--', 'LineWidth', 1);
-                xlabel('Detection Likelihood', 'Interpreter', 'latex');
-                ylabel('Magnitude Likelihood', 'Interpreter', 'latex');
-                title('Likelihood Components', 'Interpreter', 'latex');
-                colorbar;
-                grid on;
-                axis square;
-
-                % Add correlation coefficient
-                if length(obj.particle_detection_likelihoods) > 1
-                    corr_coef = corrcoef(obj.particle_detection_likelihoods, obj.particle_magnitude_likelihoods);
-                    if issparse(corr_coef)
-                        corr_coef = full(corr_coef);
-                    end
-                    text(0.05, 0.95, sprintf('Corr: %.3f', corr_coef(1,2)), ...
-                         'Units', 'normalized', 'FontSize', 10, 'BackgroundColor', 'white');
-                end
-            elseif ~isempty(obj.particle_detection_likelihoods)
-                % Tile 6: Detection Likelihood Distribution (Detection-Only Mode)
-                nexttile(6);
-                scatter(obj.particle_detection_likelihoods, weights, 20, weights, 'filled', 'MarkerFaceAlpha', 0.7);
-                xlabel('Detection Likelihood', 'Interpreter', 'latex');
-                ylabel('Particle Weight', 'Interpreter', 'latex');
-                title(['Detection Likelihood vs Weight (Step ', num2str(obj.timestep_counter), ')'], 'Interpreter', 'latex');
-                colorbar;
-                grid on;
-                axis square;
-                
-                % Add likelihood statistics
-                det_likes = obj.particle_detection_likelihoods;
-                if issparse(det_likes)
-                    det_likes = full(det_likes);
-                end
-                text(0.05, 0.95, sprintf('Max: %.3f', max(det_likes)), ...
-                     'Units', 'normalized', 'FontSize', 10, 'BackgroundColor', 'white');
-                text(0.05, 0.85, sprintf('Mean: %.3f', mean(det_likes)), ...
-                     'Units', 'normalized', 'FontSize', 10, 'BackgroundColor', 'white');
-            else
-                % Tile 6: No likelihood data available
-                nexttile(6);
-                text(0.5, 0.5, {'Particle likelihood', 'data not available'}, ...
-                     'HorizontalAlignment', 'center', 'VerticalAlignment', 'middle', ...
-                     'Units', 'normalized', 'FontSize', 12, 'Color', [0.5 0.5 0.5]);
-                title('Likelihood Components');
-            end
-
-            if has_magnitude_data && ~isempty(obj.particle_detection_likelihoods) && ~isempty(obj.particle_magnitude_likelihoods)
-                % Tile 7: Likelihood Component Histograms (Hybrid Mode)
-                nexttile(7);
-                det_likes = obj.particle_detection_likelihoods;
-                mag_likes = obj.particle_magnitude_likelihoods;
-                
-                % Convert to full matrices if sparse
-                if issparse(det_likes)
-                    det_likes = full(det_likes);
-                end
-                if issparse(mag_likes)
-                    mag_likes = full(mag_likes);
-                end
-                
-                det_norm = det_likes / max(det_likes);
-                mag_norm = mag_likes / max(mag_likes);
-                combined_norm = (det_likes .* mag_likes) / max(det_likes .* mag_likes);
-
-                edges = linspace(0, 1, 20);
-                histogram(det_norm, edges, 'FaceAlpha', 0.6, 'FaceColor', 'r', 'EdgeColor', 'none');
-                hold on;
-                histogram(mag_norm, edges, 'FaceAlpha', 0.6, 'FaceColor', 'b', 'EdgeColor', 'none');
-                histogram(combined_norm, edges, 'FaceAlpha', 0.6, 'FaceColor', 'g', 'EdgeColor', 'none');
-
-                xlabel('Normalized Likelihood', 'Interpreter', 'latex');
-                ylabel('Number of Particles', 'Interpreter', 'latex');
-                title(['Likelihood Distributions (Step ', num2str(obj.timestep_counter), ')'], 'Interpreter', 'latex');
-                legend('Detection', 'Magnitude', 'Combined', 'Location', 'northeast');
-                grid on;
-                axis square;
-            elseif ~isempty(obj.particle_detection_likelihoods)
-                % Tile 7: Detection Likelihood Histogram Only (Detection-Only Mode)  
-                nexttile(7);
-                det_likes = obj.particle_detection_likelihoods;
-                if issparse(det_likes)
-                    det_likes = full(det_likes);
-                end
-                det_norm = det_likes / max(det_likes);
-                
-                edges = linspace(0, 1, 20);
-                histogram(det_norm, edges, 'FaceAlpha', 0.6, 'FaceColor', 'r', 'EdgeColor', 'none');
-                
-                xlabel('Normalized Detection Likelihood', 'Interpreter', 'latex');
-                ylabel('Number of Particles', 'Interpreter', 'latex');
-                title(['Detection Likelihood Distribution (Step ', num2str(obj.timestep_counter), ')'], 'Interpreter', 'latex');
-                legend('Detection Only', 'Location', 'northeast');
-                grid on;
-                axis square;
-            else
-                % Tile 7: No likelihood data available
-                nexttile(7);
-                text(0.5, 0.5, {'Particle likelihood', 'data not available'}, ...
-                     'HorizontalAlignment', 'center', 'VerticalAlignment', 'middle', ...
-                     'Units', 'normalized', 'FontSize', 12, 'Color', [0.5 0.5 0.5]);
-                title('Likelihood Distributions');
-            end
-
-            % Tile 8: Velocity estimates
-            nexttile(8);
-            if size(particles, 1) >= 4  % Check if we have velocity states
-                scatter(particles(3, :), particles(4, :), 20, weights, 'filled', 'MarkerFaceAlpha', 0.6);
-                hold on;
-                plot(mean_state(3), mean_state(4), 'ro', 'MarkerSize', 10, 'LineWidth', 3);
-                if ~isempty(true_state) && length(true_state) >= 4
-                    plot(true_state(3), true_state(4), 'o', 'Color', [0.7 0.7 0.7], ...
-                         'MarkerSize', 6, 'LineWidth', 1.5, 'MarkerFaceColor', [0.7 0.7 0.7]);
-                end
-                title(['Velocity (Step ', num2str(obj.timestep_counter), ')'], 'Interpreter', 'latex');
-                xlabel('$V_x$ (m/s)', 'Interpreter', 'latex');
-                ylabel('$V_y$ (m/s)', 'Interpreter', 'latex');
-                axis square;
-                colorbar;
-            else
-                text(0.5, 0.5, 'Velocity states\nnot available', 'HorizontalAlignment', 'center');
-                title('Velocity');
-            end
-
-            % Tile 9: Acceleration estimates  
-            nexttile(9);
-            if size(particles, 1) >= 6  % Check if we have acceleration states
-                scatter(particles(5, :), particles(6, :), 20, weights, 'filled', 'MarkerFaceAlpha', 0.6);
-                hold on;
-                plot(mean_state(5), mean_state(6), 'ro', 'MarkerSize', 10, 'LineWidth', 3);
-                if ~isempty(true_state) && length(true_state) >= 6
-                    plot(true_state(5), true_state(6), 'o', 'Color', [0.7 0.7 0.7], ...
-                         'MarkerSize', 6, 'LineWidth', 1.5, 'MarkerFaceColor', [0.7 0.7 0.7]);
-                end
-                title(['Acceleration (Step ', num2str(obj.timestep_counter), ')'], 'Interpreter', 'latex');
-                xlabel('$A_x$ (m/s$^2$)', 'Interpreter', 'latex');
-                ylabel('$A_y$ (m/s$^2$)', 'Interpreter', 'latex');
-                axis square;
-                colorbar;
-            else
-                text(0.5, 0.5, 'Acceleration states\nnot available', 'HorizontalAlignment', 'center');
-                title('Acceleration');
-            end
-
-            % Tile 10: Likelihood Field Statistics
-            nexttile(10);
-            if has_magnitude_data && ~isempty(obj.detection_likelihood_field) && ~isempty(obj.magnitude_likelihood_field)
-                % Hybrid mode: show all three likelihood components
-                combined_likelihood = obj.detection_likelihood_field .* obj.magnitude_likelihood_field;
-                combined_likelihood = combined_likelihood / sum(combined_likelihood);
-                
-                det_stats = [min(obj.detection_likelihood_field), mean(obj.detection_likelihood_field), max(obj.detection_likelihood_field)];
-                mag_stats = [min(obj.magnitude_likelihood_field), mean(obj.magnitude_likelihood_field), max(obj.magnitude_likelihood_field)];
-                comb_stats = [min(combined_likelihood), mean(combined_likelihood), max(combined_likelihood)];
-
-                bar_data = [det_stats; mag_stats; comb_stats];
-                bar(bar_data);
-                set(gca, 'XTickLabel', {'Detection', 'Magnitude', 'Combined'});
-                ylabel('Likelihood Value', 'Interpreter', 'latex');
-                title(['Likelihood Statistics (Step ', num2str(obj.timestep_counter), ')'], 'Interpreter', 'latex');
-                legend('Min', 'Mean', 'Max', 'Location', 'best');
-                grid on;
-            elseif ~isempty(obj.detection_likelihood_field)
-                % Detection-only mode: show only detection likelihood statistics
-                det_stats = [min(obj.detection_likelihood_field), mean(obj.detection_likelihood_field), max(obj.detection_likelihood_field)];
-                
-                bar_data = det_stats;
-                bar(bar_data);
-                set(gca, 'XTickLabel', {'Min', 'Mean', 'Max'});
-                ylabel('Detection Likelihood Value', 'Interpreter', 'latex');
-                title(['Detection Likelihood Stats (Step ', num2str(obj.timestep_counter), ')'], 'Interpreter', 'latex');
-                grid on;
-                
-                % Add text annotation
-                text(0.02, 0.95, 'Detection-Only Mode', 'Units', 'normalized', ...
-                     'FontSize', 10, 'BackgroundColor', 'yellow', 'Color', 'black');
-            else
-                % No likelihood data available
-                text(0.5, 0.5, {'Likelihood field', 'data not available'}, ...
-                     'HorizontalAlignment', 'center', 'VerticalAlignment', 'middle', ...
-                     'Units', 'normalized', 'FontSize', 12, 'Color', [0.5 0.5 0.5]);
-                title('Likelihood Statistics');
-            end
-
             drawnow; % Force immediate update
-
+            
             % Capture frame for animation after plot is updated
             obj.captureFrame();
-
+            
             pause(0.01); % Small pause for smooth animation
-
-            % --- GIF writing ---
-            if ~isempty(obj.gif_filename)
-                frame = getframe(gcf);
-                im = frame2im(frame);
-                [A, map] = rgb2ind(im, 256);
-                if obj.gif_frame_counter == 1
-                    imwrite(A, map, obj.gif_filename, 'gif', 'LoopCount', Inf, 'DelayTime', 0.1);
-                else
-                    imwrite(A, map, obj.gif_filename, 'gif', 'WriteMode', 'append', 'DelayTime', 0.1);
-                end
-                obj.gif_frame_counter = obj.gif_frame_counter + 1;
-            end
         end
 
         function ellipse_points = computeCovarianceEllipse(obj, mean_pos, cov_matrix, n_sigma)

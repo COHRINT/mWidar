@@ -39,6 +39,11 @@ classdef (Abstract) DA_Filter < handle
         timestep_counter = 0   % Internal counter for timestep numbering
     end
     
+    properties (Access = public)
+        % Frame storage for animation recording
+        Frames = {}            % Cell array to store captured frames for animation
+    end
+    
     methods (Abstract)
         % Core filter interface that all subclasses must implement
         
@@ -155,6 +160,10 @@ classdef (Abstract) DA_Filter < handle
             end
             
             drawnow; % Force immediate update
+            
+            % Capture frame for animation after plot is updated
+            obj.captureFrame();
+            
             pause(0.01); % Small pause for smooth animation
         end
         
@@ -288,6 +297,144 @@ classdef (Abstract) DA_Filter < handle
             end
             
             fprintf('========================\n\n');
+        end
+        
+        function captureFrame(obj)
+            % CAPTUREFRAME Capture current figure frame for animation
+            %
+            % SYNTAX:
+            %   obj.captureFrame()
+            %
+            % DESCRIPTION:
+            %   Captures the current figure frame and stores it in the Frames
+            %   property for later saving as an animation. Only captures if
+            %   DynamicPlot is enabled and figure handle exists.
+            %
+            % See also saveAnimation, clearFrames
+            
+            if obj.DynamicPlot && ~isempty(obj.dynamic_figure_handle) && isvalid(obj.dynamic_figure_handle)
+                frame = getframe(obj.dynamic_figure_handle);
+                obj.Frames{end+1} = frame;
+            end
+        end
+        
+        function saveAnimation(obj, filename, varargin)
+            % SAVEANIMATION Save captured frames as video or GIF animation
+            %
+            % SYNTAX:
+            %   obj.saveAnimation(filename)
+            %   obj.saveAnimation(filename, 'FrameRate', 30, 'Quality', 75)
+            %
+            % INPUTS:
+            %   filename - Output filename with extension (.avi, .mp4, .gif)
+            %
+            % OPTIONAL NAME-VALUE PAIRS:
+            %   'FrameRate' - Video frame rate (default: 10 fps)
+            %   'Quality'   - Video quality 0-100 (default: 75)
+            %
+            % DESCRIPTION:
+            %   Saves all captured frames as an animated GIF.
+            %   GIF format is most reliable and works universally.
+            %
+            % See also captureFrame, clearFrames
+            
+            if isempty(obj.Frames)
+                warning('No frames captured. Enable DynamicPlot and ensure captureFrame() is called during timesteps.');
+                return;
+            end
+            
+            % Parse input arguments
+            p = inputParser;
+            addRequired(p, 'filename', @(x) ischar(x) || isstring(x));
+            addParameter(p, 'FrameRate', 10, @(x) isnumeric(x) && x > 0);
+            addParameter(p, 'Quality', 75, @(x) isnumeric(x) && x >= 0 && x <= 100);
+            parse(p, filename, varargin{:});
+            
+            % Convert string to char if needed
+            filename = char(filename);
+            
+            [~, ~, ext] = fileparts(filename);
+            
+            % Default to GIF if no extension provided
+            if isempty(ext)
+                filename = [filename '.gif'];
+                ext = '.gif';
+            end
+            
+            if strcmpi(ext, '.gif')
+                % Save as animated GIF (most reliable format)
+                for k = 1:length(obj.Frames)
+                    [A, map] = rgb2ind(frame2im(obj.Frames{k}), 256);
+                    if k == 1
+                        imwrite(A, map, filename, 'gif', 'LoopCount', inf, 'DelayTime', 1/p.Results.FrameRate);
+                    else
+                        imwrite(A, map, filename, 'gif', 'WriteMode', 'append', 'DelayTime', 1/p.Results.FrameRate);
+                    end
+                end
+            else
+                % For any other extension, save as GIF with warning
+                gif_filename = strrep(filename, ext, '.gif');
+                fprintf('Warning: Only GIF format supported. Saving as: %s\n', gif_filename);
+                
+                for k = 1:length(obj.Frames)
+                    [A, map] = rgb2ind(frame2im(obj.Frames{k}), 256);
+                    if k == 1
+                        imwrite(A, map, gif_filename, 'gif', 'LoopCount', inf, 'DelayTime', 1/p.Results.FrameRate);
+                    else
+                        imwrite(A, map, gif_filename, 'gif', 'WriteMode', 'append', 'DelayTime', 1/p.Results.FrameRate);
+                    end
+                end
+            end
+            
+            fprintf('Animation saved: %s (%d frames)\n', filename, length(obj.Frames));
+        end
+        
+        function clearFrames(obj)
+            % CLEARFRAMES Clear all captured frames from memory
+            %
+            % SYNTAX:
+            %   obj.clearFrames()
+            %
+            % DESCRIPTION:
+            %   Clears the Frames property to free memory. Use this after
+            %   saving an animation or when starting a new recording session.
+            %
+            % See also captureFrame, saveAnimation
+            
+            obj.Frames = {};
+            fprintf('Captured frames cleared from memory.\n');
+        end
+        
+        function hasFrames = hasFrames(obj)
+            % HASFRAMES Check if frames have been captured
+            %
+            % SYNTAX:
+            %   hasFrames = obj.hasFrames()
+            %
+            % OUTPUTS:
+            %   hasFrames - True if frames exist, false otherwise
+            %
+            % DESCRIPTION:
+            %   Utility method to check if any frames have been captured.
+            %   Useful for external scripts to determine if animation can be saved.
+            %
+            % See also captureFrame, saveAnimation
+            
+            hasFrames = ~isempty(obj.Frames);
+        end
+        
+        function count = getFrameCount(obj)
+            % GETFRAMECOUNT Get number of captured frames
+            %
+            % SYNTAX:
+            %   count = obj.getFrameCount()
+            %
+            % OUTPUTS:
+            %   count - Number of captured frames
+            %
+            % See also hasFrames, captureFrame
+            
+            count = length(obj.Frames);
         end
     end
     

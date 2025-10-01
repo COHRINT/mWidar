@@ -750,6 +750,10 @@ classdef GNN_HMM < DA_Filter
             obj.visualize(obj.dynamic_figure_handle, title_str, measurements, true_state, all_measurements);
             
             drawnow; % Force immediate update
+            
+            % Capture frame for animation after plot is updated
+            obj.captureFrame();
+            
             pause(0.01); % Small pause for smooth animation
         end
 

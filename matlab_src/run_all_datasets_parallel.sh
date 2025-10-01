@@ -11,8 +11,10 @@ mkdir -p logs
 echo "Creating job list..."
 {
     for dataset in "T1_near" "T2_far" "T3_border" "T4_parab" "T5_parab_noise"; do
-        for filter in "HybridPF" "KF" "HMM"; do
-            for DA in "PDA" "GNN"; do
+        # for filter in "HybridPF" "KF" "HMM"; do
+            # for DA in "PDA" "GNN"; do
+        for filter in "HybridPF"; do
+            for DA in "PDA"; do
                 echo "$dataset $filter $DA"
             done
         done
@@ -25,7 +27,7 @@ run_job() {
     filter=$2
     DA=$3
     echo "Starting $dataset with $filter and $DA..."
-    matlab -batch "main('$dataset', '$filter', 'DA', '$DA', 'Debug', false, 'FinalPlot', 'animation', 'DynamicPlot', false)" > "logs/output_${filter}_${DA}_${dataset}.log" 2>&1
+    matlab -batch "main('$dataset', '$filter', 'DA', '$DA', 'Debug', false, 'FinalPlot', 'animation', 'DynamicPlot', true)" > "logs/output_${filter}_${DA}_${dataset}.log" 2>&1
     echo "Completed $dataset with $filter and $DA"
 }
 

@@ -31,8 +31,8 @@ clc, clear, close all
 %% Environmental Variables
 
 % Control plotting and saving behavior
-PLOT_FLAG = 0; % Set to 1 to show plots, 0 to hide (but still create for saving)
-SAVE_FLAG = 1; % Set to 1 to save figures, 0 to disable saving
+PLOT_FLAG = 1; % Set to 1 to show plots, 0 to hide (but still create for saving)
+SAVE_FLAG = 0; % Set to 1 to save figures, 0 to disable saving
 SAVE_PATH = fullfile('..', '..', 'figures'); % Default save path for figures
 
 % Override with environment variables if they exist
@@ -179,15 +179,57 @@ fprintf('Generated %d noisy position measurements\n', num_steps);
 
 % Load likelihood model
 load(fullfile('..', 'data', 'precalc_imagegridHMMEmLike.mat'), 'pointlikelihood_image');
+det_likelihood_lookup = pointlikelihood_image;
+load(fullfile('..', 'data', 'precalc_imagegridHMMEmLikeMag.mat'), 'pointlikelihood_image');
+mag_likelihood_lookup = pointlikelihood_image;
+clear pointlikelihood_image;
 
-%% Validate loaded parameters
+fprintf("Loaded Likelihood maps: Sizes are as follows:\n")
+fprintf("Detection Likelihood Lookup Table: ")
+disp(size(det_likelihood_lookup))
+fprintf("Magnitude Likelihood Lookup Table: ")
+disp(size(mag_likelihood_lookup))
 
-if size(pointlikelihood_image, 1) ~= 128 ^ 2 || size(pointlikelihood_image, 2) ~= 128 ^ 2
+% Validate loaded parameters
+if size(det_likelihood_lookup, 1) ~= 128 ^ 2 || size(det_likelihood_lookup, 2) ~= 128 ^ 2
     error('Likelihood model dimensions (%dx%d) do not match grid size (%d)', ...
-        size(pointlikelihood_image, 1), size(pointlikelihood_image, 2), 128 ^ 2);
+        size(det_likelihood_lookup, 1), size(det_likelihood_lookup, 2), 128 ^ 2);
 end
 
-fprintf('Successfully loaded HMM matrices and validated dimensions.\n');
+if size(mag_likelihood_lookup, 1) ~= 128 ^ 2 || size(mag_likelihood_lookup, 2) ~= 2
+    error('Likelihood model dimensions (%dx%d) do not match lookup size (%dx%d)', ...
+        size(mag_likelihood_lookup, 1), size(mag_likelihood_lookup, 2), 128 ^ 2, 2);
+end
+
+fprintf('Successfully loaded Likelihood matrices and validated dimensions.\n');
+
+%% Load mWidar model parameters
+% Load mWidar simulation matrices
+load(fullfile('..', '..', 'matlab_src', 'supplemental', 'recovery.mat'))
+load(fullfile('..', '..', 'matlab_src', 'supplemental', 'sampling.mat'))
+
+% Put into mWidar params struct
+mWidarParams.sampling = M;
+mWidarParams.recovery = G;
+clear M G;
+
+% Validate loaded matricies
+fprintf('Successfully loaded mWidar Signal Generation Matricies and validated dimensions. Testing Generation\n');
+
+try
+    test = zeros(128, 128);
+    test(30, 30) = 1;
+    % Test using genmWidarImage function - reshape to 1x128x128 for function input
+    test_input = reshape(test, 1, 128, 128);
+    test_output = genmWidarImage(test_input, mWidarParams);
+    test_new = squeeze(test_output(1, :, :)); % Extract the 128x128 result
+    fprintf('Successfully generated test mWidar image with dimensions %dx%d using genmWidarImage function\n', size(test_new, 1), size(test_new, 2));
+catch ME
+    warning('Failed to generate test mWidar image: %s', ME.message);
+    fprintf('Continuing without image generation test...\n');
+end
+
+fprintf('Successful validation of mWidar matrices. Continuing iteration\n');
 
 %% Define spatial grid
 
@@ -238,7 +280,7 @@ F = [1, 0, dt, 0, dt ^ 2/2, 0;
 % q_acc = 0.01; % Acceleration process noise
 
 % Q = diag([q_pos, q_pos, q_vel, q_vel, q_acc, q_acc]); % Process noise covariance
-Q = 1e-2*eye(6); % Default process noise covariance
+Q = 1e-2 * eye(6); % Default process noise covariance
 
 % Storage for results using cell arrays
 particle_history = cell(1, num_steps + 1);
@@ -249,15 +291,19 @@ cov_history = zeros(state_dim, state_dim, num_steps + 1);
 % Store initial state
 particle_history{1} = particles;
 weight_history{1} = weights;
-mean_state_history(:, 1) = particles * weights;  % Weighted mean: [state_dim x 1]
+mean_state_history(:, 1) = particles * weights; % Weighted mean: [state_dim x 1]
 
 fprintf('Initialized %d particles for hybrid PF\n', N_particles);
 
 %% Setup visualization
 
 fig = figure(1);
-set(fig, 'Visible', fig_visible, 'Position', [100, 100, 1400, 600]);
+set(fig, 'Visible', fig_visible, 'Position', [100, 100, 1800, 800]);
 hold on
+% Pause to make sure it draws
+fprintf("Pausing to generate figure");
+pause(2);
+
 
 % Initialize GIF saving if requested
 if SAVE_FLAG
@@ -273,20 +319,20 @@ for kk = 1:num_steps
     if kk > 1 % Skip resampling at first step
         fprintf('\t-> Resampling step\n');
         % PFResample expects [state_dim x N_particles], which matches our format
-        [particles, ~] = PFResample(particles, weights); 
+        [particles, ~] = PFResample(particles, weights);
     end
 
     % ========== PREDICTION STEP (Kalman dynamics) ==========
     fprintf('\t-> Prediction step (Kalman dynamics)\n');
 
     % Vectorized Kalman dynamics for all particles at once
-    % Apply deterministic dynamics: particles = F * particles 
+    % Apply deterministic dynamics: particles = F * particles
     particles = F * particles;
-    
+
     % Add process noise to all particles at once
     process_noise = mvnrnd(zeros(1, state_dim), Q, N_particles)'; % [state_dim x N_particles]
     particles = particles + process_noise;
-    
+
     % Vectorized bounds enforcement for position (rows 1 and 2)
     particles(1, :) = max(Xbounds(1), min(Xbounds(2), particles(1, :))); % x bounds
     particles(2, :) = max(Ybounds(1), min(Ybounds(2), particles(2, :))); % y bounds
@@ -294,46 +340,74 @@ for kk = 1:num_steps
     % ========== MEASUREMENT UPDATE STEP (HMM likelihood) ==========
     fprintf('\t-> Measurement update step (HMM likelihood)\n');
 
+    % MEASUREMENT CREATION
     % Get current measurement (assuming data association already done)
     current_meas = measurements(:, kk);
-    fprintf('\t  Measurement: [%.3f, %.3f]\n', current_meas(1), current_meas(2));
 
-    % Vectorized likelihood computation for all particles
-    
     % Find measurement grid point (computed once, used for all particles)
     [~, meas_x_idx] = min(abs(xgrid - current_meas(1)));
     [~, meas_y_idx] = min(abs(ygrid - current_meas(2)));
     meas_linear_idx = sub2ind([npx, npx], meas_y_idx, meas_x_idx);
-    
+
+    % mWIDAR SIGNAL CREATION
+    curr_signal = zeros(128,128);
+    curr_signal(meas_linear_idx) = 1;
+    curr_signal = reshape(curr_signal, 1, 128, 128);
+    curr_signal = genmWidarImage(curr_signal, mWidarParams);
+    curr_signal = squeeze(curr_signal(1, :, :)); % Extract the 128x128 result
+
+    fprintf("Size of current signal: \n")
+    disp(size(curr_signal))
+    % Vectorized likelihood computation for all particles
     % Vectorized grid point finding for all particles
     % Find closest x-grid indices for all particles at once
     % Use explicit broadcasting: particles(1,:) is [1 x N_particles], xgrid is [1 x npx]
     [~, px_indices] = min(abs(particles(1, :)' - xgrid), [], 2); % [N_particles x 1]
     [~, py_indices] = min(abs(particles(2, :)' - ygrid), [], 2); % [N_particles x 1]
-    
+
     % Enforce boundary constraints vectorized
     px_indices = max(1, min(npx, px_indices));
     py_indices = max(1, min(npx, py_indices));
-    
+
     % Convert to linear indices for all particles at once
     particle_linear_indices = sub2ind([npx, npx], py_indices, px_indices); % [N_particles x 1]
-    
+
     % Vectorized likelihood lookup from pre-computed model
-    likelihood_raw = pointlikelihood_image(meas_linear_idx, particle_linear_indices); % Should be [N_particles x 1]
+    likelihood_det = det_likelihood_lookup(meas_linear_idx, particle_linear_indices); % Should be [N_particles x 1]
+    likelihood_mag_values = mag_likelihood_lookup(particle_linear_indices, :); % Should be [N_particles x 2]
+    % Convert likelihood_mag to number -- take value of signal AT each particle position and calculation likelihood_mag = Normal(signal_value, mean=likleihood_mag_values(1), var=likelihood_mag_values(2)^2)
+    likelihood_mag = .1 * normpdf(curr_signal(particle_linear_indices), likelihood_mag_values(:, 1), likelihood_mag_values(:, 2)); % [N_particles x 1]
+
+    % Convert both to column vectors if needed
+    likelihood_det = likelihood_det(:); % Ensure column vector
+    likelihood_mag = likelihood_mag(:); % Ensure column vector
+
+    fprintf("DEBUGGING -- THIS IS THE RANGE OF THE MAG LIKELIHOODS\n")
+    disp(min(likelihood_mag))
+    disp(max(likelihood_mag))
+    disp(range(likelihood_mag))
+    disp(mean(likelihood_mag))
+    disp(std(likelihood_mag))
+
+
+
+    % Combination of likelihood (det for dynamics information from the detector, mag for magnitude information from the signal)
+    likelihood_raw = likelihood_det .* likelihood_mag; % Combine detection and magnitude likelihoods
     
+
     % Ensure likelihood_raw is a column vector
     if size(likelihood_raw, 1) == 1 && size(likelihood_raw, 2) == N_particles
         likelihood_raw = likelihood_raw'; % Transpose to column vector
     end
-    
+
     % Vectorized Gaussian weighting for improved localization
     sf = 0.15;
     % Compute squared distances for all particles at once
-    dx = particles(1, :) - current_meas(1); % [1 x N_particles] 
+    dx = particles(1, :) - current_meas(1); % [1 x N_particles]
     dy = particles(2, :) - current_meas(2); % [1 x N_particles]
-    dist_sq = dx.^2 + dy.^2; % [1 x N_particles]
-    gauss_weights = exp(-dist_sq / (2 * sf^2)); % [1 x N_particles]
-    
+    dist_sq = dx .^ 2 + dy .^ 2; % [1 x N_particles]
+    gauss_weights = exp(-dist_sq / (2 * sf ^ 2)); % [1 x N_particles]
+
     % Combine likelihoods and normalize
     new_weights = (likelihood_raw .* gauss_weights') + eps; % Add small epsilon
     weights = new_weights / sum(new_weights);
@@ -343,106 +417,230 @@ for kk = 1:num_steps
     weight_history{kk + 1} = weights;
 
     % Compute weighted statistics
-    mean_state = particles * weights;  % [state_dim x 1] = [state_dim x N_particles] * [N_particles x 1]
+    mean_state = particles * weights; % [state_dim x 1] = [state_dim x N_particles] * [N_particles x 1]
     mean_state_history(:, kk + 1) = mean_state;
 
     % Vectorized weighted covariance computation
-    particles_centered = particles - mean_state;  % Center particles around mean: [state_dim x N_particles] - [state_dim x 1]
-    
+    particles_centered = particles - mean_state; % Center particles around mean: [state_dim x N_particles] - [state_dim x 1]
+
     % Efficient vectorized covariance: C = (particles_centered * diag(weights) * particles_centered')
     % This is equivalent to: sum over p of weights(p) * particles_centered(:,p) * particles_centered(:,p)'
-    weighted_particles = particles_centered .* sqrt(weights');  % [state_dim x N_particles]
-    cov_weighted = weighted_particles * weighted_particles';   % [state_dim x state_dim]
+    weighted_particles = particles_centered .* sqrt(weights'); % [state_dim x N_particles]
+    cov_weighted = weighted_particles * weighted_particles'; % [state_dim x state_dim]
 
     cov_history(:, :, kk + 1) = cov_weighted;
 
     %% ========== PLOTTING ==========
+    % Create comprehensive likelihood field visualizations similar to test_HMM
+    % This detailed breakdown shows:
+    % Row 1: Spatial likelihood fields (detection, magnitude, combined, signal, particles)
+    % Row 2: Likelihood analysis (scatter, histograms, velocity, acceleration, statistics)
+    
+    % Generate likelihood fields on the spatial grid for visualization
+    % This shows how the likelihood function varies across space
+    
+    % Detection likelihood field from measurement location
+    det_likelihood_field = det_likelihood_lookup(meas_linear_idx, :)';
+    
+    % Apply Gaussian mask around measurement for improved localization
+    sf = 0.15; % scaling factor for Gaussian mask
+    meas_pos = [current_meas(1), current_meas(2)];
+    gaussmask = mvnpdf(pxyvec, meas_pos, sf * eye(2));
+    gaussmask(gaussmask < 0.1 * max(gaussmask)) = 0; % threshold small values
+    det_likelihood_field_masked = det_likelihood_field .* gaussmask;
+    
+    % Magnitude likelihood field for all grid points
+    all_grid_indices = (1:npx*npx)';
+    mag_likelihood_values_grid = mag_likelihood_lookup(all_grid_indices, :); % [N_grid x 2]
+    
+    % Calculate magnitude likelihood for each grid point
+    mag_likelihood_field = zeros(npx*npx, 1);
+    for grid_idx = 1:npx*npx
+        signal_value = curr_signal(grid_idx);
+        mag_likelihood_field(grid_idx) = 0.1 * normpdf(signal_value, mag_likelihood_values_grid(grid_idx, 1), mag_likelihood_values_grid(grid_idx, 2));
+    end
+    
+    % Combined likelihood field
+    combined_likelihood_field = det_likelihood_field_masked .* mag_likelihood_field;
+    combined_likelihood_field = combined_likelihood_field / sum(combined_likelihood_field); % normalize
 
-    % Plot particles and estimates (always create, but control visibility)
+    % Plot likelihood breakdown - PARTICLE-BASED VISUALIZATION (like PDA_PF)
     figure(1); % Make sure we're on the right figure
+    clf; % Clear figure for fresh tiledlayout
+    
+    % Create tiled layout (2 rows, 5 columns) - particle-based approach
+    t = tiledlayout(2, 5, 'TileSpacing', 'compact', 'Padding', 'compact');
 
-    % Subplot 1: Position with full scene view and inset zoom
-    ax1 = subplot(1, 3, 1); cla
-    h_scatter = scatter(particles(1, :), particles(2, :), 20, weights, 'filled', 'MarkerFaceAlpha', 0.6);
-    hold on
-    plot(mean_state(1), mean_state(2), 'ro', 'MarkerSize', 10, 'LineWidth', 3)
-    plot(state_traj(1, kk), state_traj(2, kk), 'o', 'Color', [0.7 0.7 0.7], 'MarkerSize', 6, 'LineWidth', 1.5, 'MarkerFaceColor', [0.7 0.7 0.7])
-    plot(current_meas(1), current_meas(2), '+', 'Color', [0.5 0.5 0.5], 'MarkerSize', 6, 'LineWidth', 1.5)
+    % Row 1: Particle Likelihood Visualizations
+    % Tile 1: Particles colored by Detection Likelihood
+    nexttile(1);
+    scatter(particles(1, :), particles(2, :), 40, likelihood_det, 'filled', 'MarkerFaceAlpha', 0.7);
+    hold on;
+    plot(current_meas(1), current_meas(2), '+', 'Color', [0.2 0.2 0.2], 'MarkerSize', 12, 'LineWidth', 3);
+    plot(mean_state(1), mean_state(2), 'ro', 'MarkerSize', 10, 'LineWidth', 2);
+    plot(state_traj(1, kk), state_traj(2, kk), 'mo', 'MarkerSize', 8, 'LineWidth', 2);
+    title(['Detection Likelihood at $k=', num2str(kk), '$'], 'Interpreter', 'latex');
+    xlabel('$X$ (m)', 'Interpreter', 'latex');
+    ylabel('$Y$ (m)', 'Interpreter', 'latex');
+    xlim([-2, 2]); ylim([0, 4]);
+    axis square;
+    colorbar;
+    colormap(gca, 'hot');
 
-    % Draw rectangle indicating inset zoom region
-    zoom_rect = rectangle('Position', [current_meas(1) - 0.3, current_meas(2) - 0.3, 0.6, 0.6], ...
-        'EdgeColor', 'k', 'LineWidth', 1, 'LineStyle', '--');
+    % Tile 2: Particles colored by Magnitude Likelihood  
+    nexttile(2);
+    scatter(particles(1, :), particles(2, :), 40, likelihood_mag, 'filled', 'MarkerFaceAlpha', 0.7);
+    hold on;
+    plot(current_meas(1), current_meas(2), '+', 'Color', [0.2 0.2 0.2], 'MarkerSize', 12, 'LineWidth', 3);
+    plot(mean_state(1), mean_state(2), 'ro', 'MarkerSize', 10, 'LineWidth', 2);
+    plot(state_traj(1, kk), state_traj(2, kk), 'mo', 'MarkerSize', 8, 'LineWidth', 2);
+    title(['Magnitude Likelihood at $k=', num2str(kk), '$'], 'Interpreter', 'latex');
+    xlabel('$X$ (m)', 'Interpreter', 'latex');
+    ylabel('$Y$ (m)', 'Interpreter', 'latex');
+    xlim([-2, 2]); ylim([0, 4]);
+    axis square;
+    colorbar;
+    colormap(gca, 'cool');
 
-    title(['Particles at $k=', num2str(kk), '$'])
-    xlabel('$X$ (m)'), ylabel('$Y$ (m)')
-    xlim([-2, 2]), ylim([0, 4]) % Fixed bounds as requested
-    axis square % Make subplot square
-    legend('Particles', 'PF Estimate', 'True Position', 'Measurement', 'Location', 'northwest')
+    % Tile 3: Particles colored by Combined Likelihood
+    nexttile(3);
+    combined_likelihood_particles = likelihood_det .* likelihood_mag;
+    disp(size(likelihood_det))
+    disp(size(likelihood_mag))
 
-    % Create inset zoom window positioned within the main subplot using data coordinates
-    % Define inset location in data coordinates (within the main plot)
-    inset_x_range = [- .5, 1.3]; % X position on the main plot where inset appears
-    inset_y_range = [.1, 1.3]; % Y position on the main plot where inset appears
+    disp(size(combined_likelihood_particles))
+    scatter(particles(1, :), particles(2, :), 40, combined_likelihood_particles, 'filled', 'MarkerFaceAlpha', 0.7);
+    hold on;
+    plot(current_meas(1), current_meas(2), '+', 'Color', [0.2 0.2 0.2], 'MarkerSize', 12, 'LineWidth', 3);
+    plot(mean_state(1), mean_state(2), 'ro', 'MarkerSize', 10, 'LineWidth', 2);
+    plot(state_traj(1, kk), state_traj(2, kk), 'mo', 'MarkerSize', 8, 'LineWidth', 2);
+    title(['Combined Likelihood at $k=', num2str(kk), '$'], 'Interpreter', 'latex');
+    xlabel('$X$ (m)', 'Interpreter', 'latex');
+    ylabel('$Y$ (m)', 'Interpreter', 'latex');
+    xlim([-2, 2]); ylim([0, 4]);
+    axis square;
+    colorbar;
+    colormap(gca, 'parula');
 
-    % Convert data coordinates to normalized figure coordinates
-    ax1_pos = get(ax1, 'Position'); % [left, bottom, width, height] in figure units
+    % Tile 4: mWidar Signal with Detections
+    nexttile(4);
+    % Display mWidar signal as background
+    imagesc(xgrid, ygrid, curr_signal / max(curr_signal(:)));
+    set(gca, 'YDir', 'normal');
+    hold on;
+    
+    % Overlay detections prominently
+    plot(current_meas(1), current_meas(2), 'r*', 'MarkerSize', 15, 'LineWidth', 3);
+    
+    % Show state estimate and true state
+    plot(mean_state(1), mean_state(2), 'bs', 'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'blue');
+    plot(state_traj(1, kk), state_traj(2, kk), 'mo', 'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'magenta');
+    
+    title(['mWidar Signal + Detections at $k=', num2str(kk), '$'], 'Interpreter', 'latex');
+    xlabel('$X$ (m)', 'Interpreter', 'latex');
+    ylabel('$Y$ (m)', 'Interpreter', 'latex');
+    xlim([-2, 2]); ylim([0, 4]);
+    axis square;
+    colorbar;
+    colormap(gca, 'parula');
 
-    % Map from data coordinates to axes coordinates (0 to 1)
-    xlims = get(ax1, 'XLim'); % [-2, 2]
-    ylims = get(ax1, 'YLim'); % [0, 4]
+    % Tile 5: Particles colored by Final Weights
+    nexttile(5);
+    scatter(particles(1, :), particles(2, :), 40, weights, 'filled', 'MarkerFaceAlpha', 0.7);
+    hold on;
+    plot(mean_state(1), mean_state(2), 'ro', 'MarkerSize', 10, 'LineWidth', 3);
+    plot(state_traj(1, kk), state_traj(2, kk), 'o', 'Color', [0.2 0.2 0.2], ...
+         'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', [0.7 0.7 0.7]);
+    plot(current_meas(1), current_meas(2), '+', 'Color', [0.2 0.2 0.2], ...
+         'MarkerSize', 12, 'LineWidth', 3);
+    title(['Particle Weights at $k=', num2str(kk), '$'], 'Interpreter', 'latex');
+    xlabel('$X$ (m)', 'Interpreter', 'latex');
+    ylabel('$Y$ (m)', 'Interpreter', 'latex');
+    xlim([-2, 2]); ylim([0, 4]);
+    axis square;
+    colorbar;
+    colormap(gca, 'parula');
 
-    % Normalize inset position within the main subplot
-    inset_left_norm = (inset_x_range(1) - xlims(1)) / (xlims(2) - xlims(1));
-    inset_bottom_norm = (inset_y_range(1) - ylims(1)) / (ylims(2) - ylims(1));
-    inset_width_norm = (inset_x_range(2) - inset_x_range(1)) / (xlims(2) - xlims(1));
-    inset_height_norm = (inset_y_range(2) - inset_y_range(1)) / (ylims(2) - ylims(1));
+    % Row 2: Analysis and Comparison
+    % Tile 6: Detection vs Magnitude Likelihood Scatter
+    nexttile(6);
+    scatter(likelihood_det, likelihood_mag, 20, weights, 'filled', 'MarkerFaceAlpha', 0.7);
+    hold on;
+    max_val = max([max(likelihood_det), max(likelihood_mag)]);
+    min_val = min([min(likelihood_det), min(likelihood_mag)]);
+    plot([min_val, max_val], [min_val, max_val], 'k--', 'LineWidth', 1);
+    xlabel('Detection Likelihood', 'Interpreter', 'latex');
+    ylabel('Magnitude Likelihood', 'Interpreter', 'latex');
+    title('Likelihood Components', 'Interpreter', 'latex');
+    colorbar;
+    grid on;
+    axis square;
+    
+    % Add correlation coefficient
+    corr_coef = corrcoef(likelihood_det, likelihood_mag);
+    if issparse(corr_coef)
+        corr_coef = full(corr_coef);
+    end
+    text(0.05, 0.95, sprintf('Corr: %.3f', corr_coef(1,2)), ...
+        'Units', 'normalized', 'FontSize', 10, 'BackgroundColor', 'white');
 
-    % Convert to figure coordinates
-    inset_pos = [ax1_pos(1) + inset_left_norm * ax1_pos(3), ... % Left edge
-                     ax1_pos(2) + inset_bottom_norm * ax1_pos(4), ... % Bottom edge
-                     inset_width_norm * ax1_pos(3), ... % Width
-                     inset_height_norm * ax1_pos(4)]; % Height
+    % Tile 7: Likelihood Component Histograms
+    nexttile(7);
+    likelihood_det_norm = likelihood_det / max(likelihood_det);
+    likelihood_mag_norm = likelihood_mag / max(likelihood_mag);
+    likelihood_combined_norm = (likelihood_det .* likelihood_mag) / max(likelihood_det .* likelihood_mag);
+    
+    edges = linspace(0, 1, 20);
+    histogram(likelihood_det_norm, edges, 'FaceAlpha', 0.6, 'FaceColor', 'r', 'EdgeColor', 'none');
+    hold on;
+    histogram(likelihood_mag_norm, edges, 'FaceAlpha', 0.6, 'FaceColor', 'b', 'EdgeColor', 'none');
+    histogram(likelihood_combined_norm, edges, 'FaceAlpha', 0.6, 'FaceColor', 'g', 'EdgeColor', 'none');
+    
+    xlabel('Normalized Likelihood', 'Interpreter', 'latex');
+    ylabel('Number of Particles', 'Interpreter', 'latex');
+    title('Likelihood Distributions', 'Interpreter', 'latex');
+    legend('Detection', 'Magnitude', 'Combined', 'Location', 'northeast');
+    grid on;
+    axis square;
 
-    inset_ax = axes('Position', inset_pos);
-    scatter(particles(1, :), particles(2, :), 15, weights, 'filled', 'MarkerFaceAlpha', 0.7);
-    hold on
-    plot(mean_state(1), mean_state(2), 'ro', 'MarkerSize', 8, 'LineWidth', 2)
-    plot(state_traj(1, kk), state_traj(2, kk), 'o', 'Color', [0.7 0.7 0.7], 'MarkerSize', 5, 'LineWidth', 1.5, 'MarkerFaceColor', [0.7 0.7 0.7])
-    plot(current_meas(1), current_meas(2), '+', 'Color', [0.5 0.5 0.5], 'MarkerSize', 6, 'LineWidth', 2)
-    xlim([current_meas(1) - 0.3, current_meas(1) + 0.3])
-    ylim([current_meas(2) - 0.3, current_meas(2) + 0.3])
-    axis square % Make inset square
-    set(inset_ax, 'FontSize', 8, 'Box', 'on', 'XTick', [], 'YTick', [])
+    % Tile 8: Velocity estimates
+    nexttile(8);
+    scatter(particles(3, :), particles(4, :), 20, weights, 'filled', 'MarkerFaceAlpha', 0.6);
+    hold on;
+    plot(mean_state(3), mean_state(4), 'ro', 'MarkerSize', 10, 'LineWidth', 3);
+    plot(state_traj(3, kk), state_traj(4, kk), 'o', 'Color', [0.7 0.7 0.7], 'MarkerSize', 6, 'LineWidth', 1.5, 'MarkerFaceColor', [0.7 0.7 0.7]);
+    title('Velocity', 'Interpreter', 'latex');
+    xlabel('$V_x$ (m/s)', 'Interpreter', 'latex');
+    ylabel('$V_y$ (m/s)', 'Interpreter', 'latex');
+    axis square;
+    colorbar;
 
-    % Return focus to main subplot for proper legend placement
-    axes(ax1);
-
-    % Subplot 2: Velocity estimates
-    subplot(1, 3, 2), cla
-    scatter(particles(3, :), particles(4, :), 20, weights, 'filled', 'MarkerFaceAlpha', 0.6)
-    hold on
-    plot(mean_state(3), mean_state(4), 'ro', 'MarkerSize', 10, 'LineWidth', 3)
-    plot(state_traj(3, kk), state_traj(4, kk), 'o', 'Color', [0.7 0.7 0.7], 'MarkerSize', 6, 'LineWidth', 1.5, 'MarkerFaceColor', [0.7 0.7 0.7])
-    title(['Velocity at $k=', num2str(kk), '$'])
-    xlabel('$V_x$ (m/s)'), ylabel('$V_y$ (m/s)')
-    axis square % Make subplot square
-    legend('Particles', 'PF Estimate', 'True Velocity', 'Location', 'northwest')
-
-    % Subplot 3: Acceleration estimates
-    subplot(1, 3, 3), cla
-    scatter(particles(5, :), particles(6, :), 20, weights, 'filled', 'MarkerFaceAlpha', 0.6)
-    hold on
-    plot(mean_state(5), mean_state(6), 'ro', 'MarkerSize', 10, 'LineWidth', 3)
-    plot(state_traj(5, kk), state_traj(6, kk), 'o', 'Color', [0.7 0.7 0.7], 'MarkerSize', 6, 'LineWidth', 1.5, 'MarkerFaceColor', [0.7 0.7 0.7])
-    title(['Acceleration at $k=', num2str(kk), '$'])
-    xlabel('$A_x$ (m/s$^2$)'), ylabel('$A_y$ (m/s$^2$)')
-    axis square % Make subplot square
-    legend('Particles', 'PF Estimate', 'True Acceleration', 'Location', 'northwest')
-
-    % Add single colorbar on the right spanning full height
-    cb = colorbar('Position', [0.92, 0.15, 0.02, 0.7]);
-    cb.Label.String = 'Particle Weight';
-    cb.Label.Interpreter = 'latex';
+    % Tile 9: Acceleration estimates  
+    nexttile(9);
+    scatter(particles(5, :), particles(6, :), 20, weights, 'filled', 'MarkerFaceAlpha', 0.6);
+    hold on;
+    plot(mean_state(5), mean_state(6), 'ro', 'MarkerSize', 10, 'LineWidth', 3);
+    plot(state_traj(5, kk), state_traj(6, kk), 'o', 'Color', [0.7 0.7 0.7], 'MarkerSize', 6, 'LineWidth', 1.5, 'MarkerFaceColor', [0.7 0.7 0.7]);
+    title('Acceleration', 'Interpreter', 'latex');
+    xlabel('$A_x$ (m/s$^2$)', 'Interpreter', 'latex');
+    ylabel('$A_y$ (m/s$^2$)', 'Interpreter', 'latex');
+    axis square;
+    colorbar;
+    
+    % Tile 10: Likelihood Statistics
+    nexttile(10);
+    % % Show statistics about particle likelihoods (not field-based)
+    % det_stats = [min(likelihood_det), mean(likelihood_det), max(likelihood_det)];
+    % mag_stats = [min(likelihood_mag), mean(likelihood_mag), max(likelihood_mag)];
+    % comb_stats = [min(likelihood_det .* likelihood_mag), mean(likelihood_det .* likelihood_mag), max(likelihood_det .* likelihood_mag)];
+    % 
+    % bar_data = [det_stats; mag_stats; comb_stats];
+    % bar(bar_data);
+    % set(gca, 'XTickLabel', {'Detection', 'Magnitude', 'Combined'});
+    % ylabel('Likelihood Value', 'Interpreter', 'latex');
+    % title('Likelihood Statistics', 'Interpreter', 'latex');
+    % legend('Min', 'Mean', 'Max', 'Location', 'best');
+    % grid on;
 
     % Save frame to GIF if requested
     if SAVE_FLAG

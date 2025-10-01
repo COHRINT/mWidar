@@ -143,21 +143,64 @@ A_slow = A; clear A
 load(fullfile('..', 'data', 'precalc_imagegridHMMSTMn30.mat'), 'A');
 A_fast = A; clear A
 
-% load precalc_imagegrid
+% Load likelihood models (both detection and magnitude)
 load(fullfile('..', 'data', 'precalc_imagegridHMMEmLike.mat'), 'pointlikelihood_image');
+det_likelihood_lookup = pointlikelihood_image;
+load(fullfile('..', 'data', 'precalc_imagegridHMMEmLikeMag.mat'), 'pointlikelihood_image');
+mag_likelihood_lookup = pointlikelihood_image;
+clear pointlikelihood_image;
 
-%% Validate loaded parameteres
+fprintf("Loaded Likelihood maps: Sizes are as follows:\n")
+fprintf("Detection Likelihood Lookup Table: ")
+disp(size(det_likelihood_lookup))
+fprintf("Magnitude Likelihood Lookup Table: ")
+disp(size(mag_likelihood_lookup))
+
+%% Validate loaded parameters
 if size(A_slow, 1) ~= 128 ^ 2 || size(A_fast, 1) ~= 128 ^ 2
     error('Transition matrix dimensions (%dx%d) do not match grid size (%d)', ...
         size(A_slow, 1), size(A_slow, 2), 128 ^ 2);
 end
 
-if size(pointlikelihood_image, 1) ~= 128 ^ 2 || size(pointlikelihood_image, 2) ~= 128 ^ 2
-    error('Likelihood model dimensions (%dx%d) do not match grid size (%d)', ...
-        size(pointlikelihood_image, 1), size(pointlikelihood_image, 2), 128 ^ 2);
+if size(det_likelihood_lookup, 1) ~= 128 ^ 2 || size(det_likelihood_lookup, 2) ~= 128 ^ 2
+    error('Detection likelihood model dimensions (%dx%d) do not match grid size (%d)', ...
+        size(det_likelihood_lookup, 1), size(det_likelihood_lookup, 2), 128 ^ 2);
+end
+
+if size(mag_likelihood_lookup, 1) ~= 128 ^ 2 || size(mag_likelihood_lookup, 2) ~= 2
+    error('Magnitude likelihood model dimensions (%dx%d) do not match expected size (%dx2)', ...
+        size(mag_likelihood_lookup, 1), size(mag_likelihood_lookup, 2), 128 ^ 2);
 end
 
 fprintf('Successfully loaded HMM matrices and validated dimensions.\n');
+
+%% Load mWidar model parameters
+% Load mWidar simulation matrices
+load(fullfile('..', '..', 'matlab_src', 'supplemental', 'recovery.mat'))
+load(fullfile('..', '..', 'matlab_src', 'supplemental', 'sampling.mat'))
+
+% Put into mWidar params struct
+mWidarParams.sampling = M;
+mWidarParams.recovery = G;
+clear M G;
+
+% Validate loaded matrices
+fprintf('Successfully loaded mWidar Signal Generation Matrices and validated dimensions. Testing Generation\n');
+
+try
+    test = zeros(128, 128);
+    test(30, 30) = 1;
+    % Test using genmWidarImage function - reshape to 1x128x128 for function input
+    test_input = reshape(test, 1, 128, 128);
+    test_output = genmWidarImage(test_input, mWidarParams);
+    test_new = squeeze(test_output(1, :, :)); % Extract the 128x128 result
+    fprintf('Successfully generated test mWidar image with dimensions %dx%d using genmWidarImage function\n', size(test_new, 1), size(test_new, 2));
+catch ME
+    warning('Failed to generate test mWidar image: %s', ME.message);
+    fprintf('Continuing without image generation test...\n');
+end
+
+fprintf('Successful validation of mWidar matrices. Continuing iteration\n');
 
 %% Define spatial grid
 Lscene = 4; %physical length of scene in m (square shape)
@@ -205,7 +248,10 @@ fprintf('Initialized HMM state probability distribution\n');
 
 %% Setup visualization
 fig = figure(1);
-set(fig, 'Visible', fig_visible, 'Position', [100, 100, 500, 1400]);
+set(fig, 'Visible', fig_visible, 'Position', [100, 100, 1400, 300]);
+% Pause to make sure it draws
+fprintf("Pausing to generate figure\n");
+pause(2);
 
 % Initialize GIF saving if requested
 if SAVE_FLAG
@@ -238,15 +284,44 @@ for kk = 1:num_steps
     [~, meas_y_idx] = min(abs(ygrid - current_meas(2)));
     meas_linear_idx = sub2ind([npx, npx], meas_y_idx, meas_x_idx);
 
-    % Get likelihood function from pre-computed model
-    likeframekk_raw = pointlikelihood_image(meas_linear_idx, :)';
+    % Get detection likelihood function from pre-computed model
+    likeframekk_det_raw = det_likelihood_lookup(meas_linear_idx, :)';
 
     % Apply Gaussian mask around measurement for improved localization
     sf = 0.15; % scaling factor for Gaussian mask
     meas_pos = [current_meas(1), current_meas(2)];
     gaussmask = mvnpdf(pxyvec, meas_pos, sf * eye(2));
     gaussmask(gaussmask < 0.1 * max(gaussmask)) = 0; % threshold small values
-    likeframekk = likeframekk_raw .* gaussmask;
+    likeframekk_det = likeframekk_det_raw .* gaussmask;
+
+    % mWIDAR SIGNAL CREATION (following test_hybrid_PF approach)
+    curr_signal = zeros(128,128);
+    curr_signal(meas_linear_idx) = 1;
+    curr_signal = reshape(curr_signal, 1, 128, 128);
+    curr_signal = genmWidarImage(curr_signal, mWidarParams);
+    curr_signal = squeeze(curr_signal(1, :, :)); % Extract the 128x128 result
+    
+    % For HMM case: evaluate magnitude likelihood for all grid points
+    % Get all grid point linear indices
+    all_grid_indices = (1:npx*npx)';
+    
+    % Get magnitude likelihood parameters for all grid points
+    mag_likelihood_values = mag_likelihood_lookup(all_grid_indices, :); % [N_grid x 2]
+    
+    % Calculate magnitude likelihood for each grid point
+    % For each grid point, get signal value and compute likelihood
+    likeframekk_mag = zeros(npx*npx, 1);
+    for grid_idx = 1:npx*npx
+        signal_value = curr_signal(grid_idx);
+        % likelihood_mag = Normal(signal_value, mean=likelihood_mag_values(1), var=likelihood_mag_values(2)^2)
+        likeframekk_mag(grid_idx) = 0.1 * normpdf(signal_value, mag_likelihood_values(grid_idx, 1), mag_likelihood_values(grid_idx, 2));
+    end
+
+    % Combine detection and magnitude likelihoods (composite likelihood)
+    likeframekk_combined = likeframekk_det .* likeframekk_mag;
+    
+    % Normalize combined likelihood
+    likeframekk = likeframekk_combined / sum(likeframekk_combined);
 
     % Compute posterior: P(x_k | z_1:k) ∝ P(z_k | x_k) * P(x_k | z_1:k-1)
     ptargetkk_post = ptargetkk_pred .* likeframekk;
@@ -273,31 +348,53 @@ for kk = 1:num_steps
     %% ========== PLOTTING ==========
     % Plot HMM states and estimates (always create, but control visibility)
     figure(1); % Make sure we're on the right figure
+    clf; % Clear figure for fresh tiledlayout
+    
+    % Create tiled layout (1 row, 5 columns)
+    t = tiledlayout(1, 5, 'TileSpacing', 'compact', 'Padding', 'compact');
 
-    % Subplot 1: Prediction
-    subplot(3,1,1), cla
+    % Tile 1: Prior/Prediction
+    nexttile(1); cla
     surf(xgrid, ygrid, reshape(ptargetkk_pred, [npx, npx]), 'EdgeColor', 'none'), view(2)
-    title(['Prediction at $k=', num2str(kk), '$'])
+    title(['Prior at $k=', num2str(kk), '$'])
     xlabel('$X$ (m)'), ylabel('$Y$ (m)')
     xlim([-2, 2]), ylim([0, 4])
-    axis square  % Make subplot square
-
+    axis square  % Make tile square
     colorbar
 
-    % Subplot 2: Likelihood
-    subplot(3,1,2), cla
+    % Tile 2: Detection Likelihood
+    nexttile(2); cla
+    surf(xgrid, ygrid, reshape(likeframekk_det, [npx, npx]), 'EdgeColor', 'none'), view(2)
+    hold on
+    plot3(current_meas(1), current_meas(2), max(likeframekk_det)*1.1, '+', 'Color', [0.5 0.5 0.5], 'MarkerSize', 8, 'LineWidth', 2)
+    title(['Detection Likelihood at $k=', num2str(kk), '$'])
+    xlabel('$X$ (m)'), ylabel('$Y$ (m)')
+    xlim([-2, 2]), ylim([0, 4])
+    axis square  % Make tile square
+    colorbar
+
+    % Tile 3: Magnitude Likelihood
+    nexttile(3); cla
+    surf(xgrid, ygrid, reshape(likeframekk_mag, [npx, npx]), 'EdgeColor', 'none'), view(2)
+    title(['Magnitude Likelihood at $k=', num2str(kk), '$'])
+    xlabel('$X$ (m)'), ylabel('$Y$ (m)')
+    xlim([-2, 2]), ylim([0, 4])
+    axis square  % Make tile square
+    colorbar
+
+    % Tile 4: Combined Likelihood
+    nexttile(4); cla
     surf(xgrid, ygrid, reshape(likeframekk, [npx, npx]), 'EdgeColor', 'none'), view(2)
     hold on
     plot3(current_meas(1), current_meas(2), max(likeframekk)*1.1, '+', 'Color', [0.5 0.5 0.5], 'MarkerSize', 8, 'LineWidth', 2)
-    title(['Likelihood at $k=', num2str(kk), '$'])
+    title(['Combined Likelihood at $k=', num2str(kk), '$'])
     xlabel('$X$ (m)'), ylabel('$Y$ (m)')
     xlim([-2, 2]), ylim([0, 4])
-    axis square  % Make subplot square
-
+    axis square  % Make tile square
     colorbar
 
-    % Subplot 3: Posterior
-    subplot(3,1,3), cla
+    % Tile 5: Posterior
+    nexttile(5); cla
     surf(xgrid, ygrid, reshape(ptargetkk_post, [npx, npx]), 'EdgeColor', 'none'), view(2)
     hold on
     plot3(pttraj(1, kk), pttraj(2, kk), max(ptargetkk_post)*1.1, 'o', 'Color', [0.7 0.7 0.7], 'MarkerSize', 6, 'LineWidth', 1.5, 'MarkerFaceColor', [0.7 0.7 0.7])
@@ -306,8 +403,7 @@ for kk = 1:num_steps
     title(['Posterior at $k=', num2str(kk), '$'])
     xlabel('$X$ (m)'), ylabel('$Y$ (m)')
     xlim([-2, 2]), ylim([0, 4])
-    axis square  % Make subplot square
-
+    axis square  % Make tile square
     % legend('Posterior', 'True position', 'Measurement', 'HMM estimate', 'Location', 'northwest')
     colorbar
 

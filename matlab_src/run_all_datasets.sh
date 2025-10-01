@@ -24,7 +24,7 @@ do
         do
             wait_for_jobs  # Wait if we have too many jobs running
             echo "Starting $dataset with $filter and $DA..."
-            matlab -batch "main('$dataset', '$filter', 'DA', '$DA', 'Debug', false, 'FinalPlot', 'animation', 'DynamicPlot', false)" > "output_${filter}_${DA}_${dataset}.log" 2>&1 &
+            matlab -batch "main('$dataset', '$filter', 'DA', '$DA', 'Debug', false, 'FinalPlot', 'animation', 'DynamicPlot', false, 'InitializeTrue', true)" > "output_${filter}_${DA}_${dataset}.log" 2>&1 &
         done
     done
 done

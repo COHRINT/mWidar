@@ -15,6 +15,9 @@ function tuning_main()
     %   DEBUG        - Enable debug output: true/false
     %   DYNAMIC_PLOT - Enable dynamic plotting during filtering: true/false
 
+    % Turn off ALL warnings 
+    warning('off', 'all');
+
     %% ========== ENVIRONMENT VARIABLES (MODIFY THESE) ==========
 
     % === TUNING CONFIGURATION ===
@@ -87,6 +90,14 @@ function tuning_main()
         fprintf('Created tuning plots save directory: %s\n', TUNING_PLOTS_SAVE_DIR);
     end
 
+    % Create save directory for animations
+    animation_save_dir = fullfile("..", "figures", "DA_Track");
+
+    if ~exist(animation_save_dir, 'dir')
+        mkdir(animation_save_dir);
+        fprintf('Created animation save directory: %s\n', animation_save_dir);
+    end
+
     %% --- Load Supplemental Data ---
     % Load tuning dataset
     load(fullfile('supplemental', 'Final_Test_Tracks', 'SingleObjTune', DATASET + '.mat'), 'Data');
@@ -100,7 +111,12 @@ function tuning_main()
     GT = Data.GT;
     GT_meas = GT(1:2, :);
     z = Data.y;
-    % signal = Data.signal;
+    signal = Data.signal;
+
+    % Create measurements structure for HybridPF with both detections and signals
+    measurements = struct();
+    measurements.z = z;        % Cell array of detection measurements [2 x N_meas] for each timestep
+    measurements.signal = signal;  % Cell array of mWidar signals [128 x 128] for each timestep
 
     % Store original measurements for visualization (before any filtering)
     Data.y_original = Data.y; % Keep original measurements for plotting
@@ -118,12 +134,12 @@ function tuning_main()
     %% --- Define Kalman Filter Matrices ---
     % Define KF Matrices state vector - {x, y, vx, vy, ax, ay}
     % Correct continuous-time dynamics matrix for constant acceleration model
-    A = [0 0 1 0 0 0;    % dx/dt = vx
-         0 0 0 1 0 0;    % dy/dt = vy
-         0 0 0 0 1 0;    % dvx/dt = ax
-         0 0 0 0 0 1;    % dvy/dt = ay
-         0 0 0 0 0 0;    % dax/dt = 0 (constant acceleration)
-         0 0 0 0 0 0];   % day/dt = 0 (constant acceleration)
+    A = [0 0 1 0 0 0; % dx/dt = vx
+         0 0 0 1 0 0; % dy/dt = vy
+         0 0 0 0 1 0; % dvx/dt = ax
+         0 0 0 0 0 1; % dvy/dt = ay
+         0 0 0 0 0 0; % dax/dt = 0 (constant acceleration)
+         0 0 0 0 0 0]; % day/dt = 0 (constant acceleration)
 
     F_KF = expm(A * dt);
 
@@ -140,8 +156,6 @@ function tuning_main()
     Q = eye(6) * 1e-1;
     Q_KF = diag([1e-4, 1e-4, 1e-3, 1e-3, 1e-2, 1e-2]);
     Q_PF = diag([1e-3, 1e-3, 1e-2, 1e-2, 1e-1, 1e-1]);
-
-    
 
     R = 0.1 * eye(2);
 
@@ -166,20 +180,22 @@ function tuning_main()
                 initial_state = zeros(size(GT(:, 1))); % Zero mean for all states -- but fixate on position
                 initial_state(1:2) = GT(1:2, 1);
                 initial_covariance = diag([1, 1, 10, 10, 5, 5]); % Very large covariance
-                
+
                 if DEBUG
                     fprintf("with TRUE INITIALIZATION (zero mean, large covariance)\n");
                     fprintf("Initial covariance diagonal: [%.1f, %.1f, %.1f, %.1f, %.1f, %.1f]\n", ...
                         diag(initial_covariance));
                 end
+
             else
                 % Standard initialization using ground truth
                 initial_state = GT(:, 1);
                 initial_covariance = P0;
-                
+
                 if DEBUG
                     fprintf("with STANDARD INITIALIZATION (GT-based)\n");
                 end
+
             end
 
             if DA_METHOD == "PDA"
@@ -211,16 +227,24 @@ function tuning_main()
         case 'HybridPF'
             %% --- Hybrid Particle Filter Setup ---
             fprintf("Using Hybrid Particle Filter ")
+            load(fullfile('supplemental', 'precalc_imagegridHMMEmLikeMag.mat'), 'pointlikelihood_image');
+            pointlikelihood_mag = pointlikelihood_image; 
+            clear pointlikelihood_image;
             load(fullfile('supplemental', 'precalc_imagegridHMMEmLike.mat'), 'pointlikelihood_image');
 
             if DA_METHOD == "PDA"
                 fprintf("with PDA data association\n");
 
                 validation_sigma = 5; % Set validation sigma for PDA
-                current_class = PDA_PF(GT(:, 1), 10000, F_PF, Q_PF, H, pointlikelihood_image, "Debug", DEBUG, "DynamicPlot", DYNAMIC_PLOT, "ValidationSigma", validation_sigma, "UniformInit", INITIALIZE_TRUE);
-                current_class.setDetectionModel(0.99, 0.80); % Set default detection model parameters (PD, PFA)
-                current_class.setDetectionModel(0.99, 0.4); % Set default detection model parameters
-                current_class.ESS_threshold_percentage = .20;
+                current_class = PDA_PF(GT(:, 1), 10000, F_PF, Q_PF, H, pointlikelihood_image, pointlikelihood_mag, "Debug", DEBUG, "DynamicPlot", DYNAMIC_PLOT, "ValidationSigma", validation_sigma, "UniformInit", INITIALIZE_TRUE);
+                % current_class.setDetectionModel(0.99, 0.80); % Set default detection model parameters (PD, PFA)
+                current_class.setDetectionModel(0.99, 0.2); % Set default detection model parameters
+                current_class.ESS_threshold_percentage = .10;
+                
+                % Enable composite likelihood mode for comprehensive visualization
+                current_class.composite_likelihood = true;
+                fprintf('-> Enabled composite likelihood mode for comprehensive visualization\n');
+                current_class.gif_filename = 'coolgif.gif'; % No GIF by default
 
             elseif DA_METHOD == "GNN"
                 fprintf("with GNN data association\n");
@@ -256,17 +280,19 @@ function tuning_main()
             if INITIALIZE_TRUE
                 % Use center of field as dummy initial position (will be overridden)
                 initial_position = [0; 2]; % Center of [-2,2] x [0,4] space
-                
+
                 if DEBUG
                     fprintf("with TRUE INITIALIZATION (uniform over field)\n");
                 end
+
             else
                 % Standard initialization using ground truth
                 initial_position = GT(1:2, 1);
-                
+
                 if DEBUG
                     fprintf("with STANDARD INITIALIZATION (GT-based)\n");
                 end
+
             end
 
             if DA_METHOD == "PDA"
@@ -282,14 +308,15 @@ function tuning_main()
             else
                 error('Unknown data association method: %s', DA_METHOD);
             end
-            
+
             % Override with uniform distribution if true initialization is requested
             if INITIALIZE_TRUE
                 current_class.ptarget_prob = ones(current_class.npx2, 1) / current_class.npx2;
-                
+
                 if DEBUG
                     fprintf("-> Overrode with uniform distribution over entire field\n");
                 end
+
             end
 
             %% --- Initialize Comprehensive Performance Storage for HMM ---
@@ -345,27 +372,37 @@ function tuning_main()
 
             case 'HybridPF'
                 %% --- Hybrid Particle Filter Timestep ---
-                current_meas = z{i}; % Use original measurements
+                current_meas_raw = measurements.z{i}; % Get raw detection measurements
+                current_signal = measurements.signal{i}; % Get pre-calculated mWidar signal
 
                 % Store original measurements for visualization
-                performance{i}.measurements_original = current_meas;
+                performance{i}.measurements_original = current_meas_raw;
 
                 % Get the actual used measurements by calling the validation method
-                [measurements_used, ~] = current_class.Validation(current_meas);
+                [measurements_used, ~] = current_class.Validation(current_meas_raw);
                 performance{i}.measurements_used = measurements_used;
 
+                % Create measurement struct with both detection and magnitude signal
+                measurement_struct = struct();
+                measurement_struct.det = current_meas_raw; % Detection measurements [2 x N_meas]
+                measurement_struct.mag = current_signal;   % Pre-calculated mWidar signal [128 x 128]
+
                 % Debug: Print measurement filtering info
-                if DEBUG && ~isempty(current_meas)
-                    fprintf('  Step %d: %d original measurements, %d used measurements\n', ...
-                        i, size(current_meas, 2), size(measurements_used, 2));
+                if DEBUG && ~isempty(current_meas_raw)
+                    fprintf('  Step %d: %d original measurements, %d used measurements, signal size %dx%d\n', ...
+                        i, size(current_meas_raw, 2), size(measurements_used, 2), size(current_signal, 1), size(current_signal, 2));
                 end
 
                 % Store pre-timestep particle info for comparison
                 particles_before = current_class.particles;
                 weights_before = current_class.weights;
 
-                % Perform Timestep Update (includes dynamic plotting if enabled)
-                current_class.timestep(current_meas, GT(:, i)); % Pass ground truth for visualization
+                % Perform Timestep Update with measurement struct (includes dynamic plotting if enabled)
+                if i < 1
+                    current_class.timestep(measurement_struct.det, GT(:, i)); % Pass ground truth for visualization
+                else
+                    current_class.timestep(measurement_struct, GT(:, i)); % Pass ground truth for visualization
+                end
 
                 %% --- Update Comprehensive Performance Metrics for PF ---
                 performance{i}.particles = current_class.particles; % Updated particle states
@@ -439,14 +476,53 @@ function tuning_main()
     fprintf('Performance metrics stored for all timesteps: Yes\n');
     fprintf('Final tuning plots saved to: %s\n', TUNING_PLOTS_SAVE_DIR);
 
-    if ANIMATION
-        fprintf('DA_Track built-in dynamic plotting was used during simulation.\n');
+    %% ========== SAVE CAPTURED FRAMES ANIMATION ==========
+    if DYNAMIC_PLOT && current_class.hasFrames()
+        fprintf('\n=== SAVING CAPTURED FRAMES ANIMATION ===\n');
+
+        % Create animation directory if it doesn't exist
+        animation_dir = fullfile("..", "figures", "DA_Track", "captured_animations");
+
+        if ~exist(animation_dir, 'dir')
+            mkdir(animation_dir);
+            fprintf('Created captured animation directory: %s\n', animation_dir);
+        end
+
+        % Generate filename for captured frames animation (GIF only)
+        gif_filename = sprintf('%s_%s_%s_captured.gif', FILTER_TYPE, DATASET, DA_METHOD);
+        gif_path = fullfile(animation_dir, gif_filename);
+
+        % Save animation from captured frames as GIF
+        current_class.saveAnimation(char(gif_path), 'FrameRate', 5);
+
+        % Clear frames to free memory
+        current_class.clearFrames();
+
+        fprintf('Captured frames GIF saved to: %s\n', gif_path);
+        fprintf('===========================================\n');
+    else
+
+        if ~DYNAMIC_PLOT
+            fprintf('\nNo animation to save - DYNAMIC_PLOT was disabled.\n');
+        else
+            fprintf('\nNo frames captured - check if plotting occurred correctly.\n');
+            fprintf('Captured frame count: %d\n', current_class.getFrameCount());
+        end
+
     end
 
-    fprintf('===================================\n');
-    % end
+    %% ========== FINAL ANIMATION GENERATION ==========
+    if ANIMATION
+        fprintf('Generating animation...\n');
+        saveString = FILTER_TYPE + "_" + DATASET + "_" + DA_METHOD + ".gif";
+        animation_path = fullfile("..", "figures", "DA_Track", "tuning_animations", saveString);
 
-    fprintf('Tuning plots saved to: %s\n', TUNING_PLOTS_SAVE_DIR);
+        % Animation plotting function - use actual simulation time vector
+        time_vector = 0:dt:(n_k - 1) * dt;
+        mWidar_FilterPlot_Distribution(performance, Data, time_vector, FILTER_TYPE, validation_sigma, animation_path);
+        fprintf('Animation saved to: %s\n', animation_path);
+    end
+
     fprintf('===================================\n');
 
     %% --- Future Enhancements ---
