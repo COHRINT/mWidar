@@ -57,12 +57,22 @@ classdef PDA_KF < DA_Filter
 
         % Dynamic Plotting (inherited from DA_Filter)
         dynamic_figure_handle % Figure handle for dynamic plotting
+
+        % Magnitude Liklihood
+        pointlikelihood_mag
+
+        % Detection and Magnitude Liklihood storage for visualization
+        detection_liklihood
+        magnitude_liklihood
+        composite_liklihood
+        valid_z
+
     end
 
     methods
 
         %% ========== CONSTRUCTOR ==========
-        function obj = PDA_KF(x0, P0, F, Q, R, H, varargin)
+        function obj = PDA_KF(x0, P0, F, Q, R, H, pointliklihoodmag, varargin)
             % PDA_KF Constructor for Probabilistic Data Association Kalman Filter
             %
             % SYNTAX:
@@ -103,6 +113,8 @@ classdef PDA_KF < DA_Filter
             % Initialize internal state
             obj.x_current = x0;
             obj.P_current = P0;
+            
+            obj.pointlikelihood_mag = pointliklihoodmag;
 
             if obj.debug
                 fprintf('\n=== PDA_KF INITIALIZATION ===\n');
@@ -117,7 +129,7 @@ classdef PDA_KF < DA_Filter
         end
 
         %% ========== TIMESTEP ==========
-        function timestep(obj, measurements, varargin)
+        function timestep(obj, measurements, signal, varargin)
             % TIMESTEP Process single time step with PDA-KF algorithm
             %
             % SYNTAX:
@@ -155,7 +167,7 @@ classdef PDA_KF < DA_Filter
             obj.prediction();
 
             % Step 2: Measurement update with PDA
-            obj.measurement_update(measurements);
+            obj.measurement_update(measurements,signal);
 
             if obj.debug
                 [x_est, P_est] = obj.getGaussianEstimate();
@@ -175,6 +187,10 @@ classdef PDA_KF < DA_Filter
                 end
 
             end
+
+            obj.visualize(1,'PDA-KF State Estimate',[],signal)
+
+   
 
         end
 
@@ -224,7 +240,7 @@ classdef PDA_KF < DA_Filter
         end
 
         %% ========== MEASUREMENT VALIDATION ==========
-        function [valid_z, meas] = Validation(obj, z)
+        function [meas] = Validation(obj, z)
             % VALIDATION Gate measurements using chi-squared validation ellipse
             %
             % SYNTAX:
@@ -246,7 +262,7 @@ classdef PDA_KF < DA_Filter
 
             meas = true; % default
             gamma = chi2inv(0.95, 2); % 95 % confidence threshold
-            valid_z = [];
+            obj.valid_z = [];
 
             if obj.debug
                 fprintf('[VALIDATION] Processing %d measurements...\n', size(z, 2));
@@ -257,7 +273,7 @@ classdef PDA_KF < DA_Filter
                 Nu = (detection - obj.z_predicted)' / obj.S_innovation * (detection - obj.z_predicted); % NIS statistic
 
                 if Nu < gamma % Validation gate
-                    valid_z = [valid_z detection]; % Append validated measurement
+                    obj.valid_z = [obj.valid_z detection]; % Append validated measurement
 
                     if obj.debug
                         fprintf('  Meas %d: VALID (NIS=%.3f)\n', j, Nu);
@@ -273,7 +289,7 @@ classdef PDA_KF < DA_Filter
 
             end
 
-            if isempty(valid_z)
+            if isempty(obj.valid_z)
 
                 if obj.debug
                     fprintf('[VALIDATION] No valid measurements - missed detection\n');
@@ -283,15 +299,79 @@ classdef PDA_KF < DA_Filter
             else
 
                 if obj.debug
-                    fprintf('[VALIDATION] %d/%d measurements validated\n', size(valid_z, 2), size(z, 2));
+                    fprintf('[VALIDATION] %d/%d measurements validated\n', size(obj.valid_z, 2), size(z, 2));
                 end
 
             end
 
         end
+        %% ========= Likelihood Calculation ===========
+        function [L] = PDA_Likelihoods(obj,z_mag)
+            % PDA_Likelihoods Compute measurment and magnitude likelihoods
+            %
+            % SYNTAX: [L] = obj.PDA_Likelihoods(z)
+            %
+            % INPUTS:
+            %   z - Validated measurments [N_z x N_valid]
+            %   z_mag - Raw signal for magnitude lookup
+            %
+            % OUTPUTS:
+            %   L - Likelihood for given measurment and magnitude of signal
 
+            if obj.debug
+                fprintf('[LIKLIHOOD CALCULATION]')
+            end
+            
+            % Define spatial grid parameters (should match precomputed lookup table)
+            npx = 128;
+            xgrid = linspace(-2, 2, npx);
+            ygrid = linspace(0, 4, npx);
+           
+
+            % PDA parameters
+            lambda = obj.lambda_clutter;
+            oPD = obj.PD;
+
+            % Pre-allocate space
+            L = zeros(1, size(obj.valid_z, 2));
+            
+            % Smush z_mag into a col vector
+            z_mag = z_mag(:);
+
+            % Compute likelihood of each validated measurement
+            for j = 1:size(obj.valid_z, 2)
+                detection_likelihood = (mvnpdf(obj.valid_z(:, j), obj.z_predicted, obj.S_innovation) * oPD) / lambda;
+
+                % Magnitude likelihood
+
+                % Get index in lookup table
+                % Find measurement linear index
+                [~, meas_x_idx] = min(abs(xgrid - obj.valid_z(1,j)));
+                [~, meas_y_idx] = min(abs(ygrid - obj.valid_z(2,j)));
+                meas_linear_idx = sub2ind([npx, npx], meas_y_idx, meas_x_idx);
+
+                mag_liklihood_values = obj.pointlikelihood_mag(meas_linear_idx, :);
+                magnitude_likelihood = normpdf(z_mag(meas_linear_idx),mag_liklihood_values(1),mag_liklihood_values(2)); % Weighted slightly
+
+               
+                
+                obj.detection_liklihood(j) = detection_likelihood;
+                obj.magnitude_liklihood(j) = magnitude_likelihood;
+
+                L(j) = detection_likelihood * magnitude_likelihood;
+                
+                obj.composite_liklihood(j) = L(j);
+
+                if obj.debug
+                    fprintf('  Meas %d: likelihood=%.6f\n', j, L(j));
+                end
+
+            end
+            
+            %L = sum(likelihood, 2); % sum of all likelihoods
+        end
         %% ========== PROBABILISTIC DATA ASSOCIATION ==========
-        function [beta, beta0] = Data_Association(obj, valid_z)
+        function [beta, beta0] = Data_Association(obj,signal)
             % DATA_ASSOCIATION Compute PDA association probabilities
             %
             % SYNTAX:
@@ -317,34 +397,21 @@ classdef PDA_KF < DA_Filter
                 fprintf('[DATA ASSOCIATION] Computing beta coefficients...\n');
             end
 
-            % PDA parameters
-            lambda = obj.lambda_clutter;
-            PD = obj.PD;
-            PG = obj.PG;
+            oPD = obj.PD;
+            oPG = obj.PG;
 
-            % Pre-allocate space
-            likelihood = zeros(1, size(valid_z, 2));
-            beta = zeros(1, size(valid_z, 2));
+            beta = zeros(1, size(obj.valid_z, 2));
 
-            % Compute likelihood of each validated measurement
-            for j = 1:size(valid_z, 2)
-                likelihood(j) = (mvnpdf(valid_z(:, j), obj.z_predicted, obj.S_innovation) * PD) / lambda;
-
-                if obj.debug
-                    fprintf('  Meas %d: likelihood=%.6f\n', j, likelihood(j));
-                end
-
-            end
-
-            sum_likelihood = sum(likelihood, 2); % sum of all likelihoods
+            [likelihood] = PDA_Likelihoods(obj,signal);
+            sum_likelihood = sum(likelihood, 2);
 
             % Compute beta coefficients
-            for j = 1:size(valid_z, 2)
-                beta(j) = likelihood(j) / (1 - PD * PG + sum_likelihood);
+            for j = 1:size(obj.valid_z, 2)
+                beta(j) = likelihood(j) / (1 - oPD * oPG + sum_likelihood);
             end
 
             % Compute beta0 (clutter hypothesis probability)
-            beta0 = (1 - PD * PG) / (1 - PD * PG + sum_likelihood);
+            beta0 = (1 - oPD * oPG) / (1 - oPD * oPG + sum_likelihood);
 
             if obj.debug
                 fprintf('[DATA ASSOCIATION] Beta coefficients: [');
@@ -356,7 +423,7 @@ classdef PDA_KF < DA_Filter
         end
 
         %% ========== MEASUREMENT UPDATE ==========
-        function measurement_update(obj, measurements)
+        function measurement_update(obj, measurements,signal)
             % MEASUREMENT_UPDATE PDA measurement update step (standardized interface)
             %
             % SYNTAX:
@@ -396,11 +463,11 @@ classdef PDA_KF < DA_Filter
             end
 
             % Step 1: Measurement validation (gating)
-            [valid_z, meas] = obj.Validation(measurements);
+            [ meas] = obj.Validation(measurements);
 
             % Step 2: Data association (compute beta coefficients)
             if meas
-                [beta, beta0] = obj.Data_Association(valid_z);
+                [beta, beta0] = obj.Data_Association(signal);
             else
                 % Missed detection case
                 if obj.debug
@@ -430,12 +497,12 @@ classdef PDA_KF < DA_Filter
                 end
 
             else % Measurements available
-                nu = zeros(size(obj.z_predicted, 1), size(valid_z, 2));
+                nu = zeros(size(obj.z_predicted, 1), size(obj.valid_z, 2));
                 innov = zeros(size(obj.z_predicted, 1), 1);
 
                 % Compute weighted innovation
-                for j = 1:size(valid_z, 2)
-                    nu(:, j) = valid_z(:, j) - obj.z_predicted;
+                for j = 1:size(obj.valid_z, 2)
+                    nu(:, j) = obj.valid_z(:, j) - obj.z_predicted;
                     innov = innov + beta(j) * nu(:, j); % Weighted sum of innovations
                 end
 
@@ -448,14 +515,14 @@ classdef PDA_KF < DA_Filter
                 % Spreading of innovations term
                 temp = 0;
 
-                for j = 1:size(valid_z, 2)
+                for j = 1:size(obj.valid_z, 2)
                     temp = temp + (beta(j) * (nu(:, j) * nu(:, j)'));
                 end
 
                 P_tilde = KK * (temp - innov * innov') * KK';
 
                 if obj.debug
-                    fprintf('[MEASUREMENT UPDATE] Using %d measurements with beta weights\n', size(valid_z, 2));
+                    fprintf('[MEASUREMENT UPDATE] Using %d measurements with beta weights\n', size(obj.valid_z, 2));
                     fprintf('[MEASUREMENT UPDATE] Innovation norm: %.6f\n', norm(innov));
                 end
 
@@ -499,6 +566,9 @@ classdef PDA_KF < DA_Filter
         end
 
         %% ========== VISUALIZATION ==========
+
+        %% TODO: Visualize Current Estimate and Uncertainty (already doing), with mWidar signal in the back (add), only plot validated mesurments for clarity
+        %% Also add some sort of visualization technique for detection/mag liklihood
         function visualize(obj, varargin)
             % VISUALIZE Plot current filter state
             %
@@ -512,36 +582,39 @@ classdef PDA_KF < DA_Filter
             %   title_str     - (optional) Title string for plot
             %   measurements  - (optional) Current measurements [N_z x N_meas]
             %   true_state    - (optional) True state for comparison [N_x x 1]
+            %   signal        - (optional) Raw mWidar Signal
             %
             % DESCRIPTION:
             %   Creates visualization of Kalman filter state including state
             %   estimate, covariance ellipse, measurements, and true state.
+            
+            % Default Values
+            signal = [];
+            title_str = 'PDA-KF State Estimate';
+            measurements = [];
+            true_state = [];
 
             % Parse input arguments
             if nargin > 1 && ~isempty(varargin{1})
                 figure(varargin{1});
             else
-                figure;
+                figure(1);
             end
 
             if nargin > 2
                 title_str = varargin{2};
-            else
-                title_str = 'PDA-KF State Estimate';
             end
 
             if nargin > 3
-                measurements = varargin{3};
-            else
-                measurements = [];
+                true_state = varargin{3};     
             end
 
             if nargin > 4
-                true_state = varargin{4};
-            else
-                true_state = [];
+                signal = varargin{4};
             end
 
+            tiledlayout(1,4)
+            nexttile
             cla; hold on;
 
             % Plot state estimate
@@ -575,17 +648,27 @@ classdef PDA_KF < DA_Filter
                     'DisplayName', '2σ Covariance');
             end
 
-            % Plot measurements if provided
-            if ~isempty(measurements)
-                plot(measurements(1, :), measurements(2, :), '+', 'Color', [1 0.5 0], ...
+            % Plot measurements
+            plot(obj.valid_z(1, :), obj.valid_z(2, :), '+', 'Color', [1 0.5 0], ...
                     'MarkerSize', 10, 'LineWidth', 3, 'DisplayName', 'Measurements');
-            end
+            
 
             % Plot true state if provided
             if ~isempty(true_state)
                 plot(true_state(1), true_state(2), 'd', 'Color', 'm', ...
                     'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'm', ...
                     'DisplayName', 'True Position');
+            end
+            
+            % Plot mWidar Signal if provided
+            if ~isempty(signal)
+                Lscene = 4;
+                npx = 128;
+                xgrid = linspace(-2, 2, npx);
+                ygrid = linspace(0, Lscene, npx);
+                [pxgrid, pygrid] = meshgrid(xgrid, ygrid);
+
+                surf(pxgrid, pygrid, signal / (max(max(signal))), 'EdgeColor', 'none')
             end
 
             % Formatting
@@ -599,6 +682,22 @@ classdef PDA_KF < DA_Filter
             xlim([-2 2]);
             ylim([0 4]);
             axis square;
+            
+            % Likelihood vs Detection index
+            nexttile
+            cla; hold on
+            bar(obj.detection_liklihood,'b')
+
+            nexttile
+            cla; hold on
+            bar(obj.magnitude_liklihood,'r')
+
+            nexttile
+            cla; hold on
+            stacked_liklihood = [obj.detection_liklihood;obj.magnitude_liklihood;obj.composite_liklihood];
+            bar(stacked_liklihood)
+
+            drawnow;
         end
 
     end

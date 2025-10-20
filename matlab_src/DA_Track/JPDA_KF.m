@@ -58,11 +58,14 @@ classdef JPDA_KF < DA_Filter
         % Dynamic Plotting (inherited from DA_Filter) -> Will likely need seperate method for multiOBJ
         dynamic_figure_handle
 
+        % Magnitude Liklihood
+        pointlikelihood_mag
+
     end
 
     methods
 
-        function obj = JPDA_KF(x0,P0,F,Q,R,H,t,varargin)
+        function obj = JPDA_KF(x0,P0,F,Q,R,H,t,pointliklihoodmag, varargin)
             % JPDAF Constructor for Joint Probabilistic DA KF
             %
             % SYNTAX:
@@ -106,6 +109,9 @@ classdef JPDA_KF < DA_Filter
             obj.x_current = x0;
             obj.P_current = P0;
 
+            % Mag likelihood lookup table
+            obj.pointlikelihood_mag = pointliklihoodmag;
+
             % Debug
             if obj.debug
                 fprintf('\n=== JPDA_KF INITIALIZATION === \n');
@@ -117,7 +123,7 @@ classdef JPDA_KF < DA_Filter
         end
 
         %% ========== TIMESTEP ==========
-        function timestep(obj,measurements, varargin)
+        function timestep(obj,measurements, signal, varargin)
             if obj.debug
                 fprintf('\n=== JPDA_KF TIMESTEP START ===\n')
                 fprintf('Input: %d measurments \n', size(measurements,2));
@@ -137,7 +143,7 @@ classdef JPDA_KF < DA_Filter
             obj.prediction();
 
             % Measurment Update w JPDA
-            obj.measurement_update(measurements)
+            obj.measurement_update(measurements,signal)
         end
 
         %% ========== PREDICTION ==========
@@ -155,7 +161,7 @@ classdef JPDA_KF < DA_Filter
                 obj.z_predicted(:,t) = obj.H * obj.x_predicted(:,t);
 
                 % Cov Prediction
-                obj.P_predicted{t} = obj.F * obj.P_current{t};
+                obj.P_predicted{t} = obj.F * obj.P_current{t} * obj.F' + obj.Q;
 
                 % Innovation cov
                 obj.S_innovation{t} = obj.H * obj.P_predicted{t} * obj.H' + obj.R;
@@ -236,12 +242,30 @@ classdef JPDA_KF < DA_Filter
         end
 
         %% ========== MEASURMENT_LIKELIHOOD ==========
-        function L = measurment_likelihood(obj,z)
+        function L = measurment_likelihood(obj,z,z_mag)
             L = zeros(obj.nt,size(z,2));
+
+            % Smush z_mag into a col vector
+            z_mag = z_mag(:);
+
+            % Define spatial grid parameters (should match precomputed lookup table)
+            npx = 128;
+            xgrid = linspace(-2, 2, npx);
+            ygrid = linspace(0, 4, npx);
 
             for t = 1:obj.nt
                 for j = 1:size(z,2)
-                    L(t,j) = mvnpdf(z(:,j),obj.z_predicted(:,t),obj.S_innovation{t});
+
+                    % Get index in lookup table
+                    % Find measurement linear index
+                    [~, meas_x_idx] = min(abs(xgrid - z(1,j)));
+                    [~, meas_y_idx] = min(abs(ygrid - z(2,j)));
+                    meas_linear_idx = sub2ind([npx, npx], meas_y_idx, meas_x_idx);
+
+                    mag_liklihood_values = obj.pointlikelihood_mag(meas_linear_idx, :);
+                    magnitude_likelihood = normpdf(z_mag(meas_linear_idx),mag_liklihood_values(1),mag_liklihood_values(2)); 
+
+                    L(t,j) = mvnpdf(z(:,j),obj.z_predicted(:,t),obj.S_innovation{t}) * magnitude_likelihood;
 
                     if obj.debug
                         fprintf('[LIKELIHOOD] Meas %d, likelihood to be associatiated with track %d: %.6f\n',j,t,L(t,j))
@@ -251,7 +275,7 @@ classdef JPDA_KF < DA_Filter
         end
 
         %% ========== COMPUTE_JOINT_PROBABILITIES ==========
-        function joint_probs = compute_joint_probabilities(obj,hypotheses,L,z)
+        function joint_probs = compute_joint_probabilities(obj,hypotheses,L)
             
             n_hyp = size(hypotheses,1);
             joint_probs = zeros(n_hyp,1);
@@ -321,7 +345,7 @@ classdef JPDA_KF < DA_Filter
         end
 
         %% ========== MEASURMENT_UPDATE ==========
-        function measurement_update(obj,z)
+        function measurement_update(obj,z,signal)
 
             if obj.debug
                 fprintf('[MEASURMENT UPDATE] Starting JPDA update...\n')
@@ -354,9 +378,9 @@ classdef JPDA_KF < DA_Filter
             end
 
             hypotheses = obj.generate_hypotheses(valid_z);
-            L = obj.measurment_likelihood(valid_z);
+            L = obj.measurment_likelihood(valid_z,signal);
 
-            joint_probs = obj.compute_joint_probabilities(hypotheses,L,valid_z);
+            joint_probs = obj.compute_joint_probabilities(hypotheses,L);
 
             beta = obj.Data_Association(hypotheses,joint_probs,valid_z);
 
