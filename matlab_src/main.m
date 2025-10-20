@@ -79,7 +79,7 @@ function main(varargin)
 
     %% --- Parameter Validation ---
     % Validate dataset
-    valid_datasets = ["T1_near", "T2_far", "T3_border", "T4_parab", "T5_parab_noise"];
+    valid_datasets = ["T1_near", "T2_far", "T3_border", "T4_parab", "T5_parab_noise", "T1_mult_1", "T2_mult_2", "T3_mult_3"];
 
     if ~ismember(DATASET, valid_datasets)
         error('Invalid dataset. Options: %s', strjoin(valid_datasets, ', '));
@@ -93,7 +93,7 @@ function main(varargin)
     end
 
     % Validate DA method
-    valid_da_methods = ["PDA", "GNN"];
+    valid_da_methods = ["PDA", "GNN", "MC"];
 
     if ~ismember(DA, valid_da_methods)
         error('Invalid DA method. Options: %s', strjoin(valid_da_methods, ', '));
@@ -127,7 +127,9 @@ function main(varargin)
     % Load necessary supplemental data
     % load(fullfile('supplemental', 'recovery.mat'))
     % load(fullfile('supplemental', 'sampling.mat'))
+
     load(fullfile('supplemental', 'Final_Test_Tracks', 'SingleObj', DATASET + '.mat'), 'Data');
+    % load(fullfile('supplemental', "Final_Test_Tracks", "MultiObj", 'JPDAF_test_traj.mat'), 'Data');
 
     %% --- Configure Plotting Environment ---
     % Set default plotting settings -- in startup.m now
@@ -140,6 +142,8 @@ function main(varargin)
     %% --- Initialize Variables ---
     % Load Data
     GT = Data.GT;
+    fprintf('Loaded dataset with %d objects.\n', size(GT, 2));
+    size(GT)
     GT_meas = GT(1:2, :);
     z = Data.y;
     signal = Data.signal;
@@ -255,9 +259,22 @@ function main(varargin)
             if DA == "PDA"
                 fprintf("with PDA data association\n");
                 validation_sigma = 5; % Set validation sigma for PDA
-                current_class = PDA_PF(GT(:, 1), 10000, F_PF, Q_PF, H, pointlikelihood_image, pointlikelihood_mag, "Debug", DEBUG, "DynamicPlot", DYNAMIC_PLOT, "ValidationSigma", validation_sigma, "UniformInit", INITIALIZE_TRUE);
-                current_class.setDetectionModel(0.99, 0.2); % Set default detection model parameters
-                current_class.ESS_threshold_percentage = .10;
+                current_class = PDA_PF(GT(:, 1), 1000, F_PF, Q_PF, H, pointlikelihood_image, pointlikelihood_mag, "Debug", DEBUG, "DynamicPlot", DYNAMIC_PLOT, "ValidationSigma", validation_sigma, "UniformInit", INITIALIZE_TRUE);
+                current_class.setDetectionModel(0.99, 0.25); % Set default detection model parameters
+                current_class.ESS_threshold_percentage = .2;
+                current_class.hybrid_resample_fraction = 0.9; % Set hybrid resampling fraction (99% resampled, 1% uniform)
+                % Enable composite likelihood mode for comprehensive visualization
+                current_class.composite_likelihood = true;
+                % Set GIF filename if desired (uncomment to enable GIF output)
+                % current_class.gif_filename = 'main_output.gif';
+
+            elseif DA == "MC"
+                fprintf("with MC data association\n");
+                validation_sigma = 5; % Set validation sigma for MC
+                current_class = MC_PF(GT(:, 1), 10000, F_PF, Q_PF, H, pointlikelihood_image, pointlikelihood_mag, "Debug", DEBUG, "DynamicPlot", DYNAMIC_PLOT, "ValidationSigma", validation_sigma, "UniformInit", INITIALIZE_TRUE);
+                current_class.setDetectionModel(0.99, 0.25); % Set default detection model parameters
+                current_class.ESS_threshold_percentage = .2;%.01
+                current_class.hybrid_resample_fraction = 0.99; % Set hybrid resampling fraction (90% resampled, 10% uniform)
                 % Enable composite likelihood mode for comprehensive visualization
                 current_class.composite_likelihood = true;
                 % Set GIF filename if desired (uncomment to enable GIF output)
@@ -276,6 +293,7 @@ function main(varargin)
             performance{1}.particles = current_class.particles; % Store initial particles
             performance{1}.weights = current_class.weights; % Store initial weights
             [performance{1}.x, performance{1}.P] = current_class.getGaussianEstimate(); % Initial Gaussian estimate
+            performance{1}.association_prob = current_class.getAssociationDistribution(); % Initial association probabilities
             performance{1}.measurements_original = [];
             performance{1}.measurements_used = [];
 
@@ -377,6 +395,7 @@ function main(varargin)
                 performance{i}.measurements_original = current_meas_raw;
                 [measurements_used, ~] = current_class.Validation(current_meas_raw);
                 performance{i}.measurements_used = measurements_used;
+                
                 measurement_struct = struct();
                 measurement_struct.det = current_meas_raw;
                 measurement_struct.mag = current_signal;
@@ -384,10 +403,13 @@ function main(varargin)
                     fprintf('  Step %d: %d original measurements, %d used measurements, signal size %dx%d\n', ...
                         i, size(current_meas_raw, 2), size(measurements_used, 2), size(current_signal, 1), size(current_signal, 2));
                 end
+
                 current_class.timestep(measurement_struct, GT(:, i));
+                % current_class.timestep(measurements.z{i}, GT(:, i));
                 performance{i}.particles = current_class.particles;
                 performance{i}.weights = current_class.weights;
                 [performance{i}.x, performance{i}.P] = current_class.getGaussianEstimate();
+                performance{i}.association_prob = current_class.getAssociationDistribution();
 
             case 'HMM'
                 %% --- Hidden Markov Model Timestep ---
