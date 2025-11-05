@@ -66,7 +66,7 @@ function [detected_peaks] = TDPF(curr_peaks, prev_peak_score, threshold)
 
         if min_dist < threshold
             % Update the peak and increase its score (capped at 3)
-            updated_peak = [remaining_curr_peaks(idx, :) min(prev_peak_score(i, 3) + 1, 3)];
+            updated_peak = [remaining_curr_peaks(idx, :) min(prev_peak_score(i, 3) + 1, 4)]; % CAP SCORE AT 4
             detected_peaks = [detected_peaks; updated_peak];
 
             % Remove the matched peak from current peaks
@@ -87,9 +87,13 @@ function [detected_peaks] = TDPF(curr_peaks, prev_peak_score, threshold)
     if ~isempty(remaining_curr_peaks)
 
         for i = 1:size(remaining_curr_peaks, 1)
-            detected_peaks = [detected_peaks; remaining_curr_peaks(i, :) 1];
+            detected_peaks = [detected_peaks; remaining_curr_peaks(i, :) 1]; % START NEW DETECTIONS AT SCORE 1
         end
 
     end
+
+    % Cleanup -- make sure no 2 peaks in the output are ontop of eachother -- if so keep the one with the higher score
+    [~, unique_indices, ~] = unique(detected_peaks(:, 1:2), 'rows', 'stable');
+    detected_peaks = detected_peaks(unique_indices, :);
 
 end
