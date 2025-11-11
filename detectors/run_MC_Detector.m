@@ -11,18 +11,23 @@ detectors_list = ["peaks2", "CA_CFAR"];
 detectors_count = 2;
 MC_RUNS = 50;
 
-% Acquire all new threshold values from [0 1]
+% Acquire all new threshold values 
 
-thresholds = rand(1,MC_RUNS); % Ensure thresholds are sorted in ascending order
-thresholds = [thresholds, 1];
+% Peaks2 -> changing "MinPeakDistance" with values from 1 - 15
+
+p2_iter = linspace(1,15,MC_RUNS);
+
+% CA-CFAR -> changing "Pfa" with values from 0.1 - 0.4
+
+ca_iten = linspace(0.1,0.4,MC_RUNS);
 
 d_thresh_value = 5;
 
-TP_ovr = zeros(detectors_count, MC_RUNS+1);
-FP_ovr = zeros(detectors_count, MC_RUNS+1);
-FN_ovr = zeros(detectors_count, MC_RUNS+1);
-TPR = zeros(detectors_count, MC_RUNS+1);
-FPR = zeros(detectors_count, MC_RUNS+1);
+TP_ovr = zeros(detectors_count, MC_RUNS);
+FP_ovr = zeros(detectors_count, MC_RUNS);
+FN_ovr = zeros(detectors_count, MC_RUNS);
+TPR = zeros(detectors_count, MC_RUNS);
+FPR = zeros(detectors_count, MC_RUNS);
 
 for k = 1:size(Signal,3)
 
