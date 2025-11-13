@@ -1,4 +1,4 @@
-function [Signal] = random_tracks(obj_case,M,G)
+function [Signal,Pos_states] = random_tracks(obj_case,M,G)
     %{
         random_tracks:
             For use in run_MC_Detector. Given a number of objects from 1 - 5, generate a track with the given number of objects
@@ -21,6 +21,7 @@ function [Signal] = random_tracks(obj_case,M,G)
 
             Outputs:
             Signal, 128x128x50 array of mWidar signal at each timestep
+            Pos_states, position states 
 
     %}
     
@@ -47,18 +48,29 @@ function [Signal] = random_tracks(obj_case,M,G)
     Pos_states = zeros(obj_case,2,50); % Only position states, for signal generation
     Signal = zeros(128,128,50);
 
+    
     % Define initial condtions
 
     % Track 1
     mu_v = [10; 0];
-    cov_v = 5*eye(2);
+
+    % Control how spread out velocity is across different cases
+    v_spread_x = 20; 
+    v_spread_y = 5;
+
+    cov_v = diag([v_spread_x v_spread_y]);
     vel_states = mvnrnd(mu_v, cov_v);
 
     x0(:,1) = [1 60 vel_states 0 0]';
     
     % Track 2
     mu_v = [10; 10];
-    cov_v = 5*eye(2);
+
+    % Control how spread out velocity is across different cases
+    v_spread_x = 15; 
+    v_spread_y = 15;
+
+    cov_v = diag([v_spread_x v_spread_y]);
     vel_states = mvnrnd(mu_v, cov_v);
 
     x0(:,2) = [1 25 vel_states 0 0]';
@@ -66,7 +78,11 @@ function [Signal] = random_tracks(obj_case,M,G)
     % Track 3
 
     mu_v = [10; -25];
-    cov_v = 2.5*eye(2);
+    % Control how spread out velocity is across different cases
+    v_spread_x = 15; 
+    v_spread_y = 15;
+
+    cov_v = diag([v_spread_x v_spread_y]);
     vel_states = mvnrnd(mu_v, cov_v);
 
     x0(:,3) = [1 120 vel_states 0 5]';
@@ -74,7 +90,10 @@ function [Signal] = random_tracks(obj_case,M,G)
     % Track 4
 
     mu_v = [-10; 10];
-    cov_v = 5*eye(2);
+    v_spread_x = 15; 
+    v_spread_y = 15;
+
+    cov_v = diag([v_spread_x v_spread_y]);
     vel_states = mvnrnd(mu_v, cov_v);
 
     x0(:,4) = [120 25 vel_states 0 0]';
@@ -82,7 +101,10 @@ function [Signal] = random_tracks(obj_case,M,G)
     % Track 5
 
     mu_v = [0; -10];
-    cov_v = 5*eye(2);
+    v_spread_x = 5; 
+    v_spread_y = 20;
+
+    cov_v = diag([v_spread_x v_spread_y]);
     vel_states = mvnrnd(mu_v, cov_v);
 
     x0(:,5) = [64 120 vel_states 0 0]';
@@ -101,7 +123,7 @@ function [Signal] = random_tracks(obj_case,M,G)
                 Pos_states(c,:,k) = floor([X{c}(1,k) X{c}(2,k)]);
 
                 % Ensure object is still in scene, cut off generate at y = 20
-                if Pos_states(c,1,k) <= 128 || Pos_states(c,1,k) >= 20 || Pos_states(c,2,k) <= 128 || Pos_states(c,2,k) >= 20
+                if Pos_states(c,1,k) <= 128 || Pos_states(c,1,k) >= 1 || Pos_states(c,2,k) <= 128 || Pos_states(c,2,k) >= 20
                     S(Pos_states(c,1,k), Pos_states(c,2,k)) = 1;
                 end
 
@@ -111,7 +133,7 @@ function [Signal] = random_tracks(obj_case,M,G)
                 X{c}(:,k) = expm(A*tvec(k))*x0(:,c);
                 Pos_states(c,:,k) = floor([X{c}(1,k) X{c}(2,k)]);
                 
-                if Pos_states(c,1,k) <= 128 || Pos_states(c,1,k) >= 20 || Pos_states(c,2,k) <= 128 || Pos_states(c,2,k) >= 20
+                if Pos_states(c,1,k) <= 128 || Pos_states(c,1,k) >= 1 || Pos_states(c,2,k) <= 128 || Pos_states(c,2,k) >= 20
                     S(Pos_states(c,1,k), Pos_states(c,2,k)) = 1;
                 end
 
@@ -121,7 +143,7 @@ function [Signal] = random_tracks(obj_case,M,G)
                 X{c}(:,k) = expm(A*tvec(k))*x0(:,c);
                 Pos_states(c,:,k) = floor([X{c}(1,k) X{c}(2,k)]);
                 
-                if Pos_states(c,1,k) <= 128 || Pos_states(c,1,k) >= 20 || Pos_states(c,2,k) <= 128 || Pos_states(c,2,k) >= 20
+                if Pos_states(c,1,k) <= 128 || Pos_states(c,1,k) >= 1 || Pos_states(c,2,k) <= 128 || Pos_states(c,2,k) >= 20
                     S(Pos_states(c,1,k), Pos_states(c,2,k)) = 1;
                 end
 
@@ -131,7 +153,7 @@ function [Signal] = random_tracks(obj_case,M,G)
                 X{c}(:,k) = expm(A*tvec(k))*x0(:,c);
                 Pos_states(c,:,k) = floor([X{c}(1,k) X{c}(2,k)]);
 
-                if Pos_states(c,1,k) <= 128 || Pos_states(c,1,k) >= 20 || Pos_states(c,2,k) <= 128 || Pos_states(c,2,k) >= 20
+                if Pos_states(c,1,k) <= 128 || Pos_states(c,1,k) >= 1 || Pos_states(c,2,k) <= 128 || Pos_states(c,2,k) >= 20
                     S(Pos_states(c,1,k), Pos_states(c,2,k)) = 1;
                 end
 
@@ -141,7 +163,7 @@ function [Signal] = random_tracks(obj_case,M,G)
                 X{c}(:,k) = expm(A*tvec(k))*x0(:,c);
                 Pos_states(c,:,k) = floor([X{c}(1,k) X{c}(2,k)]);
 
-                if Pos_states(c,1,k) <= 128 || Pos_states(c,1,k) >= 20 || Pos_states(c,2,k) <= 128 || Pos_states(c,2,k) >= 20
+                if Pos_states(c,1,k) <= 128 || Pos_states(c,1,k) >= 1 || Pos_states(c,2,k) <= 128 || Pos_states(c,2,k) >= 20
                     S(Pos_states(c,1,k), Pos_states(c,2,k)) = 1;
                 end
 
@@ -154,7 +176,11 @@ function [Signal] = random_tracks(obj_case,M,G)
             signal_flat = M * signal_flat;
             signal_flat = G' * signal_flat;
             sim_signal = reshape(signal_flat, 128, 128)';
-            Signal(:,:,k) = imgaussfilt(sim_signal, 2);
+            signal_original = imgaussfilt(sim_signal, 2);
+
+            % Normalize signal [0 1]
+            scaled_signal = (signal_original - min(signal_original(:)))/ (max(signal_original(:)) - min(signal_original(:)));
+            Signal(:,:,k) = scaled_signal;
 
         end 
     end
