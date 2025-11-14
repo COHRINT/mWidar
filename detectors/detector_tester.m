@@ -26,9 +26,9 @@ close all;
 
 % Set default MATLAB plotting parameters
 % Set default font size to be larger
-set(0, 'DefaultAxesFontSize', 16);      % Axis tick label size
-set(0, 'DefaultTextFontSize', 16);      % Text (including legend) size
-set(0, 'DefaultLegendFontSize', 16);    % Legend text size
+set(0, 'DefaultAxesFontSize', 16); % Axis tick label size
+set(0, 'DefaultTextFontSize', 16); % Text (including legend) size
+set(0, 'DefaultLegendFontSize', 16); % Legend text size
 set(0, 'DefaultLineLineWidth', 2);
 set(0, 'DefaultAxesTitleFontSizeMultiplier', 20/16); % Title font size = 20
 
@@ -138,9 +138,14 @@ for t = 1:size(sim_signal, 3)
     % CA_CFAR DETECTOR
     for i = 1:length(thresholds)
 
-        % CA_CFAR Detector
+        % CA_CFAR Detector -- good values for single target case
+        % Pfa = 0.365; % Probability of false alarm -- 36 WORKS THE BEST
+        % Ng = 5;    % Guard cells
+        % Nr = 20;   % Training cells
         th = thresholds(i);
-        [~, px, py] = CA_CFAR(signal, th, 3, 10);
+        % Thresholds between 0 and 1, switch to between .1 and .3
+        th = 0.1 + th * 0.2;
+        [~, px, py] = CA_CFAR(signal, th, 3, 20);
         peaks = [py, px];
 
         % Use the calcTPFPFN function to calculate TP, FP, FN
@@ -198,8 +203,8 @@ for t = 1:size(sim_signal, 3)
 
     % Create a single figure for animation at the beginning of the loop
     if t == 1
-        % fig_anim = figure('Position', [100, 100, 1800, 600], "Name", "Radar Signal Animation");
-        fig_anim = figure("Visible", "off");
+        fig_anim = figure('Position', [100, 100, 1800, 600], "Name", "Radar Signal Animation");
+        % fig_anim = figure("Visible", "off");
     end
 
     % Clear the figure but keep the window
@@ -235,7 +240,7 @@ for t = 1:size(sim_signal, 3)
     plot(ax1, peaks(:, 1), peaks(:, 2), '+', 'MarkerSize', 10, 'LineWidth', 2, 'MarkerFaceColor', color_palette(1, :), 'Color', color_palette(1, :), 'DisplayName', 'Max-Peaks');
 
     % Plot the CA_CFAR peaks
-    [~, px, py] = CA_CFAR(signal, .2, 3, 10);
+    [~, px, py] = CA_CFAR(signal, .36, 3, 20);
     peaks = [py, px];
 
     if size(peaks, 1) > 0
@@ -275,7 +280,7 @@ for t = 1:size(sim_signal, 3)
     zlim(ax1, [min(signal(:)), max(signal(:))]);
     view(ax1, 2); % Set the view to 2D
     title(ax1, "Radar Signal at Time " + t, 'Interpreter', 'latex', 'FontSize', 14);
-    legend(ax1, 'Location', 'northeast', "Interpreter", "latex", 'FontSize', 12);
+    legend(ax1, 'Location', 'northwest', "Interpreter", "latex", 'FontSize', 12);
 
     % Second subplot - Histogram
     ax2 = nexttile(tile_sim);
@@ -318,7 +323,7 @@ for t = 1:size(sim_signal, 3)
 
 end
 
-%% ROC Curves 
+%% ROC Curves
 
 figure('Name', 'ROC Curves', 'Position', [100, 100, 300, 300]);
 hold('on')
@@ -343,9 +348,9 @@ for meth = 1:num_methods
 
     % else
 
-        % for i = 1:10:length(thresholds)
-        %     text(global_FPR_MP(meth, i), global_TPR_MP(meth, i) - .05, sprintf('%.2f', thresholds(i)), 'FontSize', 8, 'Color', color_palette(meth, :));
-        % end
+    % for i = 1:10:length(thresholds)
+    %     text(global_FPR_MP(meth, i), global_TPR_MP(meth, i) - .05, sprintf('%.2f', thresholds(i)), 'FontSize', 8, 'Color', color_palette(meth, :));
+    % end
 
     % end
 
@@ -369,4 +374,4 @@ grid('on')
 legend('Location', 'southeast', 'Interpreter', 'latex', 'FontSize', 14);
 
 % Save figure
-exportgraphics(gcf, sprintf('../data_tracks/ROC_%s.png', dataset), 'Resolution', 600);
+% exportgraphics(gcf, sprintf('../data_tracks/ROC_%s.png', dataset), 'Resolution', 600);

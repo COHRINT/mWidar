@@ -21,7 +21,7 @@ SAVEFIG = true;
 
 %% Parameters
 num_time = 10; % Number of timesteps
-num_peaks = 10; % Total number of peaks per timestep
+num_peaks = 30; % Total number of peaks per timestep
 num_dim = 2; % Dimensionality (x, y)
 grid_size = 128; % Size of detection grid
 
@@ -34,7 +34,7 @@ time_peaks = zeros(num_time, num_peaks, num_dim);
 
 %% Setup TDPF
 TDPF_Dict = {};
-TDPF_String = ["New Target", "Existing Target", "Persistent Target"];
+TDPF_String = ["New", "Existing", "Confirmed", "Persistent"];
 
 % Initialize moving peaks
 moving_peak_1 = const_peaks(2, :); % Random walk target
