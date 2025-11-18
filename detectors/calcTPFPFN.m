@@ -17,8 +17,7 @@ function [TP, FP, FN] = calcTPFPFN(gt_points, detected_peaks, d_thresh_value)
     %
     % Inputs:
     %   gt_points - M×2 matrix of ground truth points [x, y]
-    %   detected_peaks - N×K matrix with first two columns as [x, y] coordinates
-    %                   For TDPF, the third column contains persistence score
+    %   detected_peaks - N×2 (or N×K) matrix with first two columns as [x, y] coordinates
     %   d_thresh_value - Distance threshold for matching ground truth to detections
     %
     % Outputs:
@@ -26,45 +25,36 @@ function [TP, FP, FN] = calcTPFPFN(gt_points, detected_peaks, d_thresh_value)
     %   FP - Number of false positives (incorrectly detected points)
     %   FN - Number of false negatives (missed ground truth points)
 
+    % Handle empty cases
+    if isempty(gt_points) && isempty(detected_peaks)
+        TP = 0; FP = 0; FN = 0;
+        return;
+    elseif isempty(gt_points)
+        TP = 0; FP = size(detected_peaks, 1); FN = 0;
+        return;
+    elseif isempty(detected_peaks)
+        TP = 0; FP = 0; FN = size(gt_points, 1);
+        return;
+    end
+
     % Initialize match status arrays
     matched_gt = false(size(gt_points, 1), 1);
     matched_peaks = false(size(detected_peaks, 1), 1);
 
-    % For TDPF detector, skip detections with persistence score <= 2
-    if size(detected_peaks, 2) >= 3
-        for j = 1:size(detected_peaks, 1)
-            if detected_peaks(j, 3) <= 2
-                continue; % Skip if not persistent
-            end
+    % Match each detected peak to the nearest ground truth point
+    for j = 1:size(detected_peaks, 1)
+        % Find the closest GT point (using only x,y coordinates)
+        dists = vecnorm(gt_points - detected_peaks(j, 1:2), 2, 2);
+        [min_dist, idx] = min(dists);
+        % disp(min_dist);
 
-            % Find the closest GT point
-            dists = vecnorm(gt_points - detected_peaks(j, 1:2), 2, 2);
-            [min_dist, idx] = min(dists);
-
-            if min_dist < d_thresh_value && ~matched_gt(idx)
-                % If less than threshold pixels away and GT not matched, mark both as matched
-                matched_gt(idx) = true;
-                matched_peaks(j) = true;
-            elseif min_dist < d_thresh_value && matched_gt(idx)
-                % If less than threshold pixels away and GT already matched, just mark peak
-                matched_peaks(j) = true;
-            end
-        end
-    else
-        % For non-TDPF detectors (standard peak detection)
-        for j = 1:size(detected_peaks, 1)
-            % Find the closest GT point
-            dists = vecnorm(gt_points - detected_peaks(j, 1:2), 2, 2);
-            [min_dist, idx] = min(dists);
-
-            if min_dist < d_thresh_value && ~matched_gt(idx)
-                % If less than threshold pixels away and GT not matched, mark both as matched
-                matched_gt(idx) = true;
-                matched_peaks(j) = true;
-            elseif min_dist < d_thresh_value && matched_gt(idx)
-                % If less than threshold pixels away and GT already matched, just mark peak
-                matched_peaks(j) = true;
-            end
+        if min_dist < d_thresh_value && ~matched_gt(idx)
+            % If less than threshold pixels away and GT not matched, mark both as matched
+            matched_gt(idx) = true;
+            matched_peaks(j) = true;
+        elseif min_dist < d_thresh_value && matched_gt(idx)
+            % If less than threshold pixels away and GT already matched, just mark peak
+            matched_peaks(j) = true;
         end
     end
 
