@@ -25,16 +25,16 @@ rng(42352)
 
 detectors_list = ["peaks2", "CA\_CFAR", "TDPF"];
 detectors_count = 3;
-MC_RUNS = 10;
+MC_RUNS = 100;
 d_thresh_value = 20;
 
 % Threshold sweep parameters
 NUM_THRESHOLDS = 20; % Number of threshold values to test
 
 % Define threshold ranges for each detector
-thresh_MP_range = linspace(0.2, 0.95, NUM_THRESHOLDS); % MaxPeaks: MinPeakHeight
-thresh_CFAR_range = linspace(0.1, 0.5, NUM_THRESHOLDS); % CA_CFAR: Pfa
-thresh_TDPF_range = linspace(1, 20, NUM_THRESHOLDS); % TDPF: Distance threshold
+thresh_MP_range = linspace(0.01, 0.75, NUM_THRESHOLDS); % MaxPeaks: MinPeakHeight
+thresh_CFAR_range = linspace(0.3, 0.6, NUM_THRESHOLDS); % CA_CFAR: Pfa
+thresh_TDPF_range = linspace(1, 10, NUM_THRESHOLDS); % TDPF: Distance threshold
 
 % Setup for TDPF
 TDPF_Dict = {};

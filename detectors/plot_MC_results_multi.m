@@ -8,7 +8,7 @@ clear; clc; close all
 
 %% Configuration
 % Set the directory containing all obj*.mat files from a single MC run
-MC_RUN_DIR = fullfile('..', 'Results', 'detectors', '20251119_063014_MCRuns10_NThresh20');
+MC_RUN_DIR = fullfile('..', 'Results', 'detectors', '20251119_063843_MCRuns100_NThresh20');
 
 fprintf("Loading results from: %s\n", MC_RUN_DIR)
 
@@ -68,6 +68,8 @@ for obj_idx = 1:length(all_data)
     end
 end
 
+fprintf("Completed Individual Scatter Plots");
+
 %% Plot 2: Combined plot - All object counts on same figure
 fig2 = figure('Name', 'ROC Combined - All Object Counts', 'NumberTitle', 'off', 'Color', 'w', ...
     'Position', [100, 100, 1400, 400]);
@@ -80,6 +82,7 @@ for detector = 1:detectors_count
         thresh_ranges, thresh_labels, NUM_THRESHOLDS, detectors_list);
 end
 
+fprintf("Completed Combined Plots ");
 %% Plot 3: Individual error bar plots for each object count
 for obj_idx = 1:length(all_data)
     data = all_data{obj_idx};
@@ -98,6 +101,7 @@ for obj_idx = 1:length(all_data)
     end
 end
 
+fprintf("Completed Individual Error Bar Plots plots");
 fprintf("Plotting complete!\n")
 
 %% ======================== PLOTTING METHODS ========================
