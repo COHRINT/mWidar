@@ -68,6 +68,10 @@ data_tracks/*
 **/GT*
 detectors/output/*
 
+# Results/detectors - exclude all subdirectories and their contents but keep .md files
+Results/detectors/*/
+!Results/detectors/*.md
+
 # Media and output files
 *.png
 *.gif

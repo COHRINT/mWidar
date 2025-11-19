@@ -7,6 +7,10 @@ clear; clc; close all
 
 %% Set up simulation
 
+% Timestamp for saving results
+script_start_time = datetime('now', 'Format', 'yyyyMMdd_HHmmss');
+
+
 PLOT_DEBUG = true;
 pks_plt = [];
 signal_plt = {};
@@ -19,18 +23,18 @@ ygrid = 1:128;
 
 rng(42352)
 
-detectors_list = ["peaks2", "CA_CFAR", "TDPF"];
+detectors_list = ["peaks2", "CA\_CFAR", "TDPF"];
 detectors_count = 3;
-MC_RUNS = 100;
-d_thresh_value = 15;
+MC_RUNS = 10;
+d_thresh_value = 20;
 
 % Threshold sweep parameters
-NUM_THRESHOLDS = 20 % Number of threshold values to test
+NUM_THRESHOLDS = 20; % Number of threshold values to test
 
 % Define threshold ranges for each detector
-thresh_MP_range = linspace(0.2, 0.95, NUM_THRESHOLDS);  % MaxPeaks: MinPeakHeight
+thresh_MP_range = linspace(0.2, 0.95, NUM_THRESHOLDS); % MaxPeaks: MinPeakHeight
 thresh_CFAR_range = linspace(0.1, 0.5, NUM_THRESHOLDS); % CA_CFAR: Pfa
-thresh_TDPF_range = linspace(1, 20, NUM_THRESHOLDS);    % TDPF: Distance threshold
+thresh_TDPF_range = linspace(1, 20, NUM_THRESHOLDS); % TDPF: Distance threshold
 
 % Setup for TDPF
 TDPF_Dict = {};
@@ -44,7 +48,18 @@ FPR = zeros(detectors_count, MC_RUNS, NUM_THRESHOLDS);
 
 fprintf("############# BEGINNING MC SIMULATION ################### \n\n")
 % objects_count = 1:5;
-objects_count = [5];
+objects_count = [1,5,10];
+
+% Create results directory structure with timestamp
+results_base_dir = fullfile("..", "Results", "detectors");
+run_dir_name = sprintf('%s_MCRuns%d_NThresh%d', char(script_start_time), MC_RUNS, NUM_THRESHOLDS);
+results_dir = fullfile(results_base_dir, run_dir_name);
+
+if ~exist(results_dir, 'dir')
+    mkdir(results_dir);
+end
+
+fprintf("Results will be saved to: %s\n\n", results_dir)
 
 for o = objects_count
     fprintf("############# MC SIMULATION WITH %d OBJECT(S)################# \n\n", o)
@@ -58,9 +73,9 @@ for o = objects_count
         nk = size(POS, 3);
 
         for t = 1:NUM_THRESHOLDS
-            
+
             % fprintf("  Threshold %d/%d \n", t, NUM_THRESHOLDS)
-            
+
             % Reset TDPF dictionary for each threshold test
             TDPF_Dict = {};
 
@@ -75,7 +90,7 @@ for o = objects_count
             % if t == 1
             %     figure(1)
             %     tiledlayout(2, ceil(nk / 2), 'TileSpacing', 'Compact', 'Padding', 'Compact');
-            % 
+            %
             %     for k = 1:nk
             %         nexttile(k);
             %         surf(X, Y, scaled_signal(:, :, 2, k), 'EdgeColor', 'none');
@@ -88,7 +103,7 @@ for o = objects_count
             %         xlim([0 128])
             %         ylim([20 128])
             %     end
-            % 
+            %
             %     sgtitle(sprintf("MC Run #%d - Object Count: %d", m, o), 'FontSize', 14, 'FontWeight', 'bold');
             % end
 
@@ -114,11 +129,11 @@ for o = objects_count
                 end
 
                 % Max_Peaks (Peaks2) - use valid signal region with varying MinPeakHeight
-                [~, px, py] = peaks2(signal_valid, 'MinPeakHeight', current_thresh_MP, 'MinPeakDistance', 10);
+                [~, px, py] = peaks2(signal_valid, 'MinPeakHeight', current_thresh_MP, 'MinPeakDistance', 20);
                 % Transform back to original frame
                 px = px + y_offset;
                 peaks_MP = [px, py];
-                
+
                 % Plot peaks (only for first threshold)
                 % if t == 1
                 %     nexttile(k);
@@ -140,7 +155,7 @@ for o = objects_count
                 % Transform back to original frame
                 px = px + y_offset;
                 peaks_CFAR = [px, py];
-                
+
                 % Plot peaks (only for first threshold)
                 % if t == 1
                 %     nexttile(k);
@@ -157,7 +172,7 @@ for o = objects_count
                 FN_ovr(2, m, t) = FN_ovr(2, m, t) + FN;
 
                 % TDPF - use valid signal region with varying distance threshold
-                [~, px, py] = peaks2(signal_valid, 'MinPeakHeight', 0.2, 'MinPeakDistance', current_thresh_TDPF+1); % Find ALL the peaks
+                [~, px, py] = peaks2(signal_valid, 'MinPeakHeight', 0.2); % Find ALL the peaks
                 % Transform back to original frame
                 px = px + y_offset;
                 current_peaks = [px, py];
@@ -174,7 +189,7 @@ for o = objects_count
                 end
 
                 peaks_tdpf = TDPF_Dict{k}(TDPF_Dict{k}(:, 3) > 2, 1:2); % Reported peaks with score > 2, only x,y
-                
+
                 % Plot peaks (only for first threshold)
                 % if t == 1
                 %     nexttile(k);
@@ -194,7 +209,7 @@ for o = objects_count
                 end
 
             end
-            
+
         end % end threshold loop
 
         % if m == 1
@@ -203,160 +218,43 @@ for o = objects_count
 
     end % end MC runs loop
 
-    fprintf("MC Simulation Completed for object count %d, Plotting \n\n", o)
+    fprintf("MC Simulation Completed for object count %d\n", o)
+    fprintf("Saving results...\n")
 
     % Calculate TPR and FPR for all detector/MC_run/threshold combinations
     for detector = 1:detectors_count
+
         for m = 1:MC_RUNS
+
             for t = 1:NUM_THRESHOLDS
                 TPR(detector, m, t) = TP_ovr(detector, m, t) ./ (TP_ovr(detector, m, t) + FN_ovr(detector, m, t));
                 FPR(detector, m, t) = FP_ovr(detector, m, t) ./ (FP_ovr(detector, m, t) + TP_ovr(detector, m, t));
             end
+
         end
+
     end
 
     % Define threshold ranges and labels for each detector
     thresh_ranges = {thresh_MP_range, thresh_CFAR_range, thresh_TDPF_range};
     thresh_labels = {'MinPeakHeight', 'P_{fa}', 'Distance Threshold'};
 
-    figure_name = sprintf("ROC_OBJ_COUNT%d.png", o);
-    fig = figure('Name', figure_name, 'Color', 'w', 'Position', [100, 100, 1400, 400]);
+    % Create filename for this object count
+    results_filename = sprintf('obj%d.mat', o);
+    results_filepath = fullfile(results_dir, results_filename);
 
-    for detector = 1:detectors_count
-        subplot(1, detectors_count, detector); hold on; grid on
-        
-        % Get threshold range for this detector
-        thresh_vals = thresh_ranges{detector};
-        
-        % Plot all MC_run/threshold combinations
-        for m = 1:MC_RUNS
-            for t = 1:NUM_THRESHOLDS
-                % Use threshold value for color
-                scatter(FPR(detector, m, t), TPR(detector, m, t), 50, thresh_vals(t), 'filled', 'MarkerEdgeColor', 'k');
-            end
-        end
-        
-        % Add colorbar
-        c = colorbar;
-        c.Label.String = thresh_labels{detector};
-        c.Label.Interpreter = 'tex';
-        colormap(gca, parula);
-        caxis([min(thresh_vals), max(thresh_vals)]);
-        
-        % Plot "Random" line
-        plot([0 1], [0 1], '--k', 'LineWidth', 1, "HandleVisibility", "off");
+    % Save all results to .mat file
+    save(results_filepath, ...
+        'TP_ovr', 'FP_ovr', 'FN_ovr', ...
+        'TPR', 'FPR', ...
+        'thresh_MP_range', 'thresh_CFAR_range', 'thresh_TDPF_range', ...
+        'thresh_ranges', 'thresh_labels', ...
+        'detectors_list', 'detectors_count', ...
+        'MC_RUNS', 'NUM_THRESHOLDS', ...
+        'd_thresh_value', 'o');
 
-        % Use semi-log scale (log on FPR, linear on TPR)
-        set(gca, 'XScale', 'log');
+    fprintf("Results saved to: %s\n\n", results_filepath);;
 
-        % Axis with proper limits for log scale
-        axis('square')
-        xlim([5e-1 1])  % Log scale needs lower bound > 0
-        ylim([0 1])
-
-        % Labels
-        xlabel('False Positive Rate (log scale)', 'Interpreter', 'latex')
-        ylabel('True Positive Rate', 'Interpreter', 'latex')
-        title(sprintf('%s - Obj Count: %d', detectors_list(detector), o), 'Interpreter', 'latex')
-        
-        % Grid
-        grid('on')
-    end
-
-    % figName = sprintf("Figures/ROC_OBJ_COUNT%d.png", o);
-    % print(fig, figName, '-dpng', '-r300');
-    % close(fig);
-
-    %% Create aggregated ROC plot with error bars and fitted curves
-    fig2 = figure('Name', 'ROC with Error Bars and Fit', 'NumberTitle', 'off', 'Color', 'w', 'Position', [100, 100, 1400, 400]);
-
-    for detector = 1:detectors_count
-        subplot(1, detectors_count, detector); hold on; grid on
-        
-        % Get threshold range for this detector
-        thresh_vals = thresh_ranges{detector};
-        
-        % Compute mean and std for each threshold
-        mean_FPR = zeros(NUM_THRESHOLDS, 1);
-        std_FPR = zeros(NUM_THRESHOLDS, 1);
-        mean_TPR = zeros(NUM_THRESHOLDS, 1);
-        std_TPR = zeros(NUM_THRESHOLDS, 1);
-        
-        for t = 1:NUM_THRESHOLDS
-            mean_FPR(t) = mean(FPR(detector, :, t), 'omitnan');
-            std_FPR(t) = std(FPR(detector, :, t), 'omitnan');
-            mean_TPR(t) = mean(TPR(detector, :, t), 'omitnan');
-            std_TPR(t) = std(TPR(detector, :, t), 'omitnan');
-        end
-        
-        % Get colormap for threshold coloring
-        cmap = parula(NUM_THRESHOLDS);
-        
-        % Plot error bars colored by threshold
-        for t = 1:NUM_THRESHOLDS
-            % Plot error bars with specific color for this threshold
-            errorbar(mean_FPR(t), mean_TPR(t), std_TPR(t), std_TPR(t), std_FPR(t), std_FPR(t), ...
-                'o', 'MarkerSize', 8, 'LineWidth', 2, 'CapSize', 10, ...
-                'Color', cmap(t, :), 'MarkerFaceColor', cmap(t, :));
-        end
-        
-        % Recolor points by threshold using scatter (to get proper colorbar)
-        for t = 1:NUM_THRESHOLDS
-            scatter(mean_FPR(t), mean_TPR(t), 100, thresh_vals(t), 'filled', 'MarkerEdgeColor', 'k', 'LineWidth', 1.5);
-        end
-        
-        % Fit a curve to the mean values (sort by FPR first)
-        [sorted_FPR, sort_idx] = sort(mean_FPR);
-        sorted_TPR = mean_TPR(sort_idx);
-        
-        % Remove NaN values and duplicate FPR values for fitting
-        valid_idx = ~isnan(sorted_FPR) & ~isnan(sorted_TPR);
-        sorted_FPR = sorted_FPR(valid_idx);
-        sorted_TPR = sorted_TPR(valid_idx);
-        
-        % Remove duplicate FPR values (keep first occurrence)
-        [sorted_FPR, unique_idx] = unique(sorted_FPR, 'stable');
-        sorted_TPR = sorted_TPR(unique_idx);
-        
-        if length(sorted_FPR) >= 3
-            % Fit a smooth curve using spline interpolation
-            FPR_fit = linspace(min(sorted_FPR), max(sorted_FPR), 100);
-            TPR_fit = interp1(sorted_FPR, sorted_TPR, FPR_fit, 'pchip');
-            plot(FPR_fit, TPR_fit, '-', 'LineWidth', 2.5, 'Color', [0.2, 0.2, 0.2], 'DisplayName', 'Fitted Curve');
-        end
-        
-        % Add colorbar
-        c = colorbar;
-        c.Label.String = strrep(thresh_labels{detector}, '_', '\_'); % Escape underscores
-        c.Label.Interpreter = 'tex';
-        colormap(gca, parula);
-        caxis([min(thresh_vals), max(thresh_vals)]);
-        
-        % Plot "Random" line
-        plot([0 1], [0 1], '--k', 'LineWidth', 1, "HandleVisibility", "off");
-
-        % Use semi-log scale (log on FPR, linear on TPR)
-        set(gca, 'XScale', 'log');
-
-        % Axis with proper limits for log scale
-        axis('square')
-        xlim([8e-1 1])  % Log scale needs lower bound > 0
-        ylim([0 1])
-
-        % Labels
-        xlabel('False Positive Rate (log scale)', 'Interpreter', 'latex')
-        ylabel('True Positive Rate', 'Interpreter', 'latex')
-        title(sprintf('%s - Obj Count: %d (Mean \\pm 1SD)', strrep(detectors_list(detector), '_', '\_'), o), 'Interpreter', 'tex')
-        
-        % Grid
-        grid('on')
-    end
-
-    
-    % figName2 = sprintf("Figures/ROC_ErrorBars_OBJ_COUNT%d.png", o);
-    % print(fig2, figName2, '-dpng', '-r300');
-    % close(fig2);
-
-    % Ensure figure draws before next iteration
-    pause(0.1)
 end
+
+fprintf("############# MC SIMULATION COMPLETE ################### \n")
