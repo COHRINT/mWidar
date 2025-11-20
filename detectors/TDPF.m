@@ -13,11 +13,25 @@
 % determine if a detection is a new target, existing target, or persistent target.
 % %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-function [detected_peaks] = TDPF(curr_peaks, prev_peak_score, threshold)
+function [detected_peaks] = TDPF(curr_peaks, prev_peak_score, threshold, min_peak_distance)
     % TDPF  Time Dependent Peak Finder
-    %   detected_peaks = TDPF(curr_peaks, prev_peak_score, threshold) compares current peaks to
-    %   previous peak scores to classify detections as new targets, existing targets,
-    %   or persistent targets.
+    %   detected_peaks = TDPF(curr_peaks, prev_peak_score, threshold, min_peak_distance) 
+    %   compares current peaks to previous peak scores to classify detections as 
+    %   new targets, existing targets, or persistent targets.
+    %
+    %   Inputs:
+    %       curr_peaks - N×2 array of current peak locations [x, y]
+    %       prev_peak_score - M×3 array of previous peaks with scores [x, y, score]
+    %       threshold - Distance threshold for matching peaks between frames
+    %       min_peak_distance - Minimum distance between peaks (optional, default=1)
+    %
+    %   Outputs:
+    %       detected_peaks - K×3 array of detected peaks [x, y, score]
+    
+    % Set default min_peak_distance if not provided
+    if nargin < 4
+        min_peak_distance = 1;
+    end
 
     % Initialize the output as an empty array (will build it as we process)
     detected_peaks = [];
@@ -92,8 +106,26 @@ function [detected_peaks] = TDPF(curr_peaks, prev_peak_score, threshold)
 
     end
 
-    % Cleanup -- make sure no 2 peaks in the output are ontop of eachother -- if so keep the one with the higher score
-    [~, unique_indices, ~] = unique(detected_peaks(:, 1:2), 'rows', 'stable');
-    detected_peaks = detected_peaks(unique_indices, :);
+    % Cleanup -- remove peaks within min_peak_distance, keeping higher score
+    % This prevents noise around true targets from building up scores
+    if size(detected_peaks, 1) > 1
+        to_remove = false(size(detected_peaks, 1), 1);
+        for i = 1:size(detected_peaks, 1)-1
+            if to_remove(i), continue; end
+            for j = i+1:size(detected_peaks, 1)
+                if to_remove(j), continue; end
+                dist = norm(detected_peaks(i, 1:2) - detected_peaks(j, 1:2));
+                if dist < min_peak_distance
+                    % Keep the one with higher score (or earlier one if tied)
+                    if detected_peaks(j, 3) > detected_peaks(i, 3)
+                        to_remove(i) = true;
+                    else
+                        to_remove(j) = true;
+                    end
+                end
+            end
+        end
+        detected_peaks(to_remove, :) = [];
+    end
 
 end

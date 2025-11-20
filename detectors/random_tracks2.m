@@ -40,11 +40,11 @@ function [Signal, Pos_states] = random_tracks2(obj_num, M, G)
     Signal = zeros(128, 128, 2, length(tvec)); % 128x128 signal, 2 channels (unscaled and scaled), for each timestep
 
     % Limits for Position, Velocity, and Acceleration
-    pos_limits = [1, 128; 20, 128];
+    pos_limits = [11, 118; 30, 118]; % Scaled in by 10 from borders to keep objects in frame longer
     vel_limits = [-10, 10; -10, 10]; % make sure velocity is not too high -- they can move but expect fast sample rate
     acc_limits = [-1, 1; -1, 1]; % Super minor acceleration
 
-    % Define initial conditions
+    % Define initial conditions gggg
     for i = 1:obj_num
         x0(:, i) = [randi(pos_limits(1, :)); randi(pos_limits(2, :)); ...
                         randi(vel_limits(1, :)); randi(vel_limits(2, :)); ...
@@ -88,7 +88,8 @@ function [Signal, Pos_states] = random_tracks2(obj_num, M, G)
         signal_flat = M * signal_flat;
         signal_flat = G' * signal_flat;
         sim_signal = reshape(signal_flat, 128, 128)';
-        signal_original = imgaussfilt(sim_signal, 2);
+        signal_original = imgaussfilt(sim_signal, 1);
+        % signal_original = sim_signal;
 
         Signal(:, :, 1, k) = signal_original; % Store unscaled signal for reference
 
