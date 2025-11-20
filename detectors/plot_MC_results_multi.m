@@ -674,7 +674,7 @@ fprintf("Completed Combined Plots (Precision-Recall)\n");
 fig3 = figure('Name', 'PR Combined - All Object Counts Zoom', 'NumberTitle', 'off', 'Color', 'w', ...
     'Position', [100, 100, 1400, 400]);
 
-xlimits = [0.95, 1];
+xlimits = [0.99, 1];
 ylimits = [0, 0.1];
 
 for detector = 1:detectors_count
@@ -1066,7 +1066,7 @@ function plot_combined_mean_curves_PR(ax, all_data, object_counts, marker_shapes
     title(ax, sprintf('%s - All Object Counts', detectors_list(detector)), 'Interpreter', 'latex')
 
     % Legend for marker shapes
-    legend(legend_handles, legend_labels, 'Location', 'southwest')
+    legend(legend_handles, legend_labels, 'Location', 'northeast')
 end
 
 function plot_error_bars_with_fit_PR(ax, data, detector, obj_count, marker, ...
