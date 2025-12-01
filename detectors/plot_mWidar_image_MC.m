@@ -6,7 +6,10 @@ clear; clc; close all
 % running the full Monte Carlo simulation
 
 %% Parameters
-NUM_OBJECTS = 3; % Number of objects to simulate (1-10)
+rng(1) % Fixed seed for reproducibility
+d_thresh = 15; % Distance threshold for matching (same as in MC simulation)
+
+NUM_OBJECTS = 8; % Number of objects to simulate (1-10)
 FRAMES_TO_SAVE = 5; % Number of frames to save (will save the last N frames)
 
 % Detector thresholds (using middle values from MC simulation)
@@ -28,8 +31,13 @@ ygrid = 1:128;
 [X, Y] = meshgrid(xgrid, ygrid);
 
 %% Generate signal
-rng(1) % Fixed seed for reproducibility
-[scaled_signal, POS] = random_tracks2(NUM_OBJECTS, M, G);
+while true
+    [scaled_signal, POS] = random_tracks2(NUM_OBJECTS, M, G);
+    if all(~isnan(scaled_signal(128, 128, :, :)), 'all')
+        break
+    end
+    fprintf("Bad Signal Generation. Trying again.\n");
+end
 nk = size(POS, 3);
 
 fprintf("Generated signal with %d objects over %d timesteps\n", NUM_OBJECTS, nk)
@@ -51,20 +59,22 @@ for k = 1:nk
     y_offset = 20;
     
     % TDPF processing
-    [pks_height, px, py] = peaks2(signal_valid);
-    px = px + y_offset;
+    [pks_height, py, px] = peaks2(signal_valid);
+    py = py + y_offset;
 
     % Sort peaks by height (descending)
     [~, sort_idx] = sort(pks_height, 'descend');
     px = px(sort_idx);
     py = py(sort_idx);
+    fprintf("\n\nTDPF Processing New Frame\n")
+    disp([pks_height(sort_idx), px, py]);
     current_peaks = [px, py];
     
     if k == 1
         first_score = [current_peaks, ones(size(current_peaks, 1), 1)];
         TDPF_Dict{1} = first_score;
     else
-        TDPF_Dict{k} = TDPF(current_peaks, TDPF_Dict{k - 1}, THRESH_TDPF, 15);
+        TDPF_Dict{k} = TDPF(current_peaks, TDPF_Dict{k - 1}, THRESH_TDPF, THRESH_TDPF / 2);
     end
 end
 
@@ -73,9 +83,16 @@ fprintf("TDPF history built.\n\n")
 %% Plot and save the last FRAMES_TO_SAVE frames
 fprintf("Generating and saving images...\n\n")
 
-% Create single figure with all frames
-fig = figure('Position', [100, 100, 1600, 400], 'Color', 'w');
-tiledlayout(1, FRAMES_TO_SAVE, 'TileSpacing', 'compact', 'Padding', 'compact');
+% Create figure with detectors in rows, frames in columns
+if FRAMES_TO_SAVE == 10 
+    fig = figure('Position', [100, 100, 2400, 1200], 'Color', 'w');
+else
+    fig = figure('Position', [100, 100, 1600, 1200], 'Color', 'w');
+end
+tiledlayout(4, FRAMES_TO_SAVE, 'TileSpacing', 'compact', 'Padding', 'compact');
+
+% Pre-process all frames to get detector results
+all_results = cell(length(frames_to_plot), 1);
 
 for idx = 1:length(frames_to_plot)
     k = frames_to_plot(idx);
@@ -101,100 +118,191 @@ for idx = 1:length(frames_to_plot)
     %% Run detectors
     
     % MaxPeaks (peaks2)
-    [~, px, py] = peaks2(signal_valid, 'MinPeakHeight', THRESH_MP, 'MinPeakDistance', 20);
-    px = px + y_offset;
+    [~, py, px] = peaks2(signal_valid, 'MinPeakHeight', THRESH_MP, 'MinPeakDistance', 20);
+    py = py + y_offset;
     peaks_MP = [px, py];
     
     % CA-CFAR
     Ng = 5; Ns = 20;
-    [~, px, py] = CA_CFAR(signal_valid, THRESH_CFAR, Ng, Ns);
-    px = px + y_offset;
+    [~, py, px] = CA_CFAR(signal_valid, THRESH_CFAR, Ng, Ns);
+    py = py + y_offset;
     peaks_CFAR = [px, py];
     
     % TDPF (use pre-computed dictionary)
     peaks_tdpf = TDPF_Dict{k}(TDPF_Dict{k}(:, 3) > 2, 1:2);
     
     %% Calculate TP, FP, FN for each detector
-    d_thresh = 20; % Distance threshold for matching (same as in MC simulation)
-    
-    % MaxPeaks metrics
     [TP_MP, FP_MP, FN_MP] = calcTPFPFN(gt_points, peaks_MP, d_thresh);
-    
-    % CA-CFAR metrics
     [TP_CFAR, FP_CFAR, FN_CFAR] = calcTPFPFN(gt_points, peaks_CFAR, d_thresh);
-    
-    % TDPF metrics
     [TP_TDPF, FP_TDPF, FN_TDPF] = calcTPFPFN(gt_points, peaks_tdpf, d_thresh);
     
-    % Count ground truth objects
-    num_gt = size(gt_points, 1);
+    % Store results
+    all_results{idx} = struct('k', k, 'gt_points', gt_points, ...
+        'peaks_MP', peaks_MP, 'TP_MP', TP_MP, 'FP_MP', FP_MP, 'FN_MP', FN_MP, ...
+        'peaks_CFAR', peaks_CFAR, 'TP_CFAR', TP_CFAR, 'FP_CFAR', FP_CFAR, 'FN_CFAR', FN_CFAR, ...
+        'peaks_tdpf', peaks_tdpf, 'TP_TDPF', TP_TDPF, 'FP_TDPF', FP_TDPF, 'FN_TDPF', FN_TDPF);
+end
+
+% Define colors
+color_gt = [1, 0, 0];        % Bright red for ground truth
+color_mp = [1, 0.5, 0];      % Orange for MaxPeaks
+color_cfar = [0, 1, 0];      % Bright green for CA-CFAR
+color_tdpf = [0, 0.8, 1];    % Bright cyan/light blue for TDPF
+
+% Calculate overall metrics across all frames
+total_TP_MP = 0; total_FP_MP = 0; total_FN_MP = 0;
+total_TP_CFAR = 0; total_FP_CFAR = 0; total_FN_CFAR = 0;
+total_TP_TDPF = 0; total_FP_TDPF = 0; total_FN_TDPF = 0;
+
+for idx = 1:length(frames_to_plot)
+    res = all_results{idx};
+    total_TP_MP = total_TP_MP + res.TP_MP;
+    total_FP_MP = total_FP_MP + res.FP_MP;
+    total_FN_MP = total_FN_MP + res.FN_MP;
     
-    %% Create subplot
+    total_TP_CFAR = total_TP_CFAR + res.TP_CFAR;
+    total_FP_CFAR = total_FP_CFAR + res.FP_CFAR;
+    total_FN_CFAR = total_FN_CFAR + res.FN_CFAR;
+    
+    total_TP_TDPF = total_TP_TDPF + res.TP_TDPF;
+    total_FP_TDPF = total_FP_TDPF + res.FP_TDPF;
+    total_FN_TDPF = total_FN_TDPF + res.FN_TDPF;
+end
+
+% Calculate Precision and Recall
+precision_MP = total_TP_MP / (total_TP_MP + total_FP_MP);
+recall_MP = total_TP_MP / (total_TP_MP + total_FN_MP);
+
+precision_CFAR = total_TP_CFAR / (total_TP_CFAR + total_FP_CFAR);
+recall_CFAR = total_TP_CFAR / (total_TP_CFAR + total_FN_CFAR);
+
+precision_TDPF = total_TP_TDPF / (total_TP_TDPF + total_FP_TDPF);
+recall_TDPF = total_TP_TDPF / (total_TP_TDPF + total_FN_TDPF);
+
+fprintf("\n=== Overall Performance Metrics ===\n")
+fprintf("MaxPeaks:  Precision = %.3f, Recall = %.3f\n", precision_MP, recall_MP)
+fprintf("CA-CFAR:   Precision = %.3f, Recall = %.3f\n", precision_CFAR, recall_CFAR)
+fprintf("TDPF:      Precision = %.3f, Recall = %.3f\n\n", precision_TDPF, recall_TDPF)
+
+%% Plot Row 1: Ground Truth
+for idx = 1:length(frames_to_plot)
+    k = frames_to_plot(idx);
+    res = all_results{idx};
+    
     nexttile;
-    
-    % Plot signal in grayscale
     surf(X, Y, scaled_signal(:, :, 2, k), 'EdgeColor', 'none');
     shading interp
-    colormap(gca, 'gray')  % Use grayscale colormap for this subplot
+    colormap(gca, 'gray')
     hold on
     
-    % Define more visible colors
-    color_gt = [1, 0, 0];        % Bright red for ground truth
-    color_mp = [1, 0.5, 0];      % Orange for MaxPeaks
-    color_cfar = [0, 1, 0];      % Bright green for CA-CFAR
-    color_tdpf = [0, 0.8, 1];    % Bright cyan/light blue for TDPF
-    
-    % Plot ground truth (bright red 'x', largest)
-    if ~isempty(gt_points)
-        h_gt = plot3(gt_points(:, 1), gt_points(:, 2), ones(size(gt_points(:, 1))), ...
+    % Plot only ground truth
+    if ~isempty(res.gt_points)
+        plot3(res.gt_points(:, 1), res.gt_points(:, 2), ones(size(res.gt_points(:, 1))), ...
             'x', 'Color', color_gt, 'LineWidth', 3, 'MarkerSize', 30);
-    else
-        h_gt = plot3(NaN, NaN, NaN, 'x', 'Color', color_gt, 'LineWidth', 3, 'MarkerSize', 16);
     end
     
-    % Plot MaxPeaks detections (orange 'o', medium-large)
-    if ~isempty(peaks_MP)
-        h_mp = plot3(peaks_MP(:, 2), peaks_MP(:, 1), ones(size(peaks_MP(:, 1))), ...
+    axis square; view(2); xlim([1 129]); ylim([21 129]);
+    set(gca, 'XTick', [], 'YTick', []);
+    title(sprintf('Frame %d', k), 'FontSize', 9);
+    if idx == 1
+        ylabel('Ground Truth', 'FontSize', 11, 'FontWeight', 'bold');
+    end
+    hold off
+end
+
+%% Plot Row 2: MaxPeaks
+for idx = 1:length(frames_to_plot)
+    k = frames_to_plot(idx);
+    res = all_results{idx};
+    
+    nexttile;
+    surf(X, Y, scaled_signal(:, :, 2, k), 'EdgeColor', 'none');
+    shading interp
+    colormap(gca, 'gray')
+    hold on
+    
+    % Plot ground truth and MaxPeaks
+    if ~isempty(res.gt_points)
+        plot3(res.gt_points(:, 1), res.gt_points(:, 2), ones(size(res.gt_points(:, 1))), ...
+            'x', 'Color', color_gt, 'LineWidth', 3, 'MarkerSize', 30);
+    end
+    if ~isempty(res.peaks_MP)
+        plot3(res.peaks_MP(:, 1), res.peaks_MP(:, 2), ones(size(res.peaks_MP(:, 1))), ...
             'o', 'Color', color_mp, 'LineWidth', 2, 'MarkerSize', 12);
-    else
-        h_mp = plot3(NaN, NaN, NaN, 'o', 'Color', color_mp, 'LineWidth', 2, 'MarkerSize', 12);
     end
     
-    % Plot CA-CFAR detections (bright green 'o', medium)
-    if ~isempty(peaks_CFAR)
-        h_cfar = plot3(peaks_CFAR(:, 2), peaks_CFAR(:, 1), ones(size(peaks_CFAR(:, 1))), ...
+    axis square; view(2); xlim([1 129]); ylim([21 129]);
+    set(gca, 'XTick', [], 'YTick', []);
+    title(sprintf('TP:%d FP:%d FN:%d', res.TP_MP, res.FP_MP, res.FN_MP), 'FontSize', 9);
+    if idx == 1
+        ylabel('MaxPeaks', 'FontSize', 11, 'FontWeight', 'bold');
+    end
+    hold off
+end
+
+%% Plot Row 3: CA-CFAR
+for idx = 1:length(frames_to_plot)
+    k = frames_to_plot(idx);
+    res = all_results{idx};
+    
+    nexttile;
+    surf(X, Y, scaled_signal(:, :, 2, k), 'EdgeColor', 'none');
+    shading interp
+    colormap(gca, 'gray')
+    hold on
+    
+    % Plot ground truth and CA-CFAR
+    if ~isempty(res.gt_points)
+        plot3(res.gt_points(:, 1), res.gt_points(:, 2), ones(size(res.gt_points(:, 1))), ...
+            'x', 'Color', color_gt, 'LineWidth', 3, 'MarkerSize', 30);
+    end
+    if ~isempty(res.peaks_CFAR)
+        plot3(res.peaks_CFAR(:, 1), res.peaks_CFAR(:, 2), ones(size(res.peaks_CFAR(:, 1))), ...
             'o', 'Color', color_cfar, 'LineWidth', 2, 'MarkerSize', 8);
-    else
-        h_cfar = plot3(NaN, NaN, NaN, 'o', 'Color', color_cfar, 'LineWidth', 2, 'MarkerSize', 8);
     end
     
-    % Plot TDPF detections (bright cyan 'o', small)
-    if ~isempty(peaks_tdpf)
-        h_tdpf = plot3(peaks_tdpf(:, 2), peaks_tdpf(:, 1), ones(size(peaks_tdpf(:, 1))), ...
+    axis square; view(2); xlim([1 129]); ylim([21 129]);
+    set(gca, 'XTick', [], 'YTick', []);
+    title(sprintf('TP:%d FP:%d FN:%d', res.TP_CFAR, res.FP_CFAR, res.FN_CFAR), 'FontSize', 9);
+    if idx == 1
+        ylabel('CA-CFAR', 'FontSize', 11, 'FontWeight', 'bold');
+    end
+    hold off
+end
+
+%% Plot Row 4: TDPF
+for idx = 1:length(frames_to_plot)
+    k = frames_to_plot(idx);
+    res = all_results{idx};
+    
+    nexttile;
+    surf(X, Y, scaled_signal(:, :, 2, k), 'EdgeColor', 'none');
+    shading interp
+    colormap(gca, 'gray')
+    hold on
+    
+    % Plot ground truth and TDPF
+    if ~isempty(res.gt_points)
+        plot3(res.gt_points(:, 1), res.gt_points(:, 2), ones(size(res.gt_points(:, 1))), ...
+            'x', 'Color', color_gt, 'LineWidth', 3, 'MarkerSize', 30);
+    end
+    if ~isempty(res.peaks_tdpf)
+        plot3(res.peaks_tdpf(:, 1), res.peaks_tdpf(:, 2), ones(size(res.peaks_tdpf(:, 1))), ...
             'o', 'Color', color_tdpf, 'LineWidth', 2, 'MarkerSize', 4);
-    else
-        h_tdpf = plot3(NaN, NaN, NaN, 'o', 'Color', color_tdpf, 'LineWidth', 2, 'MarkerSize', 4);
     end
     
-    % Formatting
-    axis square
-    view(2)
-    xlim([0 128])
-    ylim([20 128])
-    xlabel('X', 'FontSize', 10)
-    ylabel('Y', 'FontSize', 10)
-    
-    % Create title with metrics included
-    title_str = sprintf('Frame %d\nGT: %d | MP: %d/%d/%d | CFAR: %d/%d/%d | TDPF: %d/%d/%d', ...
-        k, num_gt, TP_MP, FP_MP, FN_MP, TP_CFAR, FP_CFAR, FN_CFAR, TP_TDPF, FP_TDPF, FN_TDPF);
-    t = title(title_str, 'FontSize', 9, 'Interpreter', 'none');
-    t.Position(2) = t.Position(2) + 5; % Move title up by 5 units
+    axis square; view(2); xlim([1 129]); ylim([21 129]);
+    set(gca, 'XTick', [], 'YTick', []);
+    title(sprintf('TP:%d FP:%d FN:%d', res.TP_TDPF, res.FP_TDPF, res.FN_TDPF), 'FontSize', 9);
+    if idx == 1
+        ylabel('TDPF', 'FontSize', 11, 'FontWeight', 'bold');
+    end
     hold off
 end
 
 % Add overall title and legend explanation (commented out due to cutoff issues)
 % sgtitle_str = sprintf('%d Objects (Thresholds: MP=%.2f, CFAR=%.2f, TDPF=%.0f)\nMetrics format: TP/FP/FN', ...
-%     NUM_OBJECTS, THRESH_MP, THRESH_CFAR, THRESH_TDPF);
+    % NUM_OBJECTS, THRESH_MP, THRESH_CFAR, THRESH_TDPF);
 % sgtitle(sgtitle_str, 'FontSize', 13, 'FontWeight', 'bold')
 
 % Save figure

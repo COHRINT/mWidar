@@ -67,36 +67,36 @@ all_stats = cell(length(all_data), 1);
 for obj_idx = 1:length(all_data)
     data = all_data{obj_idx};
     o = object_counts(obj_idx);
-    
+
     fprintf("Calculating statistics for %d object(s)...\n", o)
-    
+
     stats = struct();
-    
+
     for detector = 1:detectors_count
         detector_name = char(detectors_list(detector));
         detector_field = strrep(detector_name, '-', '_');
-        
+
         % Extract data for this detector across all MC runs and thresholds
         precision_data = squeeze(data.Precision(detector, :, :)); % (MC_runs x thresholds)
-        recall_data = squeeze(data.Recall(detector, :, :));       % (MC_runs x thresholds)
-        TPR_data = squeeze(data.TPR(detector, :, :));             % (MC_runs x thresholds)
-        FPR_data = squeeze(data.FPR(detector, :, :));             % (MC_runs x thresholds)
-        
+        recall_data = squeeze(data.Recall(detector, :, :)); % (MC_runs x thresholds)
+        TPR_data = squeeze(data.TPR(detector, :, :)); % (MC_runs x thresholds)
+        FPR_data = squeeze(data.FPR(detector, :, :)); % (MC_runs x thresholds)
+
         %% 1. Calculate F1 Score for each MC run and threshold
         % F1 Score: Harmonic mean of Precision and Recall
         % GOOD VALUES: F1 > 0.8 (excellent), 0.6-0.8 (good), < 0.6 (poor)
         % Higher is better; balances precision and recall
         F1_data = 2 * (precision_data .* recall_data) ./ (precision_data + recall_data);
         F1_data(isnan(F1_data)) = 0; % Handle division by zero
-        
+
         % Mean and std of F1 across MC runs for each threshold
         F1_mean = mean(F1_data, 1, 'omitnan')'; % (thresholds x 1)
         F1_std = std(F1_data, 0, 1, 'omitnan')';
-        
+
         %% 2. Find best operating point (highest mean F1)
         % Best threshold maximizes F1 score - optimal balance of precision/recall
         [best_F1, best_idx] = max(F1_mean);
-        
+
         stats.(detector_field).best_threshold_idx = best_idx;
         stats.(detector_field).best_threshold_value = thresh_ranges{detector}(best_idx);
         stats.(detector_field).best_F1_mean = best_F1;
@@ -105,7 +105,7 @@ for obj_idx = 1:length(all_data)
         stats.(detector_field).best_Precision_std = std(precision_data(:, best_idx), 'omitnan');
         stats.(detector_field).best_Recall_mean = mean(recall_data(:, best_idx), 'omitnan');
         stats.(detector_field).best_Recall_std = std(recall_data(:, best_idx), 'omitnan');
-        
+
         %% 3. Calculate AUC-PR (Area Under Precision-Recall Curve)
         % AUC-PR: Summary of precision-recall tradeoff across all thresholds
         % GOOD VALUES: For detection tasks with low precision/high recall preference:
@@ -116,47 +116,47 @@ for obj_idx = 1:length(all_data)
         % Use mean values across MC runs for each threshold
         mean_precision = mean(precision_data, 1, 'omitnan')';
         mean_recall = mean(recall_data, 1, 'omitnan')';
-        
+
         % Sort by recall for proper integration
         [sorted_recall, sort_idx] = sort(mean_recall);
         sorted_precision = mean_precision(sort_idx);
-        
+
         % Remove NaN values
         valid = ~isnan(sorted_recall) & ~isnan(sorted_precision);
-        
+
         if sum(valid) > 1
             % Use trapezoidal integration
             stats.(detector_field).AUC_PR = trapz(sorted_recall(valid), sorted_precision(valid));
         else
             stats.(detector_field).AUC_PR = NaN;
         end
-        
+
         %% 4. Calculate 95% Confidence Intervals using bootstrapping
         % Confidence Intervals: Range where true mean likely falls
         % INTERPRETATION: Narrower CI = more reliable estimate, wider CI = more uncertainty
         % For best operating point only (to save computation)
         if MC_RUNS >= 10 % Only do bootstrap if we have enough samples
             n_bootstrap = 1000;
-            alpha = 0.05; % 95% CI
-            
+            alpha = 0.05; % 95 % CI
+
             % Bootstrap F1 at best threshold
             F1_boot = bootstrp(n_bootstrap, @mean, F1_data(:, best_idx));
-            stats.(detector_field).best_F1_CI = prctile(F1_boot, [alpha/2, 1-alpha/2]*100);
-            
+            stats.(detector_field).best_F1_CI = prctile(F1_boot, [alpha / 2, 1 - alpha / 2] * 100);
+
             % Bootstrap Precision at best threshold
             Precision_boot = bootstrp(n_bootstrap, @mean, precision_data(:, best_idx));
-            stats.(detector_field).best_Precision_CI = prctile(Precision_boot, [alpha/2, 1-alpha/2]*100);
-            
+            stats.(detector_field).best_Precision_CI = prctile(Precision_boot, [alpha / 2, 1 - alpha / 2] * 100);
+
             % Bootstrap Recall at best threshold
             Recall_boot = bootstrp(n_bootstrap, @mean, recall_data(:, best_idx));
-            stats.(detector_field).best_Recall_CI = prctile(Recall_boot, [alpha/2, 1-alpha/2]*100);
+            stats.(detector_field).best_Recall_CI = prctile(Recall_boot, [alpha / 2, 1 - alpha / 2] * 100);
         else
             % Use t-distribution for small samples
             stats.(detector_field).best_F1_CI = [NaN, NaN];
             stats.(detector_field).best_Precision_CI = [NaN, NaN];
             stats.(detector_field).best_Recall_CI = [NaN, NaN];
         end
-        
+
         %% 5. Store full distributions for later analysis
         stats.(detector_field).F1_mean_all = F1_mean;
         stats.(detector_field).F1_std_all = F1_std;
@@ -164,24 +164,24 @@ for obj_idx = 1:length(all_data)
         stats.(detector_field).Precision_std_all = std(precision_data, 0, 1, 'omitnan')';
         stats.(detector_field).Recall_mean_all = mean_recall;
         stats.(detector_field).Recall_std_all = std(recall_data, 0, 1, 'omitnan')';
-        
+
     end
-    
+
     % Store statistics for this object count
     all_stats{obj_idx} = stats;
-    
+
     %% Print Summary Table for this object count
     fprintf("\n========== SUMMARY STATISTICS FOR %d OBJECT(S) ==========\n", o)
     fprintf("%-10s | %-10s | %-10s | %-10s | %-10s\n", ...
         'Detector', 'Recall±σ', 'Prec±σ', 'F1±σ', 'AUC-PR')
     fprintf(repmat('-', 1, 75))
     fprintf("\n")
-    
+
     for detector = 1:detectors_count
         detector_name = char(detectors_list(detector));
         detector_field = strrep(detector_name, '-', '_');
         s = stats.(detector_field);
-        
+
         fprintf("%-10s | %.3f±%.3f | %.3f±%.3f | %.3f±%.3f | %.4f\n", ...
             detector_name, ...
             s.best_Recall_mean, s.best_Recall_std, ...
@@ -189,31 +189,33 @@ for obj_idx = 1:length(all_data)
             s.best_F1_mean, s.best_F1_std, ...
             s.AUC_PR)
     end
-    
+
     fprintf(repmat('=', 1, 75))
     fprintf("\n")
-    
+
     if MC_RUNS >= 10
         fprintf("\n95%% Confidence Intervals (Bootstrap) - Prioritized by Recall:\n")
+
         for detector = 1:detectors_count
             detector_name = char(detectors_list(detector));
             detector_field = strrep(detector_name, '-', '_');
             s = stats.(detector_field);
-            
+
             fprintf("%-10s | Recall: [%.3f, %.3f] | Precision: [%.3f, %.3f]\n", ...
                 detector_name, ...
                 s.best_Recall_CI(1), s.best_Recall_CI(2), ...
                 s.best_Precision_CI(1), s.best_Precision_CI(2))
         end
+
         fprintf("\n")
     end
-    
+
     %% Generate LaTeX table for this object count
     % Create custom LaTeX table with "mean ± std" formatting
-    
+
     % Create caption
     caption_str = sprintf('Performance Metrics for %d Object(s) at Best Operating Point (%d MC Runs)', o, MC_RUNS);
-    
+
     % Build LaTeX string manually for custom formatting
     latex_str = sprintf('\\begin{table}[htbp]\n');
     latex_str = [latex_str sprintf('\\centering\n')];
@@ -223,32 +225,32 @@ for obj_idx = 1:length(all_data)
     latex_str = [latex_str sprintf('\\toprule\n')];
     latex_str = [latex_str sprintf(' & Recall (\\%%) & Precision (\\%%) \\\\\n')];
     latex_str = [latex_str sprintf('\\midrule\n')];
-    
+
     for detector = 1:detectors_count
         detector_name = char(detectors_list(detector));
         detector_field = strrep(detector_name, '-', '_');
         s = stats.(detector_field);
-        
+
         % Format as "mean ± std" in percentages
         recall_str = sprintf('%.1f $\\pm$ %.1f', s.best_Recall_mean * 100, s.best_Recall_std * 100);
         precision_str = sprintf('%.1f $\\pm$ %.1f', s.best_Precision_mean * 100, s.best_Precision_std * 100);
-        
+
         latex_str = [latex_str sprintf('%s & %s & %s \\\\\n', detector_name, recall_str, precision_str)];
     end
-    
+
     latex_str = [latex_str sprintf('\\bottomrule\n')];
     latex_str = [latex_str sprintf('\\end{tabular}\n')];
     latex_str = [latex_str sprintf('\\end{table}\n')];
-    
+
     % Save to file
     latex_filename = sprintf('stats_table_obj%d.tex', o);
     latex_filepath = fullfile(MC_FIG_SAVEDIR, latex_filename);
     fid = fopen(latex_filepath, 'w');
     fprintf(fid, '%s', latex_str);
     fclose(fid);
-    
+
     fprintf("LaTeX table saved to: %s\n\n", latex_filepath);
-    
+
 end
 
 % Save all statistics to file
@@ -265,56 +267,64 @@ fprintf("\n\n############# CALCULATING AGGREGATE STATISTICS ACROSS ALL SCENARIOS
 % Initialize aggregate statistics structure
 aggregate_stats = struct();
 
+% Store all detector performance data for pairwise comparisons
+all_detector_recall = cell(detectors_count, 1);
+all_detector_precision = cell(detectors_count, 1);
+
 for detector = 1:detectors_count
     detector_name = char(detectors_list(detector));
     detector_field = strrep(detector_name, '-', '_');
-    
+
     % Collect all F1, Precision, Recall values across ALL object counts, MC runs, and thresholds
     all_F1 = [];
     all_Precision = [];
     all_Recall = [];
     all_TPR = [];
     all_FPR = [];
-    
+
     % Also collect data at best operating point for each object count
     best_F1_by_obj = [];
     best_Precision_by_obj = [];
     best_Recall_by_obj = [];
-    
+
     % For weighted AUC (weight by object count complexity)
     AUC_PR_by_obj = [];
-    
+
     for obj_idx = 1:length(all_data)
         data = all_data{obj_idx};
         stats = all_stats{obj_idx};
-        
+
         % Extract all data for this object count
         precision_data = squeeze(data.Precision(detector, :, :)); % (MC_runs x thresholds)
         recall_data = squeeze(data.Recall(detector, :, :));
         TPR_data = squeeze(data.TPR(detector, :, :));
         FPR_data = squeeze(data.FPR(detector, :, :));
-        
+
         % Calculate F1 for all points
         F1_data = 2 * (precision_data .* recall_data) ./ (precision_data + recall_data);
         F1_data(isnan(F1_data)) = 0;
-        
+
         % Concatenate all values
         all_F1 = [all_F1; F1_data(:)];
         all_Precision = [all_Precision; precision_data(:)];
         all_Recall = [all_Recall; recall_data(:)];
         all_TPR = [all_TPR; TPR_data(:)];
         all_FPR = [all_FPR; FPR_data(:)];
-        
+
         % Extract best operating point for this object count
         best_idx = stats.(detector_field).best_threshold_idx;
         best_F1_by_obj = [best_F1_by_obj; F1_data(:, best_idx)]; % All MC runs at best threshold
         best_Precision_by_obj = [best_Precision_by_obj; precision_data(:, best_idx)];
         best_Recall_by_obj = [best_Recall_by_obj; recall_data(:, best_idx)];
-        
+
         % Collect AUC values
         AUC_PR_by_obj = [AUC_PR_by_obj; stats.(detector_field).AUC_PR];
     end
-    
+
+    % Store for pairwise comparisons
+    all_detector_recall{detector} = best_Recall_by_obj;
+    all_detector_precision{detector} = best_Precision_by_obj;
+
     %% 1. Overall statistics across ALL scenarios (all object counts, MC runs, thresholds)
     % These metrics show average performance across entire parameter space
     % INTERPRETATION: Shows general capability but may hide optimal performance
@@ -322,14 +332,14 @@ for detector = 1:detectors_count
     aggregate_stats.(detector_field).overall_Recall_mean = mean(all_Recall, 'omitnan');
     aggregate_stats.(detector_field).overall_Recall_std = std(all_Recall, 'omitnan');
     aggregate_stats.(detector_field).overall_Recall_median = median(all_Recall, 'omitnan');
-    
+
     aggregate_stats.(detector_field).overall_Precision_mean = mean(all_Precision, 'omitnan');
     aggregate_stats.(detector_field).overall_Precision_std = std(all_Precision, 'omitnan');
-    
+
     aggregate_stats.(detector_field).overall_F1_mean = mean(all_F1, 'omitnan');
     aggregate_stats.(detector_field).overall_F1_std = std(all_F1, 'omitnan');
     aggregate_stats.(detector_field).overall_F1_median = median(all_F1, 'omitnan');
-    
+
     %% 2. Best operating point statistics (across all object counts)
     % *** MOST IMPORTANT METRICS FOR PUBLICATION ***
     % These show real-world performance at optimal threshold for each scenario
@@ -339,31 +349,31 @@ for detector = 1:detectors_count
     aggregate_stats.(detector_field).best_Recall_mean = mean(best_Recall_by_obj, 'omitnan');
     aggregate_stats.(detector_field).best_Recall_std = std(best_Recall_by_obj, 'omitnan');
     aggregate_stats.(detector_field).best_Recall_median = median(best_Recall_by_obj, 'omitnan');
-    
+
     aggregate_stats.(detector_field).best_Precision_mean = mean(best_Precision_by_obj, 'omitnan');
     aggregate_stats.(detector_field).best_Precision_std = std(best_Precision_by_obj, 'omitnan');
-    
+
     aggregate_stats.(detector_field).best_F1_mean = mean(best_F1_by_obj, 'omitnan');
     aggregate_stats.(detector_field).best_F1_std = std(best_F1_by_obj, 'omitnan');
     aggregate_stats.(detector_field).best_F1_median = median(best_F1_by_obj, 'omitnan');
-    
+
     %% 3. Mean AUC across all object counts
     % Average of AUC-PR computed for each scenario - summary of precision-recall tradeoff
     % INTERPRETATION: Higher is better, but prioritize high recall over high AUC-PR
     % Lower std = consistent performance across different complexities
     aggregate_stats.(detector_field).mean_AUC_PR = mean(AUC_PR_by_obj, 'omitnan');
     aggregate_stats.(detector_field).std_AUC_PR = std(AUC_PR_by_obj, 'omitnan');
-    
+
     %% 4. Robustness metrics (how consistent is performance across scenarios?)
     % Coefficient of Variation (CV = std/mean): Normalized variability measure for RECALL
     % GOOD VALUES: CV < 0.1 (excellent consistency), 0.1-0.2 (good), > 0.2 (variable)
     % Lower is better - indicates stable recall across scenarios
     aggregate_stats.(detector_field).Recall_CV = std(best_Recall_by_obj, 'omitnan') / mean(best_Recall_by_obj, 'omitnan');
-    
+
     % Inter-quartile range (IQR): Spread of middle 50% of recall performance
     % GOOD VALUES: Smaller IQR = more consistent, compare relative to mean
     aggregate_stats.(detector_field).Recall_IQR = iqr(best_Recall_by_obj);
-    
+
     %% 5. 95% Confidence intervals for aggregate performance
     % Statistical uncertainty in estimated mean performance
     % INTERPRETATION: We're 95% confident the true mean lies in this range
@@ -371,21 +381,179 @@ for detector = 1:detectors_count
     if length(best_F1_by_obj) >= 10
         n_bootstrap = 1000;
         alpha = 0.05;
-        
+
         F1_boot = bootstrp(n_bootstrap, @mean, best_F1_by_obj);
-        aggregate_stats.(detector_field).best_F1_CI = prctile(F1_boot, [alpha/2, 1-alpha/2]*100);
-        
+        aggregate_stats.(detector_field).best_F1_CI = prctile(F1_boot, [alpha / 2, 1 - alpha / 2] * 100);
+
         Precision_boot = bootstrp(n_bootstrap, @mean, best_Precision_by_obj);
-        aggregate_stats.(detector_field).best_Precision_CI = prctile(Precision_boot, [alpha/2, 1-alpha/2]*100);
-        
+        aggregate_stats.(detector_field).best_Precision_CI = prctile(Precision_boot, [alpha / 2, 1 - alpha / 2] * 100);
+
         Recall_boot = bootstrp(n_bootstrap, @mean, best_Recall_by_obj);
-        aggregate_stats.(detector_field).best_Recall_CI = prctile(Recall_boot, [alpha/2, 1-alpha/2]*100);
+        aggregate_stats.(detector_field).best_Recall_CI = prctile(Recall_boot, [alpha / 2, 1 - alpha / 2] * 100);
     else
         aggregate_stats.(detector_field).best_F1_CI = [NaN, NaN];
         aggregate_stats.(detector_field).best_Precision_CI = [NaN, NaN];
         aggregate_stats.(detector_field).best_Recall_CI = [NaN, NaN];
     end
+
 end
+
+%% ======================== PAIRWISE COMPARISONS ========================
+
+fprintf("\n\n############# PAIRWISE DETECTOR COMPARISONS #############\n\n")
+
+% Simple pairwise comparisons using confidence intervals
+% This is standard for detection papers - no complex hypothesis tests needed
+
+fprintf("=== PAIRWISE RECALL COMPARISONS ===\n")
+fprintf("Comparing detectors at their best operating points\n")
+fprintf("Using 95%% Confidence Intervals to assess differences\n\n")
+
+for i = 1:detectors_count
+    for j = (i+1):detectors_count
+        name_i = char(detectors_list(i));
+        name_j = char(detectors_list(j));
+        
+        % Get recall data
+        recall_i = all_detector_recall{i};
+        recall_j = all_detector_recall{j};
+        
+        mean_i = mean(recall_i, 'omitnan');
+        mean_j = mean(recall_j, 'omitnan');
+        std_i = std(recall_i, 'omitnan');
+        std_j = std(recall_j, 'omitnan');
+        
+        % Calculate difference
+        abs_diff = mean_i - mean_j;
+        pct_diff = (abs_diff / mean_j) * 100;
+        
+        % Calculate 95% CI for the difference
+        n_i = sum(~isnan(recall_i));
+        n_j = sum(~isnan(recall_j));
+        se_diff = sqrt((std_i^2/n_i) + (std_j^2/n_j));
+        ci_diff = 1.96 * se_diff;
+        
+        % Check if individual CIs overlap
+        ci_i_lower = mean_i - 1.96 * (std_i / sqrt(n_i));
+        ci_i_upper = mean_i + 1.96 * (std_i / sqrt(n_i));
+        ci_j_lower = mean_j - 1.96 * (std_j / sqrt(n_j));
+        ci_j_upper = mean_j + 1.96 * (std_j / sqrt(n_j));
+        
+        ci_overlap = ~((ci_i_lower > ci_j_upper) || (ci_j_lower > ci_i_upper));
+        
+        % Print comparison
+        fprintf("%s vs %s:\n", name_i, name_j)
+        fprintf("  Recall: %.1f%% ± %.1f%% vs %.1f%% ± %.1f%%\n", ...
+            mean_i*100, std_i*100, mean_j*100, std_j*100)
+        fprintf("  Absolute difference: %.3f (%.1f%%)\n", abs_diff, abs(pct_diff))
+        fprintf("  95%% CI of difference: [%.3f, %.3f]\n", abs_diff - ci_diff, abs_diff + ci_diff)
+        
+        if ~ci_overlap
+            if abs_diff > 0
+                fprintf("  ✓ %s SUBSTANTIALLY BETTER (non-overlapping CIs)\n", name_i)
+            else
+                fprintf("  ✓ %s SUBSTANTIALLY BETTER (non-overlapping CIs)\n", name_j)
+            end
+        else
+            fprintf("  → Performance difference not substantial (overlapping CIs)\n")
+        end
+        fprintf("\n")
+    end
+end
+
+fprintf("Interpretation Guide:\n")
+fprintf("  • Non-overlapping 95%% CIs → substantial performance difference\n")
+fprintf("  • Overlapping CIs → difference may be due to random variation\n")
+fprintf("  • Focus on magnitude (how much better) not just statistical overlap\n")
+fprintf("\n")
+
+fprintf("############# PAIRWISE COMPARISONS COMPLETE #############\n\n")
+
+%% Generate LaTeX table for pairwise comparisons
+% Create custom LaTeX table showing detector comparisons
+
+fprintf("Generating LaTeX table for pairwise comparisons...\n")
+
+% Create caption with explanations
+comparison_caption_str = sprintf(['Pairwise detector performance comparisons across all scenarios ' ...
+    '(%d object counts, %d MC runs each). ' ...
+    'Recall Diff shows the difference in mean recall (percentage points); negative values indicate the second detector is better. ' ...
+    '95\\%% CI is the confidence interval for the difference. ' ...
+    'Substantial differences are those with non-overlapping confidence intervals.'], ...
+    length(object_counts), MC_RUNS);
+
+% Build LaTeX string manually
+comparison_latex_str = sprintf('\\begin{table}[htbp]\n');
+comparison_latex_str = [comparison_latex_str sprintf('\\centering\n')];
+comparison_latex_str = [comparison_latex_str sprintf('\\caption{%s\\label{tab:pairwise_comparisons}}\n', comparison_caption_str)];
+comparison_latex_str = [comparison_latex_str sprintf('%% Requires \\usepackage{booktabs}\n')];
+comparison_latex_str = [comparison_latex_str sprintf('\\begin{tabular}{cc|ccc}\n')];
+comparison_latex_str = [comparison_latex_str sprintf('\\toprule\n')];
+comparison_latex_str = [comparison_latex_str sprintf('\\multicolumn{2}{c|}{Comparison} & Recall Diff (\\%%) & 95\\%% CI of Diff & Interpretation \\\\\n')];
+comparison_latex_str = [comparison_latex_str sprintf('\\midrule\n')];
+
+% Add each pairwise comparison
+for i = 1:detectors_count
+    for j = (i+1):detectors_count
+        name_i = char(detectors_list(i));
+        name_j = char(detectors_list(j));
+        
+        % Get recall data
+        recall_i = all_detector_recall{i};
+        recall_j = all_detector_recall{j};
+        
+        mean_i = mean(recall_i, 'omitnan');
+        mean_j = mean(recall_j, 'omitnan');
+        std_i = std(recall_i, 'omitnan');
+        std_j = std(recall_j, 'omitnan');
+        
+        % Calculate difference
+        abs_diff = mean_i - mean_j;
+        
+        % Calculate 95% CI for the difference
+        n_i = sum(~isnan(recall_i));
+        n_j = sum(~isnan(recall_j));
+        se_diff = sqrt((std_i^2/n_i) + (std_j^2/n_j));
+        ci_diff = 1.96 * se_diff;
+        
+        % Check if CIs overlap
+        ci_i_lower = mean_i - 1.96 * (std_i / sqrt(n_i));
+        ci_i_upper = mean_i + 1.96 * (std_i / sqrt(n_i));
+        ci_j_lower = mean_j - 1.96 * (std_j / sqrt(n_j));
+        ci_j_upper = mean_j + 1.96 * (std_j / sqrt(n_j));
+        
+        ci_overlap = ~((ci_i_lower > ci_j_upper) || (ci_j_lower > ci_i_upper));
+        
+        % Format for LaTeX
+        diff_str = sprintf('%.1f', abs_diff * 100);
+        if abs_diff > 0
+            diff_str = ['$+$' diff_str];
+        end
+        ci_str = sprintf('$[%.1f, %.1f]$', (abs_diff - ci_diff)*100, (abs_diff + ci_diff)*100);
+        interpretation_str = '';
+        if ~ci_overlap && abs_diff > 0
+            interpretation_str = sprintf('%s better', name_i);
+        elseif ~ci_overlap && abs_diff < 0
+            interpretation_str = sprintf('%s better', name_j);
+        end
+        
+        comparison_latex_str = [comparison_latex_str sprintf('%s & vs %s & %s & %s & %s \\\\\n', ...
+            name_i, name_j, diff_str, ci_str, interpretation_str)];
+    end
+end
+
+comparison_latex_str = [comparison_latex_str sprintf('\\bottomrule\n')];
+comparison_latex_str = [comparison_latex_str sprintf('\\end{tabular}\n')];
+comparison_latex_str = [comparison_latex_str sprintf('\\end{table}\n')];
+
+% Save to file
+comparison_latex_filename = 'pairwise_comparisons_table.tex';
+comparison_latex_filepath = fullfile(MC_FIG_SAVEDIR, comparison_latex_filename);
+fid_comp = fopen(comparison_latex_filepath, 'w');
+fprintf(fid_comp, '%s', comparison_latex_str);
+fclose(fid_comp);
+
+fprintf("Pairwise comparisons LaTeX table saved to: %s\n\n", comparison_latex_filepath);
 
 %% Print Aggregate Statistics Table
 fprintf("\n========== AGGREGATE STATISTICS ACROSS ALL OBJECT COUNTS ==========\n")
@@ -398,7 +566,7 @@ for detector = 1:detectors_count
     detector_name = char(detectors_list(detector));
     detector_field = strrep(detector_name, '-', '_');
     s = aggregate_stats.(detector_field);
-    
+
     fprintf("%-10s | %.3f±%.3f | %.3f±%.3f | %.3f±%.3f | %.4f±%.3f | %.3f\n", ...
         detector_name, ...
         s.best_Recall_mean, s.best_Recall_std, ...
@@ -414,16 +582,18 @@ fprintf("\n")
 % Print confidence intervals if available
 if length(all_data) * MC_RUNS >= 10
     fprintf("\n95%% Confidence Intervals (Bootstrap) for Best Operating Point:\n")
+
     for detector = 1:detectors_count
         detector_name = char(detectors_list(detector));
         detector_field = strrep(detector_name, '-', '_');
         s = aggregate_stats.(detector_field);
-        
+
         fprintf("%-10s | Recall: [%.3f, %.3f] | Precision: [%.3f, %.3f]\n", ...
             detector_name, ...
             s.best_Recall_CI(1), s.best_Recall_CI(2), ...
             s.best_Precision_CI(1), s.best_Precision_CI(2))
     end
+
 end
 
 fprintf("\n")
@@ -441,6 +611,10 @@ fprintf("                GOOD: <0.05 (very consistent), 0.05-0.10 (acceptable), 
 fprintf("\n")
 fprintf("  ±σ notation indicates standard deviation across scenarios\n")
 fprintf("  Smaller σ values indicate more consistent performance across different scenarios\n")
+fprintf("\n")
+fprintf("PERFORMANCE COMPARISONS:\n")
+fprintf("  See pairwise comparisons above for detailed differences\n")
+fprintf("  Non-overlapping confidence intervals indicate substantial differences\n")
 fprintf("\n")
 
 %% Generate LaTeX table for aggregate statistics
@@ -464,11 +638,11 @@ for detector = 1:detectors_count
     detector_name = char(detectors_list(detector));
     detector_field = strrep(detector_name, '-', '_');
     s = aggregate_stats.(detector_field);
-    
+
     % Format as "mean ± std" in percentages
     recall_str = sprintf('%.1f $\\pm$ %.1f', s.best_Recall_mean * 100, s.best_Recall_std * 100);
     precision_str = sprintf('%.1f $\\pm$ %.1f', s.best_Precision_mean * 100, s.best_Precision_std * 100);
-    
+
     latex_str = [latex_str sprintf('%s & %s & %s \\\\\n', detector_name, recall_str, precision_str)];
 end
 
@@ -485,14 +659,13 @@ fclose(fid);
 
 fprintf("Aggregate LaTeX table saved to: %s\n\n", latex_filepath);
 
-
 % Save aggregate statistics
 aggregate_save_path = fullfile(MC_FIG_SAVEDIR, 'aggregate_statistics.mat');
 save(aggregate_save_path, 'aggregate_stats', 'detectors_list');
 fprintf("Aggregate statistics saved to: %s\n\n", aggregate_save_path)
 
 fprintf("############# AGGREGATE STATISTICS COMPLETE #############\n\n")
-
+return;
 %{
 %% ======================== ROC Curves CURVES ========================
 
@@ -594,8 +767,8 @@ fprintf("Completed Combined Plots ");
 
 fprintf("Plotting complete!\n")
 %}
-%% ======================== PRECISION-RECALL CURVES ========================
 
+%% ======================== PRECISION-RECALL CURVES ========================%{
 fprintf("\n\n############# GENERATING PRECISION-RECALL CURVES #############\n\n")
 
 %% Plot 4: Individual scatter plots for each object count (Precision-Recall)

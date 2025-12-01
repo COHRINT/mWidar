@@ -24,11 +24,11 @@ rng(42352)
 
 detectors_list = ["peaks2", "CA-CFAR", "TDPF"];
 detectors_count = 3;
-MC_RUNS = 100;
+MC_RUNS = 20;
 d_thresh_value = 20;
 
 % Threshold sweep parameters
-NUM_THRESHOLDS = 20; % Number of threshold values to test
+NUM_THRESHOLDS = 10; % Number of threshold values to test
 
 % Define threshold ranges for each detector
 thresh_MP_range = linspace(0.01, 0.75, NUM_THRESHOLDS); % MaxPeaks: MinPeakHeight

@@ -41,7 +41,7 @@ function [Signal, Pos_states] = random_tracks2(obj_num, M, G)
 
     % Limits for Position, Velocity, and Acceleration
     pos_limits = [11, 118; 30, 118]; % Scaled in by 10 from borders to keep objects in frame longer
-    vel_limits = [-10, 10; -10, 10]; % make sure velocity is not too high -- they can move but expect fast sample rate
+    vel_limits = [-50, 50; -50, 50]; % make sure velocity is not too high -- they can move but expect fast sample rate
     acc_limits = [-1, 1; -1, 1]; % Super minor acceleration
 
     % Define initial conditions gggg
@@ -88,7 +88,7 @@ function [Signal, Pos_states] = random_tracks2(obj_num, M, G)
         signal_flat = M * signal_flat;
         signal_flat = G' * signal_flat;
         sim_signal = reshape(signal_flat, 128, 128)';
-        signal_original = imgaussfilt(sim_signal, 1);
+        signal_original = imgaussfilt(sim_signal, 1.3);
         % signal_original = sim_signal;
 
         Signal(:, :, 1, k) = signal_original; % Store unscaled signal for reference
@@ -96,7 +96,7 @@ function [Signal, Pos_states] = random_tracks2(obj_num, M, G)
         % Normalize signal [0 1] and apply nonlinearity
         signal_scaled = signal_original; % Use full signal for scaling
         signal_scaled(1:20,:) = NaN; % Focus on valid region
-        scaled_signal = tanh(signal_scaled);
+        scaled_signal = asinh(signal_scaled);
         scaled_signal = (signal_scaled - min(signal_scaled(:))) / (max(signal_scaled(:)) - min(signal_scaled(:)));
         
         Signal(:, :, 2, k) = scaled_signal;
