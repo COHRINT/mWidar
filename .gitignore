@@ -27,6 +27,7 @@ __pycache__/
 *$py.class
 .Python
 venv/
+.venv
 simulator/venv/
 *.egg-info/
 dist/
