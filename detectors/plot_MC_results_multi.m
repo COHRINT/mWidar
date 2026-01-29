@@ -467,6 +467,68 @@ fprintf("  • Overlapping CIs → difference may be due to random variation\n")
 fprintf("  • Focus on magnitude (how much better) not just statistical overlap\n")
 fprintf("\n")
 
+fprintf("=== PAIRWISE PRECISION COMPARISONS ===\n")
+fprintf("Comparing detectors at their best operating points\n")
+fprintf("Using 95%% Confidence Intervals to assess differences\n\n")
+
+for i = 1:detectors_count
+    for j = (i+1):detectors_count
+        name_i = char(detectors_list(i));
+        name_j = char(detectors_list(j));
+        
+        % Get precision data
+        precision_i = all_detector_precision{i};
+        precision_j = all_detector_precision{j};
+        
+        mean_i = mean(precision_i, 'omitnan');
+        mean_j = mean(precision_j, 'omitnan');
+        std_i = std(precision_i, 'omitnan');
+        std_j = std(precision_j, 'omitnan');
+        
+        % Calculate difference
+        abs_diff = mean_i - mean_j;
+        pct_diff = (abs_diff / mean_j) * 100;
+        
+        % Calculate 95% CI for the difference
+        n_i = sum(~isnan(precision_i));
+        n_j = sum(~isnan(precision_j));
+        se_diff = sqrt((std_i^2/n_i) + (std_j^2/n_j));
+        ci_diff = 1.96 * se_diff;
+        
+        % Check if individual CIs overlap
+        ci_i_lower = mean_i - 1.96 * (std_i / sqrt(n_i));
+        ci_i_upper = mean_i + 1.96 * (std_i / sqrt(n_i));
+        ci_j_lower = mean_j - 1.96 * (std_j / sqrt(n_j));
+        ci_j_upper = mean_j + 1.96 * (std_j / sqrt(n_j));
+        
+        ci_overlap = ~((ci_i_lower > ci_j_upper) || (ci_j_lower > ci_i_upper));
+        
+        % Print comparison
+        fprintf("%s vs %s:\n", name_i, name_j)
+        fprintf("  Precision: %.1f%% ± %.1f%% vs %.1f%% ± %.1f%%\n", ...
+            mean_i*100, std_i*100, mean_j*100, std_j*100)
+        fprintf("  Absolute difference: %.3f (%.1f%%)\n", abs_diff, abs(pct_diff))
+        fprintf("  95%% CI of difference: [%.3f, %.3f]\n", abs_diff - ci_diff, abs_diff + ci_diff)
+        
+        if ~ci_overlap
+            if abs_diff > 0
+                fprintf("  ✓ %s SUBSTANTIALLY BETTER (non-overlapping CIs)\n", name_i)
+            else
+                fprintf("  ✓ %s SUBSTANTIALLY BETTER (non-overlapping CIs)\n", name_j)
+            end
+        else
+            fprintf("  → Performance difference not substantial (overlapping CIs)\n")
+        end
+        fprintf("\n")
+    end
+end
+
+fprintf("Interpretation Guide:\n")
+fprintf("  • Non-overlapping 95%% CIs → substantial performance difference\n")
+fprintf("  • Overlapping CIs → difference may be due to random variation\n")
+fprintf("  • For detection: Precision less critical than Recall (false alarms tolerable)\n")
+fprintf("\n")
+
 fprintf("############# PAIRWISE COMPARISONS COMPLETE #############\n\n")
 
 %% Generate LaTeX table for pairwise comparisons
@@ -554,6 +616,92 @@ fprintf(fid_comp, '%s', comparison_latex_str);
 fclose(fid_comp);
 
 fprintf("Pairwise comparisons LaTeX table saved to: %s\n\n", comparison_latex_filepath);
+
+%% Generate LaTeX table for pairwise PRECISION comparisons
+% Create custom LaTeX table showing detector precision comparisons
+
+fprintf("Generating LaTeX table for pairwise precision comparisons...\n")
+
+% Create caption with explanations
+precision_caption_str = sprintf(['Pairwise detector precision comparisons across all scenarios ' ...
+    '(%d object counts, %d MC runs each). ' ...
+    'Precision Diff shows the difference in mean precision (percentage points); negative values indicate the second detector is better. ' ...
+    '95\\%% CI is the confidence interval for the difference. ' ...
+    'Substantial differences are those with non-overlapping confidence intervals.'], ...
+    length(object_counts), MC_RUNS);
+
+% Build LaTeX string manually
+precision_latex_str = sprintf('\\begin{table}[htbp]\n');
+precision_latex_str = [precision_latex_str sprintf('\\centering\n')];
+precision_latex_str = [precision_latex_str sprintf('\\caption{%s\\label{tab:pairwise_comparisons_precision}}\n', precision_caption_str)];
+precision_latex_str = [precision_latex_str sprintf('%% Requires \\usepackage{booktabs}\n')];
+precision_latex_str = [precision_latex_str sprintf('\\begin{tabular}{cc|ccc}\n')];
+precision_latex_str = [precision_latex_str sprintf('\\toprule\n')];
+precision_latex_str = [precision_latex_str sprintf('\\multicolumn{2}{c|}{Comparison} & Precision Diff (\\%%) & 95\\%% CI of Diff & Interpretation \\\\\n')];
+precision_latex_str = [precision_latex_str sprintf('\\midrule\n')];
+
+% Add each pairwise precision comparison
+for i = 1:detectors_count
+    for j = (i+1):detectors_count
+        name_i = char(detectors_list(i));
+        name_j = char(detectors_list(j));
+        
+        % Get precision data
+        precision_i = all_detector_precision{i};
+        precision_j = all_detector_precision{j};
+        
+        mean_i = mean(precision_i, 'omitnan');
+        mean_j = mean(precision_j, 'omitnan');
+        std_i = std(precision_i, 'omitnan');
+        std_j = std(precision_j, 'omitnan');
+        
+        % Calculate difference
+        abs_diff = mean_i - mean_j;
+        
+        % Calculate 95% CI for the difference
+        n_i = sum(~isnan(precision_i));
+        n_j = sum(~isnan(precision_j));
+        se_diff = sqrt((std_i^2/n_i) + (std_j^2/n_j));
+        ci_diff = 1.96 * se_diff;
+        
+        % Check if CIs overlap
+        ci_i_lower = mean_i - 1.96 * (std_i / sqrt(n_i));
+        ci_i_upper = mean_i + 1.96 * (std_i / sqrt(n_i));
+        ci_j_lower = mean_j - 1.96 * (std_j / sqrt(n_j));
+        ci_j_upper = mean_j + 1.96 * (std_j / sqrt(n_j));
+        
+        ci_overlap = ~((ci_i_lower > ci_j_upper) || (ci_j_lower > ci_i_upper));
+        
+        % Format for LaTeX
+        diff_str = sprintf('%.1f', abs_diff * 100);
+        if abs_diff > 0
+            diff_str = ['$+$' diff_str];
+        end
+        ci_str = sprintf('$[%.1f, %.1f]$', (abs_diff - ci_diff)*100, (abs_diff + ci_diff)*100);
+        interpretation_str = '';
+        if ~ci_overlap && abs_diff > 0
+            interpretation_str = sprintf('%s better', name_i);
+        elseif ~ci_overlap && abs_diff < 0
+            interpretation_str = sprintf('%s better', name_j);
+        end
+        
+        precision_latex_str = [precision_latex_str sprintf('%s & vs %s & %s & %s & %s \\\\\n', ...
+            name_i, name_j, diff_str, ci_str, interpretation_str)];
+    end
+end
+
+precision_latex_str = [precision_latex_str sprintf('\\bottomrule\n')];
+precision_latex_str = [precision_latex_str sprintf('\\end{tabular}\n')];
+precision_latex_str = [precision_latex_str sprintf('\\end{table}\n')];
+
+% Save to file
+precision_latex_filename = 'pairwise_comparisons_precision_table.tex';
+precision_latex_filepath = fullfile(MC_FIG_SAVEDIR, precision_latex_filename);
+fid_prec = fopen(precision_latex_filepath, 'w');
+fprintf(fid_prec, '%s', precision_latex_str);
+fclose(fid_prec);
+
+fprintf("Pairwise precision comparisons LaTeX table saved to: %s\n\n", precision_latex_filepath);
 
 %% Print Aggregate Statistics Table
 fprintf("\n========== AGGREGATE STATISTICS ACROSS ALL OBJECT COUNTS ==========\n")
@@ -866,6 +1014,48 @@ fprintf("Saved figure: %s\n", fullfile(MC_FIG_SAVEDIR, 'PR_Combined_All_Object_C
 fprintf("Completed Combined Plots (Precision-Recall)\n");
 
 fprintf("\n\nAll plotting complete!\n")
+
+%% Plot 8: Average Detector Performance - Averaged across all object counts (Precision-Recall)
+fig8 = figure('Name', 'PR Average Performance - All Detectors', 'NumberTitle', 'off', 'Color', 'w', ...
+    'Position', [100, 100, 1400, 400]);
+
+xlimits = [0, 1]; 
+ylimits = [0, 1];
+
+% Create three subplots, one for each detector
+for detector = 1:detectors_count
+    ax = subplot(1, detectors_count, detector);
+    
+    % Plot average performance across all object counts
+    plot_average_performance_PR(ax, all_data, object_counts, detector, ...
+        thresh_ranges, thresh_labels, NUM_THRESHOLDS, detectors_list, xlimits, ylimits);
+end
+
+% Save figure
+saveas(fig8, fullfile(MC_FIG_SAVEDIR, 'PR_Average_Performance_All_Detectors_Total.png'));
+fprintf("Saved figure: %s\n", fullfile(MC_FIG_SAVEDIR, 'PR_Average_Performance_All_Detectors.png'));
+
+
+%% Plot 9: Average Detector Performance ZOOM - Averaged across all object counts (Precision-Recall)
+fig9 = figure('Name', 'PR Average Performance High Recall - All Detectors', 'NumberTitle', 'off', 'Color', 'w', ...
+    'Position', [100, 100, 1400, 400]);
+
+xlimits = [0.99, 1]; 
+ylimits = [0, 0.1];
+
+% Create three subplots, one for each detector
+for detector = 1:detectors_count
+    ax = subplot(1, detectors_count, detector);
+    
+    % Plot average performance across all object counts
+    plot_average_performance_PR(ax, all_data, object_counts, detector, ...
+        thresh_ranges, thresh_labels, NUM_THRESHOLDS, detectors_list, xlimits, ylimits);
+end
+
+% Save figure
+saveas(fig9, fullfile(MC_FIG_SAVEDIR, 'PR_Average_Performance_All_Detectors_Zoom.png'));
+fprintf("Saved figure: %s\n", fullfile(MC_FIG_SAVEDIR, 'PR_Average_Performance_All_Detectors_Zoom.png'));
+
 
 %% ======================== PLOTTING METHODS ========================
 
@@ -1330,4 +1520,126 @@ function plot_error_bars_with_fit_PR(ax, data, detector, obj_count, marker, ...
     ylabel(ax, 'Precision', 'Interpreter', 'latex')
     title(ax, sprintf('%s - Obj Count: %d (Mean \\pm 1SD)', ...
         strrep(detectors_list(detector), '_', '\_'), obj_count), 'Interpreter', 'tex')
+end
+
+function plot_average_performance_PR(ax, all_data, object_counts, detector, ...
+        thresh_ranges, thresh_labels, NUM_THRESHOLDS, detectors_list, xlimits, ylimits)
+    % Plot average Precision-Recall performance across all object counts
+    % Shows mean and standard deviation averaged over all object counts and MC runs
+    %
+    % Inputs:
+    %   ax - axes handle to plot on
+    %   all_data - cell array of loaded data structures
+    %   object_counts - array of object counts corresponding to all_data
+    %   detector - detector index
+    %   thresh_ranges - cell array of threshold ranges for each detector
+    %   thresh_labels - cell array of threshold labels
+    %   NUM_THRESHOLDS - number of threshold values tested
+    %   detectors_list - cell array of detector names
+    %   xlimits - array of xlimits for plot
+    %   ylimits - array of ylimits for plot
+
+    hold(ax, 'on');
+    grid(ax, 'on');
+
+    % Get threshold range for this detector
+    thresh_vals = thresh_ranges{detector};
+    
+    % Initialize arrays to accumulate data across all object counts
+    all_recall_by_thresh = cell(NUM_THRESHOLDS, 1);
+    all_precision_by_thresh = cell(NUM_THRESHOLDS, 1);
+    
+    % Collect data from all object counts
+    for obj_idx = 1:length(all_data)
+        data = all_data{obj_idx};
+        
+        % For each threshold, collect all MC runs
+        for t = 1:NUM_THRESHOLDS
+            recall_data = squeeze(data.Recall(detector, :, t));
+            precision_data = squeeze(data.Precision(detector, :, t));
+            
+            % Accumulate across object counts
+            if isempty(all_recall_by_thresh{t})
+                all_recall_by_thresh{t} = recall_data(:);
+                all_precision_by_thresh{t} = precision_data(:);
+            else
+                all_recall_by_thresh{t} = [all_recall_by_thresh{t}; recall_data(:)];
+                all_precision_by_thresh{t} = [all_precision_by_thresh{t}; precision_data(:)];
+            end
+        end
+    end
+    
+    % Compute mean and std for each threshold (averaged over all object counts and MC runs)
+    mean_Recall = zeros(NUM_THRESHOLDS, 1);
+    std_Recall = zeros(NUM_THRESHOLDS, 1);
+    mean_Precision = zeros(NUM_THRESHOLDS, 1);
+    std_Precision = zeros(NUM_THRESHOLDS, 1);
+    
+    for t = 1:NUM_THRESHOLDS
+        mean_Recall(t) = mean(all_recall_by_thresh{t}, 'omitnan');
+        std_Recall(t) = std(all_recall_by_thresh{t}, 'omitnan');
+        mean_Precision(t) = mean(all_precision_by_thresh{t}, 'omitnan');
+        std_Precision(t) = std(all_precision_by_thresh{t}, 'omitnan');
+    end
+    
+    % Get colormap for threshold coloring
+    cmap = parula(NUM_THRESHOLDS);
+    
+    % Plot error bars colored by threshold
+    for t = 1:NUM_THRESHOLDS
+        errorbar(ax, mean_Recall(t), mean_Precision(t), ...
+            std_Precision(t), std_Precision(t), std_Recall(t), std_Recall(t), ...
+            'o', 'Color', cmap(t, :), 'MarkerSize', 8, ...
+            'MarkerFaceColor', cmap(t, :), 'LineWidth', 1.5, ...
+            'CapSize', 4, 'HandleVisibility', 'off');
+    end
+    
+    % Overlay scatter points colored by threshold
+    for t = 1:NUM_THRESHOLDS
+        scatter(ax, mean_Recall(t), mean_Precision(t), 80, thresh_vals(t), ...
+            'filled', 'MarkerEdgeColor', 'k', 'LineWidth', 0.5);
+    end
+    
+    % Fit a curve to the mean values
+    [sorted_Recall, sort_idx] = sort(mean_Recall);
+    sorted_Precision = mean_Precision(sort_idx);
+    
+    % Remove NaN values
+    valid_idx = ~isnan(sorted_Recall) & ~isnan(sorted_Precision);
+    sorted_Recall = sorted_Recall(valid_idx);
+    sorted_Precision = sorted_Precision(valid_idx);
+    
+    % Remove duplicate Recall values
+    [sorted_Recall, unique_idx] = unique(sorted_Recall, 'stable');
+    sorted_Precision = sorted_Precision(unique_idx);
+    
+    if length(sorted_Recall) >= 3
+        % Fit a smooth curve
+        Recall_fit = linspace(min(sorted_Recall), max(sorted_Recall), 100);
+        Precision_fit = interp1(sorted_Recall, sorted_Precision, Recall_fit, 'pchip');
+        plot(ax, Recall_fit, Precision_fit, '-', 'LineWidth', 2.5, 'Color', [0.2, 0.2, 0.2], ...
+            'DisplayName', 'Mean Curve');
+    end
+    
+    % Add colorbar
+    c = colorbar(ax);
+    c.Label.String = thresh_labels{detector};
+    c.Label.Interpreter = 'tex';
+    colormap(ax, parula);
+    caxis(ax, [min(thresh_vals), max(thresh_vals)]);
+    
+    % Axis formatting
+    axis(ax, 'square')
+    xlim(ax, xlimits)
+    ylim(ax, ylimits)
+    
+    % Labels
+    xlabel(ax, 'Recall', 'Interpreter', 'latex')
+    ylabel(ax, 'Precision', 'Interpreter', 'latex')
+    title(ax, sprintf('%s - Average Performance', detectors_list(detector)), 'Interpreter', 'latex')
+    
+    % Add text annotation showing number of scenarios averaged
+    text(ax, 0.05, 0.95, sprintf('Averaged over %d scenarios', length(object_counts)), ...
+        'Units', 'normalized', 'FontSize', 9, 'VerticalAlignment', 'top', ...
+        'BackgroundColor', 'white', 'EdgeColor', 'black');
 end
