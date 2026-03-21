@@ -8,7 +8,7 @@ function main(varargin)
     %
     % Parameters:
     %   DATASET (positional 1)    - Dataset name (default: "T4_parab")
-    %   FILTER_TYPE (positional 2) - Filter type: "KF", "HybridPF", or "HMM" (default: "HybridPF")
+    %   FILTER_TYPE (positional 2) - Filter type: "KF", "HybridPF", "HMM", or "RBPF" (default: "HybridPF")
     %   DA (name-value)           - Data association: "PDA" or "GNN" (default: "PDA")
     %   FinalPlot (name-value)    - Plot mode: "interactive", "animation", or "none" (default: "none")
     %   Debug (name-value)        - Enable debug output: true or false (default: false)
@@ -35,7 +35,7 @@ function main(varargin)
         filter_type = string(varargin{start_named_args});
         start_named_args = start_named_args + 1;
     else
-        filter_type = "HybridPF"; % Default filter type
+        filter_type = "RBPF"; % Default filter type
     end
 
     %% --- Parse Name-Value Pairs ---
@@ -86,7 +86,7 @@ function main(varargin)
     end
 
     % Validate filter type
-    valid_filters = ["KF", "HybridPF", "HMM"];
+    valid_filters = ["KF", "HybridPF", "HMM", "RBPF"];
 
     if ~ismember(filter_type, valid_filters)
         error('Invalid filter type. Options: %s', strjoin(valid_filters, ', '));
@@ -163,214 +163,138 @@ function main(varargin)
     validation_sigma = 2; % Default value
 
     %% ========== FILTER PARAMETERS SETUP ==========
-    %% --- Basic Parameters ---
     dt = 0.1; % sec
 
-    %% --- Define Kalman Filter Matrices ---
-    % Define KF Matrices state vector - {x,y,vx,vy,ax,ay}
-    % Correct continuous-time dynamics matrix for constant acceleration model
-    A = [0, 0, 1, 0, 0, 0;
-         0, 0, 0, 1, 0, 0;
-         0, 0, 0, 0, 1, 0;
-         0, 0, 0, 0, 0, 1;
-         0, 0, 0, 0, 0, 0;
-         0, 0, 0, 0, 0, 0];
+    % Discrete-time dynamics matrices (constant-acceleration model)
+    F_KF = expm([0 0 1 0 0 0; 0 0 0 1 0 0; 0 0 0 0 1 0;
+                 0 0 0 0 0 1; 0 0 0 0 0 0; 0 0 0 0 0 0] * dt);
+    F_PF = [1 0 dt 0 dt^2/2 0; 0 1 0 dt 0 dt^2/2;
+            0 0 1  0 dt     0; 0 0 0 1  0 dt;
+            0 0 0  0 1      0; 0 0 0 0  0 1];
 
-    F_KF = expm(A * dt);
-
-    %% --- Define Particle Filter Matrices ---
-    % Use the direct discrete-time formulation (matches test_hybrid_PF)
-    F_PF = [1, 0, dt, 0, dt ^ 2/2, 0; % x
-            0, 1, 0, dt, 0, dt ^ 2/2; % y
-            0, 0, 1, 0, dt, 0; % vx
-            0, 0, 0, 1, 0, dt; % vy
-            0, 0, 0, 0, 1, 0; % ax
-            0, 0, 0, 0, 0, 1]; % ay
-
-    %% --- Define Noise Matrices ---
-    Q = eye(6) * 1e-1;
-    Q_KF = diag([1e-4, 1e-4, 1e-3, 1e-3, 1e-2, 1e-2]);
-    Q_PF = diag([1e-3, 1e-3, 1e-2, 1e-2, 1e-1, 1e-1]);
-
-    R = 0.1 * eye(2);
-
-    %% --- Define Observation Matrix ---
-    H = [1 0 0 0 0 0;
-         0 1 0 0 0 0];
-
-    %% --- Define Initial Covariance ---
-    P0 = diag([0.1 0.1 0.25 0.25 0.5 0.5]);
+    % Per-family noise tuning (matches previous per-case values)
+    Q_KF   = diag([1e-4, 1e-4, 1e-3, 1e-3, 1e-2, 1e-2]);
+    Q_PF   = diag([1e-3, 1e-3, 1e-2, 1e-2, 1e-1, 1e-1]);
+    Q_RBPF = diag([1e-4, 1e-4, 1e-3, 1e-3, 1e-3, 1e-3]);
+    R      = 0.1 * eye(2);
+    H      = [1 0 0 0 0 0; 0 1 0 0 0 0];
+    P0     = diag([0.1 0.1 0.25 0.25 0.5 0.5]);
 
     %% ========== FILTER INITIALIZATION ==========
-    switch filter_type
 
-        case "KF"
-            %% --- Kalman Filter Setup ---
-            fprintf("Using Kalman Filter ")
+    % --- Map (filter_type, DA) to concrete FilterConfig name ---
+    filter_family_map = containers.Map(...
+        {'KF_PDA',       'KF_GNN',       ...
+         'HybridPF_PDA', 'HybridPF_GNN', 'HybridPF_MC', ...
+         'HMM_PDA',      'HMM_GNN',      ...
+         'RBPF_PDA',     'RBPF_GNN'}, ...
+        {'PDA_KF',  'GNN_KF', ...
+         'PDA_PF',  'GNN_PF', 'MC_PF', ...
+         'PDA_HMM', 'GNN_HMM', ...
+         'KF_RBPF', 'KF_RBPF'});
+    filter_config_name = filter_family_map(char(filter_type + "_" + DA));
+    fprintf('Constructing %s filter...\n', filter_config_name);
 
-            % Handle true initialization for KF
-            if INITIALIZE_TRUE
-                % True initialization: zero mean with very large covariance
-                initial_state = zeros(size(GT(:, 1))); % Zero mean for all states
-                initial_covariance = diag([100, 100, 10, 10, 5, 5]); % Very large covariance
+    % --- Load supplemental matrices when needed ---
+    A_transition = []; pointlikelihood_image = []; pointlikelihood_mag = [];
+    if ismember(filter_config_name, {'PDA_HMM', 'GNN_HMM'})
+        load(fullfile('supplemental', 'precalc_imagegridHMMEmLike.mat'), 'pointlikelihood_image');
+        load(fullfile('supplemental', 'precalc_imagegridHMMSTMn15.mat'), 'A');
+        A_transition = A; clear A;
+    elseif ismember(filter_config_name, {'PDA_PF', 'MC_PF'})
+        load(fullfile('supplemental', 'precalc_imagegridHMMEmLike.mat'), 'pointlikelihood_image');
+        tmp = load(fullfile('supplemental', 'precalc_imagegridHMMEmLikeMag.mat'), 'pointlikelihood_image');
+        pointlikelihood_mag = tmp.pointlikelihood_image;
+    elseif strcmp(filter_config_name, 'GNN_PF')
+        load(fullfile('supplemental', 'precalc_imagegridHMMEmLike.mat'), 'pointlikelihood_image');
+    end
 
-                if DEBUG
-                    fprintf("with TRUE INITIALIZATION (zero mean, large covariance)\n");
-                end
+    % --- Choose initial state and covariance ---
+    if INITIALIZE_TRUE
+        x0 = zeros(6, 1);
+        x0(1:2) = GT(1:2, 1);  % Known position, zero velocity/acceleration
+        P0_init = diag([100, 100, 10, 10, 5, 5]);
+    else
+        x0 = GT(:, 1);
+        P0_init = P0;
+    end
+    % HMM family operates on 2D position only
+    if ismember(filter_config_name, {'PDA_HMM', 'GNN_HMM'})
+        x0 = x0(1:2);
+    end
 
-            else
-                % Standard initialization using ground truth
-                initial_state = GT(:, 1);
-                initial_covariance = P0;
+    % --- Per-family parameters for FilterConfig ---
+    N_particles_map = containers.Map(...
+        {'PDA_KF','GNN_KF','PDA_HMM','GNN_HMM','GNN_PF','PDA_PF','MC_PF','KF_RBPF','HMM_RBPF'}, ...
+        {NaN, NaN, NaN, NaN, 10000, 1000, 10000, 100, 100});
+    Q_map = containers.Map(...
+        {'PDA_KF','GNN_KF','PDA_HMM','GNN_HMM','GNN_PF','PDA_PF','MC_PF','KF_RBPF','HMM_RBPF'}, ...
+        {Q_KF, Q_KF, [], [], Q_PF, Q_PF, Q_PF, Q_RBPF, Q_RBPF});
+    F_map = containers.Map(...
+        {'PDA_KF','GNN_KF','PDA_HMM','GNN_HMM','GNN_PF','PDA_PF','MC_PF','KF_RBPF','HMM_RBPF'}, ...
+        {F_KF, F_KF, [], [], F_PF, F_PF, F_PF, F_KF, F_KF});
+    validation_sigma = 5; % Broad gate for PF/HMM families; KF uses chi2 internally
 
-                if DEBUG
-                    fprintf("with STANDARD INITIALIZATION (GT-based)\n");
-                end
+    % --- Build FilterConfig and override matrices ---
+    cfg = FilterConfig(filter_config_name, ...
+        'dt', dt, 'Debug', DEBUG, 'DynamicPlot', DYNAMIC_PLOT, ...
+        'ValidationSigma', validation_sigma, ...
+        'store_full_history', false);
+    % Override F and Q with tuned values if this filter uses them
+    if isfield(cfg, 'F'), cfg.F = F_map(filter_config_name); end
+    if isfield(cfg, 'Q'), cfg.Q = Q_map(filter_config_name); end
+    if isfield(cfg, 'R'), cfg.R = R; end
+    if isfield(cfg, 'H'), cfg.H = H; end
+    if isfield(cfg, 'N_particles')
+        cfg.N_particles = N_particles_map(filter_config_name);
+    end
+    cfg.ESS_threshold = 0.2;
 
-            end
+    % --- Construct filter ---
+    current_class = FilterFactory(cfg, x0, P0_init, ...
+        A_transition, pointlikelihood_image, pointlikelihood_mag);
 
-            if DA == "PDA"
-                current_class = PDA_KF(initial_state, initial_covariance, F_KF, Q, R, H, 'Debug', DEBUG, "DynamicPlot", DYNAMIC_PLOT);
+    % --- Post-construction filter-specific tuning ---
+    if ismember(filter_config_name, {'PDA_PF', 'MC_PF'})
+        current_class.setDetectionModel(0.99, 0.25);
+        if strcmp(filter_config_name, 'PDA_PF')
+            current_class.hybrid_resample_fraction = 0.9;
+        else
+            current_class.hybrid_resample_fraction = 0.99;
+        end
+        current_class.composite_likelihood = true;
+    end
+    if strcmp(filter_config_name, 'PDA_HMM')
+        if ismethod(current_class, 'setDetectionModel')
+            current_class.setDetectionModel(0.99, 0.2);
+        end
+        current_class.composite_likelihood = true;
+    end
+    if strcmp(filter_config_name, 'KF_RBPF')
+        current_class.association_strategy = 'uniform';
+    end
+    % HMM uniform init override
+    if ismember(filter_config_name, {'PDA_HMM', 'GNN_HMM'}) && INITIALIZE_TRUE
+        current_class.ptarget_prob = ones(current_class.npx2, 1) / current_class.npx2;
+    end
 
-            elseif DA == "GNN"
-                current_class = GNN_KF(initial_state, initial_covariance, F_KF, Q, R, H, 'Debug', DEBUG, "DynamicPlot", DYNAMIC_PLOT);
-            else
-                error('Unknown data association method: %s', DA);
-            end
-
-            fprintf("with %s data association\n", DA);
-
-            %% --- Initialize Performance Storage ---
-            [performance{1}.x, performance{1}.P] = current_class.getGaussianEstimate(); % Initial Gaussian estimate
-
-            % Store initial measurements (empty for first timestep)
-            performance{1}.measurements_original = [];
-            performance{1}.measurements_used = [];
-
-
-        case 'HybridPF'
-            %% --- Hybrid Particle Filter Setup ---
-            fprintf("Using Hybrid Particle Filter ")
-            load(fullfile('supplemental', 'precalc_imagegridHMMEmLikeMag.mat'), 'pointlikelihood_image');
-            pointlikelihood_mag = pointlikelihood_image;
-            clear pointlikelihood_image;
-            load(fullfile('supplemental', 'precalc_imagegridHMMEmLike.mat'), 'pointlikelihood_image');
-
-            if DA == "PDA"
-                fprintf("with PDA data association\n");
-                validation_sigma = 5; % Set validation sigma for PDA
-                current_class = PDA_PF(GT(:, 1), 1000, F_PF, Q_PF, H, pointlikelihood_image, pointlikelihood_mag, "Debug", DEBUG, "DynamicPlot", DYNAMIC_PLOT, "ValidationSigma", validation_sigma, "UniformInit", INITIALIZE_TRUE);
-                current_class.setDetectionModel(0.99, 0.25); % Set default detection model parameters
-                current_class.ESS_threshold_percentage = .2;
-                current_class.hybrid_resample_fraction = 0.9; % Set hybrid resampling fraction (99% resampled, 1% uniform)
-                % Enable composite likelihood mode for comprehensive visualization
-                current_class.composite_likelihood = true;
-                % Set GIF filename if desired (uncomment to enable GIF output)
-                % current_class.gif_filename = 'main_output.gif';
-
-            elseif DA == "MC"
-                fprintf("with MC data association\n");
-                validation_sigma = 5; % Set validation sigma for MC
-                current_class = MC_PF(GT(:, 1), 10000, F_PF, Q_PF, H, pointlikelihood_image, pointlikelihood_mag, "Debug", DEBUG, "DynamicPlot", DYNAMIC_PLOT, "ValidationSigma", validation_sigma, "UniformInit", INITIALIZE_TRUE);
-                current_class.setDetectionModel(0.99, 0.25); % Set default detection model parameters
-                current_class.ESS_threshold_percentage = .2;%.01
-                current_class.hybrid_resample_fraction = 0.99; % Set hybrid resampling fraction (90% resampled, 10% uniform)
-                % Enable composite likelihood mode for comprehensive visualization
-                current_class.composite_likelihood = true;
-                % Set GIF filename if desired (uncomment to enable GIF output)
-                % current_class.gif_filename = 'main_output.gif';
-
-            elseif DA == "GNN"
-                fprintf("with GNN data association\n");
-                Q_PF = Q;
-                validation_sigma = 5; % Set validation sigma for GNN
-                current_class = GNN_PF(GT(:, 1), 10000, F_PF, Q_PF, H, pointlikelihood_image, "Debug", DEBUG, "DynamicPlot", DYNAMIC_PLOT, "ValidationSigma", validation_sigma, "UniformInit", INITIALIZE_TRUE);
-            else
-                error('Unknown data association method: %s', DA);
-            end
-
-            %% --- Initialize Performance Storage ---
-            performance{1}.particles = current_class.particles; % Store initial particles
-            performance{1}.weights = current_class.weights; % Store initial weights
-            [performance{1}.x, performance{1}.P] = current_class.getGaussianEstimate(); % Initial Gaussian estimate
-            performance{1}.association_prob = current_class.getAssociationDistribution(); % Initial association probabilities
-            performance{1}.measurements_original = [];
-            performance{1}.measurements_used = [];
-
-        case 'HMM'
-            %% --- Hidden Markov Model Setup ---
-            fprintf("Using HMM Filter ")
-            load(fullfile('supplemental', 'precalc_imagegridHMMEmLike.mat'), 'pointlikelihood_image');
-            load(fullfile('supplemental', 'precalc_imagegridHMMSTMn15.mat'), 'A');
-            A_slow = A; clear A; % Clear A to avoid confusion with the next load
-            load(fullfile('supplemental', 'precalc_imagegridHMMSTMn30.mat'), 'A');
-            A_fast = A; clear A; % Clear A to avoid confusion with the next load
-
-            % Handle true initialization for HMM
-            if INITIALIZE_TRUE
-                % Use center of field as dummy initial position (will be overridden)
-                initial_position = [0; 2]; % Center of [-2,2] x [0,4] space
-
-                if DEBUG
-                    fprintf("with TRUE INITIALIZATION (uniform over field)\n");
-                end
-
-            else
-                % Standard initialization using ground truth
-                initial_position = GT(1:2, 1);
-
-                if DEBUG
-                    fprintf("with STANDARD INITIALIZATION (GT-based)\n");
-                end
-
-            end
-
-            if DA == "PDA"
-                fprintf("with PDA data association\n");
-                validation_sigma = 5; % Set validation sigma for PDA
-                current_class = PDA_HMM(initial_position, A_slow, pointlikelihood_image, "Debug", DEBUG, "DynamicPlot", DYNAMIC_PLOT, "ValidationSigma", validation_sigma);
-
-                current_class.setDetectionModel(0.99, 0.2); % Set default detection model parameters
-                current_class.ESS_threshold_percentage = .10;
-                
-                % Enable composite likelihood mode for comprehensive visualization
-                current_class.composite_likelihood = true;
-                fprintf('-> Enabled composite likelihood mode for comprehensive visualization\n');
-                current_class.gif_filename = 'coolgifTraj.gif'; % No GIF by default
-
-            elseif DA == "GNN"
-                fprintf("with GNN data association\n");
-                % Note: GNN_HMM would need to be implemented if desired
-                validation_sigma = 5; % Set validation sigma for GNN
-                current_class = GNN_HMM(initial_position, A_slow, pointlikelihood_image, "Debug", DEBUG, "DynamicPlot", DYNAMIC_PLOT, "ValidationSigma", validation_sigma);
-
-            else
-                error('Unknown data association method: %s', DA);
-            end
-
-            % Override with uniform distribution if true initialization is requested
-            if INITIALIZE_TRUE
-                current_class.ptarget_prob = ones(current_class.npx2, 1) / current_class.npx2;
-
-                if DEBUG
-                    fprintf("-> Overrode with uniform distribution over entire field\n");
-                end
-
-            end
-
-            %% --- Initialize Performance Storage ---
-            [performance{1}.x, performance{1}.P] = current_class.getGaussianEstimate(); % Initial Gaussian estimate
-            performance{1}.prior_prob = current_class.ptarget_prob; % Store initial distribution
-            performance{1}.likelihood_prob = []; % No likelihood at initialization
-            performance{1}.posterior_prob = current_class.ptarget_prob; % Same as initial distribution
-
-            % Store initial measurements (empty for first timestep)
-            performance{1}.measurements_original = [];
-            performance{1}.measurements_used = [];
-
-        otherwise
-            error('Unknown filter type: %s', filter_type);
-
+    % --- Initialize performance storage (filter-family-specific) ---
+    [performance{1}.x, performance{1}.P] = current_class.getGaussianEstimate();
+    performance{1}.measurements_original = [];
+    performance{1}.measurements_used = [];
+    if isprop(current_class, 'particles')
+        performance{1}.particles = current_class.particles;
+        performance{1}.weights   = current_class.weights;
+        performance{1}.N_p       = current_class.N_p;
+        performance{1}.ESS       = [];
+        if ismethod(current_class, 'getAssociationDistribution')
+            performance{1}.association_prob = current_class.getAssociationDistribution();
+        end
+    end
+    if isprop(current_class, 'ptarget_prob')
+        performance{1}.prior_prob     = current_class.ptarget_prob;
+        performance{1}.likelihood_prob = [];
+        performance{1}.posterior_prob = current_class.ptarget_prob;
     end
 
     %% ========== STATE ESTIMATION LOOP ==========
@@ -427,10 +351,208 @@ function main(varargin)
                 performance{i}.likelihood_prob = current_class.likelihood_prob;
                 performance{i}.posterior_prob = current_class.posterior_prob;
 
+            case 'RBPF'
+                %% --- Rao-Blackwellized Particle Filter Timestep ---
+                current_meas = z{i};
+
+                performance{i}.measurements_original = current_meas;
+                performance{i}.measurements_used = current_meas;
+
+                if DEBUG && ~isempty(current_meas)
+                    fprintf('  Step %d: %d measurements\n', i, size(current_meas, 2));
+                end
+
+                current_class.timestep(current_meas, GT(:, i));
+
+                [performance{i}.x, performance{i}.P] = current_class.getGaussianEstimate();
+                performance{i}.particles = current_class.particles;
+                performance{i}.N_p       = current_class.N_p;
+                performance{i}.ESS       = current_class.current_ESS; % Set in timestep() before resampling
+
             otherwise
                 error('Unknown filter type in timestep loop: %s', filter_type);
         end
     end % End of for loop
+
+    %% ========== RBPF POST-PROCESSING VISUALIZATION ==========
+    if filter_type == "RBPF"
+        fprintf('\n=== RBPF POST-PROCESSING VISUALIZATION ===\n');
+        
+        % Create RBPF-specific save directory
+        rbpf_save_dir = fullfile("..", "figures", "DA_Track", "KFRBPF_plots");
+        if ~exist(rbpf_save_dir, 'dir')
+            mkdir(rbpf_save_dir);
+            fprintf('Created RBPF plots save directory: %s\n', rbpf_save_dir);
+        end
+        
+        % Generate summary plot showing tracking performance
+        fprintf('Creating RBPF tracking summary plot...\n');
+        try
+            figure('Name', 'RBPF Tracking Summary', 'Position', [100, 100, 1400, 900]);
+            
+            % Extract estimates and ground truth from performance
+            % State is 6D: [x, y, vx, vy, ax, ay]
+            N_states = size(performance{1}.x, 1);
+            estimates = zeros(N_states, n_k);
+            for i = 1:n_k
+                estimates(:, i) = performance{i}.x;
+            end
+            
+            % Compute errors (position and velocity only)
+            position_errors = GT(1:2, :) - estimates(1:2, :);
+            position_errors_norm = sqrt(sum(position_errors .^ 2, 1));
+            position_rmse = sqrt(mean(sum(position_errors .^ 2, 1)));
+            
+            velocity_errors = GT(3:4, :) - estimates(3:4, :);
+            velocity_errors_norm = sqrt(sum(velocity_errors .^ 2, 1));
+            velocity_rmse = sqrt(mean(sum(velocity_errors .^ 2, 1)));
+            
+            time = (1:n_k) * dt;
+            
+            % Subplot 1: Trajectory
+            subplot(2, 3, 1);
+            plot(GT(1, :), GT(2, :), 'g-', 'LineWidth', 2, 'DisplayName', 'True');
+            hold on;
+            plot(estimates(1, :), estimates(2, :), 'b--', 'LineWidth', 2, 'DisplayName', 'Estimate');
+            xlabel('X (m)'); ylabel('Y (m)');
+            title('Trajectory');
+            legend('Location', 'best'); grid on; axis equal;
+            
+            % Subplot 2: Position Error
+            subplot(2, 3, 2);
+            plot(time, position_errors_norm, 'r-', 'LineWidth', 2);
+            xlabel('Time (s)'); ylabel('Position Error (m)');
+            title(sprintf('Position Error (RMSE=%.3f m)', position_rmse));
+            grid on;
+            
+            % Subplot 3: Velocity Error
+            subplot(2, 3, 3);
+            plot(time, velocity_errors_norm, 'b-', 'LineWidth', 2);
+            xlabel('Time (s)'); ylabel('Velocity Error (m/s)');
+            title(sprintf('Velocity Error (RMSE=%.3f m/s)', velocity_rmse));
+            grid on;
+            
+            % Subplot 4: X Position
+            subplot(2, 3, 4);
+            plot(time, GT(1, :), 'g-', 'LineWidth', 2, 'DisplayName', 'True');
+            hold on;
+            plot(time, estimates(1, :), 'b--', 'LineWidth', 2, 'DisplayName', 'Estimate');
+            xlabel('Time (s)'); ylabel('X Position (m)');
+            title('X Position vs Time');
+            legend; grid on;
+            
+            % Subplot 5: Y Position
+            subplot(2, 3, 5);
+            plot(time, GT(2, :), 'g-', 'LineWidth', 2, 'DisplayName', 'True');
+            hold on;
+            plot(time, estimates(2, :), 'b--', 'LineWidth', 2, 'DisplayName', 'Estimate');
+            xlabel('Time (s)'); ylabel('Y Position (m)');
+            title('Y Position vs Time');
+            legend; grid on;
+            
+            % Subplot 6: ESS over time (collected from performance struct)
+            subplot(2, 3, 6);
+            ESS_vec = cellfun(@(p) p.ESS, performance(2:end), 'UniformOutput', true);
+            ESS_vec = ESS_vec(~isnan(ESS_vec));
+            if ~isempty(ESS_vec)
+                plot((1:length(ESS_vec)) * dt, ESS_vec, 'k-', 'LineWidth', 2);
+                hold on;
+                yline(current_class.N_p * current_class.ESS_threshold_percentage, 'r--', 'LineWidth', 1.5, ...
+                    'Label', sprintf('Resample Threshold (%.0f%%)', current_class.ESS_threshold_percentage * 100));
+                xlabel('Time (s)'); ylabel('Effective Sample Size');
+                title('ESS History (Particle Diversity)');
+                ylim([0, current_class.N_p]);
+                grid on;
+            end
+            
+            % Save summary figure
+            summary_filename = fullfile(rbpf_save_dir, sprintf('RBPF_%s_summary.png', DATASET));
+            saveas(gcf, summary_filename);
+            fprintf('✓ Summary plot saved to: %s\n', summary_filename);
+            
+        catch ME
+            warning('Failed to generate summary plot: %s', ME.message);
+            fprintf('  Error in summary plot generation:\n');
+            fprintf('    %s\n', ME.message);
+            for j = 1:length(ME.stack)
+                fprintf('    %s (line %d)\n', ME.stack(j).name, ME.stack(j).line);
+            end
+        end
+        
+        % Ask user if they want to generate individual GIF files
+        fprintf('\n');
+        fprintf('Generate and save individual GIF files for each subplot? (y/n): ');
+        user_input = input('', 's');
+        
+        if strcmpi(user_input, 'y')
+            try
+                fprintf('Creating individual GIF files...\n');
+                fprintf('This will generate separate GIFs for:\n');
+                fprintf('  - position_weighted.gif\n');
+                fprintf('  - velocity_weighted.gif\n');
+                fprintf('  - acceleration_weighted.gif\n');
+                fprintf('  - signal.gif\n');
+                fprintf('  - association.gif\n');
+                fprintf('  - trajectory.gif\n');
+                fprintf('\n');
+                
+                % Use SaveIndividualGIFs parameter
+                visualize_RBPF_history(current_class, 'Animate', true, ...
+                                       'SaveIndividualGIFs', true, ...
+                                       'GIFDirectory', rbpf_save_dir, ...
+                                       'AnimationSpeed', 0.1, ...
+                                       'PlotMargin', 0.05, ...
+                                       'SignalData', measurements.signal, ...
+                                       'PlotTrajectories', true, ...
+                                       'MaxParticlesToPlot', inf);
+                
+                fprintf('\n✓ All individual GIF files saved to: %s\n', rbpf_save_dir);
+            catch ME
+                warning('Failed to generate individual GIF files: %s', ME.message);
+                fprintf('  Error message: %s\n', ME.message);
+                fprintf('  Error stack:\n');
+                for j = 1:length(ME.stack)
+                    fprintf('    %s (line %d)\n', ME.stack(j).name, ME.stack(j).line);
+                end
+            end
+        else
+            fprintf('Skipping individual GIF generation.\n');
+        end
+        
+        fprintf('==========================================\n');
+    end
+
+    %% ========== PF HISTORY POST-PROCESSING VISUALIZATION ==========
+    if filter_type == "HybridPF" && isprop(current_class, 'history') && ~isempty(current_class.history)
+        fprintf('\n=== PF HISTORY VISUALIZATION ===\n');
+        fprintf('Generate individual RBPF-style GIFs (position/velocity/acceleration/signal/association/trajectory)? (y/n): ');
+        user_input = input('', 's');
+
+        if strcmpi(user_input, 'y')
+            try
+                history_gif_dir = fullfile("..", "figures", "DA_Track", "pf_history_gifs");
+                if ~exist(history_gif_dir, 'dir')
+                    mkdir(history_gif_dir);
+                end
+
+                visualize_PF_history(current_class, ...
+                    'Animate', true, ...
+                    'SaveIndividualGIFs', true, ...
+                    'GIFDirectory', history_gif_dir, ...
+                    'AnimationSpeed', 0.1, ...
+                    'PlotMargin', 0.05, ...
+                    'SignalData', measurements.signal, ...
+                    'PlotTrajectories', true, ...
+                    'MaxParticlesToPlot', inf);
+
+                fprintf('PF history GIFs saved to: %s\n', history_gif_dir);
+            catch ME
+                warning('Failed to generate PF history GIFs: %s', ME.message);
+            end
+        else
+            fprintf('Skipping PF history GIF generation.\n');
+        end
+    end
 
     %% ========== FINAL PLOTTING AND VISUALIZATION ==========
     if INTERACTIVE

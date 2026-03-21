@@ -87,6 +87,13 @@ classdef MC_PF < DA_Filter
         % Update GIF filename for dynamic plotting (inherited from DA_Filter)
         gif_filename = '' % Filename for saving dynamic plot as GIF (empty = no GIF)
         gif_frame_counter = 0; % Frame counter for GIF creation
+
+        % History storage (RBPF-compatible for post-processing visualization)
+        % NOTE: 'history' is inherited from DA_Filter — do not redeclare here
+        particle_association_histories
+        particle_state_trajectories
+        particle_measurement_trajectories
+        last_association_indices = []
     end
 
     methods
@@ -180,6 +187,7 @@ classdef MC_PF < DA_Filter
             obj.debug = options.Debug;
             obj.DynamicPlot = options.DynamicPlot;
             obj.validation_sigma_bounds = options.ValidationSigma;
+            obj.ESS_threshold_percentage = options.ESSThreshold;
 
             % Set hybrid resample fraction
             obj.hybrid_resample_fraction = hybrid_resample_frac;
@@ -241,7 +249,8 @@ classdef MC_PF < DA_Filter
                 end
 
                 init_spread = [0.1, 0.1, 0.25, 0.25, 0.5, 0.5]; % Position, velocity, acceleration spreads
-                obj.particles = repmat(x0(:), 1, N_particles);
+                % Allocate N_x+1 rows: state rows + association-index row (initialised to 0)
+                obj.particles = [repmat(x0(:), 1, N_particles); zeros(1, N_particles)];
 
                 % Add Gaussian noise to each state component to provide diversity
                 for i = 1:obj.N_x
@@ -319,6 +328,18 @@ classdef MC_PF < DA_Filter
             obj.gif_filename = '';
             obj.gif_frame_counter = 0;
 
+            % Initialize history (struct([]) via DA_Filter inheritance)
+            obj.history = struct([]);
+
+            obj.particle_association_histories = cell(1, obj.N_p);
+            obj.particle_state_trajectories = cell(1, obj.N_p);
+            obj.particle_measurement_trajectories = cell(1, obj.N_p);
+            for p = 1:obj.N_p
+                obj.particle_association_histories{p} = [];
+                obj.particle_state_trajectories{p} = obj.particles(1:obj.N_x, p);
+                obj.particle_measurement_trajectories{p} = [];
+            end
+
         end
 
         %% ========== TIMESTEP ==========
@@ -358,6 +379,15 @@ classdef MC_PF < DA_Filter
             %   - Supports optional real-time visualization
             %
             % See also prediction, measurement_update, resample
+
+            % Advance timestep counter (used by storeHistory as history index)
+            obj.timestep_counter = obj.timestep_counter + 1;
+
+            if nargin > 2
+                true_state = varargin{1};
+            else
+                true_state = [];
+            end
 
             % Handle both legacy measurement format and new struct format
             if isstruct(z)
@@ -480,11 +510,19 @@ classdef MC_PF < DA_Filter
             obj.weights(obj.particles(1, :) > 2) = eps; % Enforce x <= 2
             obj.weights(obj.particles(2, :) > 4) = eps; % Enforce y <= 4
 
-
-
             % Step 5: SIR Resampling - Check ESS and resample if needed
-            ESS = 1 / sum(obj.weights .^ 2);
+            ESS = 1 / sum(obj.weights .^ 2); % ESS before resampling
             ESS_threshold = obj.ESS_threshold_percentage * obj.N_p;
+
+            % Cache ESS for storeHistory() (called externally by test bench)
+            obj.current_ESS = ESS;
+
+            % Update per-particle trajectory buffers (for full history)
+            particle_associations = obj.particles(end, :);
+            clutter_idx = size(z_det, 2) + 1;
+            particle_associations(particle_associations == clutter_idx) = 0;
+            obj.last_association_indices = particle_associations;
+            obj.appendParticleHistoryStep(particle_associations, z_det);
 
             if ESS < ESS_threshold
 
@@ -529,8 +567,7 @@ classdef MC_PF < DA_Filter
             % Update dynamic plot if enabled
             if obj.DynamicPlot
 
-                if nargin > 2
-                    true_state = varargin{1};
+                if ~isempty(true_state)
                     obj.updateDynamicPlot(z_det, true_state, z_original);
                 else
                     obj.updateDynamicPlot(z_det, [], z_original);
@@ -840,9 +877,6 @@ classdef MC_PF < DA_Filter
 
                 measurement_weights = obj.computeWeightsForMeasurement(z(:, i));
 
-                fprintf("Size of measuremnt_weights");
-                disp(size(measurement_weights))
-
                 % Marginalize out particles (sum across all particles)
                 normalization_constants(i) = sum(measurement_weights);
 
@@ -1030,8 +1064,8 @@ classdef MC_PF < DA_Filter
             %   into which measurements are most likely associated with the target.
             %   Clutter is treated as just another hypothesis (index N_measurements + 1).
 
-            % Get max association index from particles
-            max_assoc_idx = max(obj.particles(end, :));
+            % Get max association index from current particles
+            max_assoc_idx = max([obj.particles(end, :), 0]);
             
             % Initialize distribution: one bin for each association hypothesis
             % Indices 1 to N_measurements are measurements, last index is clutter
@@ -1043,7 +1077,95 @@ classdef MC_PF < DA_Filter
             end
 
             % Normalize to form a valid probability distribution
-            association_dist = association_dist / sum(association_dist);
+            association_dist = association_dist / max(sum(association_dist), eps);
+        end
+
+        function visualizeHistory(obj, varargin)
+            % VISUALIZEHISTORY RBPF-style post-processing visualization for MC_PF
+            visualize_PF_history(obj, varargin{:});
+        end
+
+        function appendParticleHistoryStep(obj, particle_associations, measurements)
+            % APPENDPARTICLEHISTORYSTEP Append current per-particle state/association history
+            if isempty(particle_associations)
+                particle_associations = zeros(1, obj.N_p);
+            end
+
+            if size(particle_associations, 2) ~= obj.N_p
+                particle_associations = repmat(particle_associations(1), 1, obj.N_p);
+            end
+
+            for p = 1:obj.N_p
+                obj.particle_state_trajectories{p}(:, end + 1) = obj.particles(1:obj.N_x, p);
+                obj.particle_association_histories{p}(end + 1) = particle_associations(p);
+
+                assoc_idx = particle_associations(p);
+                if assoc_idx > 0 && ~isempty(measurements) && assoc_idx <= size(measurements, 2)
+                    obj.particle_measurement_trajectories{p}(:, end + 1) = measurements(:, assoc_idx);
+                else
+                    obj.particle_measurement_trajectories{p}(:, end + 1) = NaN(obj.N_z, 1);
+                end
+            end
+        end
+
+        function storeHistory(obj, measurements, varargin)
+            % STOREHISTORY  Snapshot internal MC-PF state into obj.history.
+            %
+            % SYNTAX:
+            %   obj.storeHistory(measurements)
+            %   obj.storeHistory(measurements, true_state)
+            %
+            % INPUTS:
+            %   measurements - Raw measurements passed to timestep()  [N_z x N_m]
+            %   true_state   - (optional) Ground-truth state          [N_x x 1]
+            %                  Pass [] or omit if GT is unavailable.
+            %
+            % ALWAYS STORED (history(k).field):
+            %   x_est                  [N_x x 1]   - Weighted-mean state estimate
+            %   P_est                  [N_x x N_x] - Weighted-covariance estimate
+            %   measurements           [N_z x N_m] - Raw measurements this step
+            %   true_state             [N_x x 1]   - Ground truth ([] if unknown)
+            %   timestep_num           scalar       - Timestep counter
+            %   ESS                    scalar       - ESS before resampling
+            %   particle_weights       [N_p x 1]   - Normalised particle weights
+            %   particle_associations  [1 x N_p]   - Sampled association index per particle
+            %
+            % WHEN store_full_history == true (default):
+            %   particle_states        [N_x x N_p] - Full particle cloud (state dims only)
+            %   particle_assoc_hist    {1 x N_p}   - Per-particle association history
+            %   particle_trajectories  {1 x N_p}   - Per-particle state trajectory
+            %   particle_measurements  {1 x N_p}   - Per-particle measurement trajectory
+            %
+            % See also timestep, DA_Filter.storeHistory, store_full_history
+
+            % Parse optional true_state argument
+            true_state = [];
+            if nargin > 2 && ~isempty(varargin{1})
+                true_state = varargin{1};
+            end
+
+            k = obj.timestep_counter;
+            [x_est, P_est] = obj.getGaussianEstimate();
+
+            % --- Mandatory DA_Filter contract fields ---
+            obj.history(k).x_est        = x_est;
+            obj.history(k).P_est        = P_est;
+            obj.history(k).measurements = measurements;
+            obj.history(k).true_state   = true_state;
+            obj.history(k).timestep_num = k;
+
+            % --- PF summary fields (always stored; lightweight) ---
+            obj.history(k).ESS                   = obj.current_ESS;
+            obj.history(k).particle_weights       = obj.weights';
+            obj.history(k).particle_associations  = obj.last_association_indices;
+
+            % --- Full particle cloud (only when requested) ---
+            if obj.store_full_history
+                obj.history(k).particle_states       = obj.particles(1:obj.N_x, :);
+                obj.history(k).particle_assoc_hist   = obj.particle_association_histories;
+                obj.history(k).particle_trajectories = obj.particle_state_trajectories;
+                obj.history(k).particle_measurements = obj.particle_measurement_trajectories;
+            end
         end
 
         function printState(obj, label)
@@ -1280,6 +1402,9 @@ classdef MC_PF < DA_Filter
 
             % Resampled particles
             particles_resampled = obj.particles(:, indsampsout);
+            assoc_hist_resampled = obj.particle_association_histories(indsampsout);
+            state_traj_resampled = obj.particle_state_trajectories(indsampsout);
+            meas_traj_resampled = obj.particle_measurement_trajectories(indsampsout);
 
             % 2. Uniformly initialize remaining particles over the search area (robustness injection)
             % Define bounds for uniform initialization
@@ -1312,6 +1437,19 @@ classdef MC_PF < DA_Filter
 
             % Combine both sets
             obj.particles = [particles_resampled, particles_uniform];
+
+            % Combine trajectory/association histories (resampled lineage + fresh uniform particles)
+            assoc_hist_uniform = cell(1, N_uniform);
+            state_traj_uniform = cell(1, N_uniform);
+            meas_traj_uniform = cell(1, N_uniform);
+            for u = 1:N_uniform
+                assoc_hist_uniform{u} = 0;
+                state_traj_uniform{u} = particles_uniform(1:obj.N_x, u);
+                meas_traj_uniform{u} = NaN(obj.N_z, 1);
+            end
+            obj.particle_association_histories = [assoc_hist_resampled, assoc_hist_uniform];
+            obj.particle_state_trajectories = [state_traj_resampled, state_traj_uniform];
+            obj.particle_measurement_trajectories = [meas_traj_resampled, meas_traj_uniform];
 
             % Ensure all particles have y >= 0.5 after resampling
             obj.particles(2, obj.particles(2, :) < 0.5) = 0.5;

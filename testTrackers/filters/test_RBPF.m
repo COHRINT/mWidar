@@ -1,39 +1,55 @@
-% TEST_HYBRID_PF Hybrid Particle Filter for Single Target Tracking
-%   Combines continuous state space (Kalman dynamics) with discrete HMM likelihood
+% TEST_RBPF Rao-Blackwellized Particle Filter for Single Target Tracking
+%   Implements a Rao-Blackwellized Particle Filter (RBPF) that combines:
+%   - Particle filtering for nonlinear/non-Gaussian position dynamics
+%   - Kalman filtering for conditionally linear velocity/acceleration states
+%   - HMM-based likelihood model for mWidar measurements
 %
-%   FILTER STRUCTURE:
-%   1. Particles represent continuous state [x, y, vx, vy, ax, ay]
-%   2. PREDICTION: Kalman filter dynamics with process noise
-%   3. MEASUREMENT UPDATE: HMM likelihood on discretized position
-%   4. RESAMPLING: Bootstrap resampling at beginning of each time step
+%   RAO-BLACKWELLIZATION STRUCTURE:
+%   The RBPF exploits conditional independence to reduce variance:
+%   1. Particles represent position states [x, y] (nonlinear dynamics)
+%   2. Kalman filters attached to each particle track [vx, vy, ax, ay]
+%   3. Measurement update uses HMM likelihood on discretized position grid
+%
+%   RBPF ALGORITHM STEPS (each timestep):
+%   1. SELECTION: Resample particles based on weights (systematic resampling)
+%   2. SEQUENTIAL IMPORTANCE SAMPLING: 
+%      - Sample position from proposal distribution (Kalman prediction)
+%      - Propagate Kalman filter for velocity/acceleration conditioned on position
+%   3. EXACT STEP: Update particle weights using measurement likelihood
+%      - Compute HMM likelihood for each particle's position
+%      - Weight particles by likelihood ratio
 %
 %   ASSUMPTIONS:
 %   - Measurements are from data association algorithm
-%   - Bootstrap particle filter (sample from prior, weight by likelihood)
-%   - Position measurements only (velocity/acceleration not observed)
+%   - Position measurements only (velocity/acceleration not directly observed)
+%   - Conditionally linear Gaussian dynamics for velocity/acceleration given position
 %
 %   STATE REPRESENTATION:
-%   - Continuous particle states [x, y, vx, vy, ax, ay]
-%   - Enhanced S-curve trajectory with analytical derivatives
-%   - Kalman dynamics with process noise
+%   - Particle states: [x, y] (sampled via importance sampling)
+%   - Per-particle Kalman states: [vx, vy, ax, ay] (analytically updated)
+%   - Full state: [x, y, vx, vy, ax, ay] combined from both components
 %
 %   ENVIRONMENTAL VARIABLES:
 %   - PLOT_FLAG: Set to 1 to show plots, 0 to hide
 %   - SAVE_FLAG: Set to 1 to save figures, 0 to disable saving
 %   - SAVE_PATH: Directory path for saving figures
 %
-%   See also TEST_HMM, PFRESAMPLE
+%   See also TEST_HMM, PFRESAMPLE, TEST_HYBRID_PF
 
 % Author: Anthony La Barca
 % Date: 2025-06-17
+% Modified: 2025-12-28 - Updated to proper RBPF implementation
+
+% Author: Anthony La Barca
+% Date: 2025-12-28
 clc, clear, close all
 
 %% Environmental Variables
 
 % Control plotting and saving behavior
 PLOT_FLAG = 1; % Set to 1 to show plots, 0 to hide (but still create for saving)
-SAVE_FLAG = 1; % Set to 1 to save figures, 0 to disable saving
-SAVE_PATH = fullfile('..', '..', 'figures', 'TESTINGSCRIPTS'); % Default save path for figures
+SAVE_FLAG = 0; % Set to 1 to save figures, 0 to disable saving
+SAVE_PATH = fullfile('..', '..', 'figures'); % Default save path for figures
 
 % Override with environment variables if they exist
 if exist('PLOT_FLAG_ENV', 'var')
@@ -244,9 +260,24 @@ pxyvec = [pxgrid(:), pygrid(:)];
 dx = xgrid(2) - xgrid(1);
 dy = ygrid(2) - ygrid(1);
 
-%% Initialize Particle Filter
+%% Initialize Particle Filter (RBPF)
+% 
+% RAO-BLACKWELLIZED PARTICLE FILTER INITIALIZATION
+% =================================================
+% The RBPF separates the state into:
+%   - Nonlinear part: Position [x, y] represented by particles
+%   - Linear part: Velocity/Acceleration [vx, vy, ax, ay] tracked by Kalman filters
+%
+% Each particle carries:
+%   1. Position sample [x, y]
+%   2. Associated Kalman filter state [vx, vy, ax, ay]
+%   3. Associated Kalman filter covariance P
+%   4. Weight w (importance weight)
+%
+% This decomposition reduces variance compared to full particle filtering
+% by analytically marginalizing the conditionally linear subspace.
 
-N_particles = 500; % Number of particles
+N_particles = 10000; % Number of particles
 state_dim = 6; % [x, y, vx, vy, ax, ay]
 
 % Initialize particles around first measurement with uncertainty
@@ -255,19 +286,22 @@ init_vel_std = 0.5; % Velocity uncertainty
 init_acc_std = 0.1; % Acceleration uncertainty
 
 % Initialize particle states (N_states x N_particles format)
+% Position particles (sampled part of RBPF)
 particles = zeros(state_dim, N_particles);
-% Initialize positions uniformly across the state space
-particles(1, :) = Xbounds(1) + (Xbounds(2) - Xbounds(1)) * rand(1, N_particles); % x uniformly in [-2, 2]
-particles(2, :) = Ybounds(1) + (Ybounds(2) - Ybounds(1)) * rand(1, N_particles); % y uniformly in [0, 4]
-particles(3, :) = init_vel_std * randn(1, N_particles); % vx
-particles(4, :) = init_vel_std * randn(1, N_particles); % vy
-particles(5, :) = init_acc_std * randn(1, N_particles); % ax
-particles(6, :) = init_acc_std * randn(1, N_particles); % ay
+particles(1, :) = measurements(1, 1); %+ init_pos_std * randn(N_particles, 1); % x
+particles(2, :) = measurements(2, 1); %+ init_pos_std * randn(N_particles, 1); % y
+% Kalman filter states (exact part of RBPF - could be different per particle)
+particles(3, :) = state_traj(3, 1); %+init_vel_std* randn(N_particles, 1); % vx
+particles(4, :) = state_traj(4, 1); %+init_vel_std* randn(N_particles, 1); % vy
+particles(5, :) = state_traj(5, 1); %+init_acc_std* randn(N_particles, 1); % ax
+particles(6, :) = state_traj(6, 1); %+init_acc_std* randn(N_particles, 1); % ay
 
 % Initialize weights (uniform) - column vector
 weights = ones(N_particles, 1) / N_particles;
 
-% Kalman dynamics matrices for each particle
+% RBPF Dynamics Matrices
+% ======================
+% State transition for full state [x, y, vx, vy, ax, ay]
 F = [1, 0, dt, 0, dt ^ 2/2, 0;
      0, 1, 0, dt, 0, dt ^ 2/2;
      0, 0, 1, 0, dt, 0;
@@ -276,6 +310,9 @@ F = [1, 0, dt, 0, dt ^ 2/2, 0;
      0, 0, 0, 0, 0, 1]; % State transition matrix
 
 % Process noise covariance
+% NOTE: In a full RBPF, this would be partitioned:
+%   - Position process noise (affects particle sampling)
+%   - Velocity/acceleration process noise (affects Kalman update)
 % q_pos = 0.004; % Position process noise
 % q_vel = 0.005; % Velocity process noise
 % q_acc = 0.01; % Acceleration process noise
@@ -289,24 +326,18 @@ weight_history = cell(1, num_steps + 1);
 mean_state_history = zeros(state_dim, num_steps + 1);
 cov_history = zeros(state_dim, state_dim, num_steps + 1);
 
-% Storage for particle trajectories (to show hypothesis tree)
-particle_trajectories = cell(N_particles, 1);
-for p = 1:N_particles
-    particle_trajectories{p} = particles(1:2, p); % Start with initial position
-end
-
 % Store initial state
 particle_history{1} = particles;
 weight_history{1} = weights;
 mean_state_history(:, 1) = particles * weights; % Weighted mean: [state_dim x 1]
 
-fprintf('Initialized %d particles for hybrid PF\n', N_particles);
+fprintf('Initialized %d particles for RBPF\n', N_particles);
+fprintf('State decomposition: Position [x,y] (particle), Velocity/Accel [vx,vy,ax,ay] (Kalman)\n');
 
 %% Setup visualization
 
 fig = figure(1);
-set(fig, 'Visible', fig_visible, 'Position', [100, 100, 2400, 600]);
-
+set(fig, 'Visible', fig_visible, 'Position', [100, 100, 1800, 800]);
 hold on
 % Pause to make sure it draws
 fprintf("Pausing to generate figure");
@@ -315,38 +346,90 @@ pause(2);
 
 % Initialize GIF saving if requested
 if SAVE_FLAG
-    gif_filename = fullfile(SAVE_PATH, 'hybrid_pf_animation.gif');
+    gif_filename = fullfile(SAVE_PATH, 'rbpf_animation.gif');
 end
 
-%% Apply Hybrid Particle Filter Updates
+%% Apply RBPF Updates
+%
+% RAO-BLACKWELLIZED PARTICLE FILTER MAIN LOOP
+% ============================================
+% At each timestep k, the RBPF performs three steps:
+%
+% STEP 1: SELECTION (Resampling)
+%   - Resample particles based on importance weights from previous timestep
+%   - Eliminates low-weight particles, duplicates high-weight particles
+%   - Resets weights to uniform 1/N after resampling
+%   - Prevents particle degeneracy
+%
+% STEP 2: SEQUENTIAL IMPORTANCE SAMPLING
+%   - Propagate position particles [x, y] using proposal distribution
+%   - For each particle, propagate associated Kalman filter [vx, vy, ax, ay]
+%   - Proposal typically uses dynamics model with process noise
+%   - Result: Predicted particle positions and Kalman states
+%
+% STEP 3: EXACT STEP (Weight Update)
+%   - Evaluate measurement likelihood for each particle's position
+%   - Update particle weights using importance sampling weight formula:
+%     w_k = w_{k-1} * p(z_k | x_k) * p(x_k | x_{k-1}) / q(x_k | x_{k-1}, z_k)
+%   - For bootstrap filter: q = p, so weight is just likelihood p(z_k | x_k)
+%   - Normalize weights to sum to 1
+%
+% The RBPF exploits the structure: particles handle nonlinear position dynamics,
+% while Kalman filters optimally track the conditionally linear velocity/acceleration.
 
 for kk = 1:num_steps
     fprintf('Processing time step %d/%d\n', kk, num_steps);
 
-    % ========== RESAMPLING STEP (at beginning of each timestep) ==========
+    % ========================================================================
+    % RBPF STEP 1: SELECTION (Resampling)
+    % ========================================================================
+    % Resample particles based on their importance weights to prevent degeneracy.
+    % This step is performed at the beginning of each timestep (except the first).
+    %
+    % Purpose:
+    %   - Eliminate particles with negligible weights
+    %   - Duplicate particles with high weights
+    %   - Prevent particle degeneracy (all weight on one particle)
+    %
+    % Implementation:
+    %   - Uses systematic resampling (low variance)
+    %   - PFResample expects [state_dim x N_particles] format
+    %   - After resampling, weights are implicitly uniform (1/N)
+    %
+    % Note: Resampling can be done at every step (as here) or only when
+    %       effective sample size N_eff falls below threshold N/2
     if kk > 1 % Skip resampling at first step
-        fprintf('\t-> Resampling step\n');
+        fprintf('\t-> SELECTION: Resampling particles\n');
         % PFResample expects [state_dim x N_particles], which matches our format
-        [particles, weights, resample_indices] = PFResample(particles, weights);
-        
-        % Verify indices are valid
-        if any(resample_indices < 1) || any(resample_indices > N_particles)
-            error('Invalid resample indices: min=%d, max=%d', min(resample_indices), max(resample_indices));
-        end
-        
-        % Update particle trajectories after resampling
-        % Keep only the trajectories of resampled particles
-        old_trajectories = particle_trajectories;
-        for p = 1:N_particles
-            parent_idx = resample_indices(p);
-            particle_trajectories{p} = old_trajectories{parent_idx};
-        end
+        [particles, ~] = PFResample(particles, weights);
     end
 
-    % ========== PREDICTION STEP (Kalman dynamics) ==========
-    fprintf('\t-> Prediction step (Kalman dynamics)\n');
+    % ========================================================================
+    % RBPF STEP 2: SEQUENTIAL IMPORTANCE SAMPLING (Prediction)
+    % ========================================================================
+    % Sample new particle positions and propagate Kalman filter states.
+    %
+    % For RBPF, this step has two components:
+    %
+    % 2a) PARTICLE SAMPLING (Nonlinear Position)
+    %     - Sample position [x, y] from proposal distribution q(x_k | x_{k-1}, z_k)
+    %     - For bootstrap filter: q = p, so sample from dynamics p(x_k | x_{k-1})
+    %     - Apply state transition: x_k = F * x_{k-1} + w_k
+    %     - Add process noise to position states
+    %
+    % 2b) KALMAN PREDICTION (Linear Velocity/Acceleration)
+    %     - For each particle i, propagate Kalman state: [vx, vy, ax, ay]_i
+    %     - Conditioned on the sampled position [x, y]_i
+    %     - Kalman prediction: x_k = F * x_{k-1} + w, P_k = F * P_{k-1} * F' + Q
+    %     - This is the "exact" marginalization that reduces variance
+    %
+    % Current Implementation:
+    %   - Uses full state dynamics for all 6 states (simplified approach)
+    %   - Vectorized for computational efficiency
+    %   - Enforces position bounds to keep particles in valid region
+    fprintf('\t-> SEQUENTIAL IMPORTANCE SAMPLING: Propagating particles and Kalman filters\n');
 
-    % Vectorized Kalman dynamics for all particles at once
+    % Vectorized dynamics for all particles at once
     % Apply deterministic dynamics: particles = F * particles
     particles = F * particles;
 
@@ -358,15 +441,40 @@ for kk = 1:num_steps
     particles(1, :) = max(Xbounds(1), min(Xbounds(2), particles(1, :))); % x bounds
     particles(2, :) = max(Ybounds(1), min(Ybounds(2), particles(2, :))); % y bounds
 
-    % Update particle trajectories with new positions after prediction
-    for p = 1:N_particles
-        particle_trajectories{p} = [particle_trajectories{p}, particles(1:2, p)];
-    end
+    % ========================================================================
+    % RBPF STEP 3: EXACT STEP (Weight Update via Measurement Likelihood)
+    % ========================================================================
+    % Update particle weights based on how well each particle explains the measurement.
+    %
+    % This is the "exact" step where we evaluate the measurement likelihood:
+    %   p(z_k | x_k^i) for each particle i
+    %
+    % For RBPF with HMM likelihood model:
+    %
+    % 3a) MEASUREMENT PROCESSING
+    %     - Extract current measurement z_k = [x_meas, y_meas]
+    %     - Map measurement to spatial grid index for HMM lookup
+    %     - Generate mWidar signal from measurement for magnitude likelihood
+    %
+    % 3b) LIKELIHOOD COMPUTATION
+    %     - For each particle position, evaluate two likelihood components:
+    %       * Detection likelihood: p(detection | particle_pos, meas_pos)
+    %         Uses pre-computed HMM emission model (det_likelihood_lookup)
+    %       * Magnitude likelihood: p(signal_magnitude | particle_pos)
+    %         Uses signal value at particle position vs. expected distribution
+    %     - Combine likelihoods: L = L_det * L_mag
+    %
+    % 3c) WEIGHT UPDATE
+    %     - For bootstrap filter: w_k^i = w_{k-1}^i * p(z_k | x_k^i)
+    %     - Since we resampled, w_{k-1}^i = 1/N, so w_k^i ∝ p(z_k | x_k^i)
+    %     - Apply Gaussian refinement around measurement for localization
+    %     - Normalize weights: w_k^i = w_k^i / sum_j(w_k^j)
+    %
+    % The key advantage of RBPF: This likelihood only depends on position,
+    % while velocity/acceleration are marginalized via Kalman filtering.
+    fprintf('\t-> EXACT STEP: Computing measurement likelihood and updating weights\n');
 
-    % ========== MEASUREMENT UPDATE STEP (HMM likelihood) ==========
-    fprintf('\t-> Measurement update step (HMM likelihood)\n');
-
-    % MEASUREMENT CREATION
+    % --- 3a) MEASUREMENT PROCESSING ---
     % Get current measurement (assuming data association already done)
     current_meas = measurements(:, kk);
 
@@ -375,7 +483,7 @@ for kk = 1:num_steps
     [~, meas_y_idx] = min(abs(ygrid - current_meas(2)));
     meas_linear_idx = sub2ind([npx, npx], meas_y_idx, meas_x_idx);
 
-    % mWIDAR SIGNAL CREATION
+    % Generate mWidar signal from measurement
     curr_signal = zeros(128,128);
     curr_signal(meas_linear_idx) = 1;
     curr_signal = reshape(curr_signal, 1, 128, 128);
@@ -384,7 +492,9 @@ for kk = 1:num_steps
 
     fprintf("Size of current signal: \n")
     disp(size(curr_signal))
+    % --- 3b) LIKELIHOOD COMPUTATION ---
     % Vectorized likelihood computation for all particles
+    
     % Vectorized grid point finding for all particles
     % Find closest x-grid indices for all particles at once
     % Use explicit broadcasting: particles(1,:) is [1 x N_particles], xgrid is [1 x npx]
@@ -398,10 +508,13 @@ for kk = 1:num_steps
     % Convert to linear indices for all particles at once
     particle_linear_indices = sub2ind([npx, npx], py_indices, px_indices); % [N_particles x 1]
 
-    % Vectorized likelihood lookup from pre-computed model
-    likelihood_det = det_likelihood_lookup(meas_linear_idx, particle_linear_indices); % Should be [N_particles x 1]
-    likelihood_mag_values = mag_likelihood_lookup(particle_linear_indices, :); % Should be [N_particles x 2]
-    % Convert likelihood_mag to number -- take value of signal AT each particle position and calculation likelihood_mag = Normal(signal_value, mean=likleihood_mag_values(1), var=likelihood_mag_values(2)^2)
+    % Vectorized likelihood lookup from pre-computed HMM model
+    % Detection likelihood: How likely is a detection at measurement given particle position?
+    likelihood_det = det_likelihood_lookup(meas_linear_idx, particle_linear_indices); % [N_particles x 1]
+    
+    % Magnitude likelihood: How well does signal magnitude match expected value at particle?
+    likelihood_mag_values = mag_likelihood_lookup(particle_linear_indices, :); % [N_particles x 2]
+    % Convert to probability using normal distribution of signal value at particle position
     likelihood_mag = .1 * normpdf(curr_signal(particle_linear_indices), likelihood_mag_values(:, 1), likelihood_mag_values(:, 2)); % [N_particles x 1]
 
     % Convert both to column vectors if needed
@@ -415,34 +528,39 @@ for kk = 1:num_steps
     disp(mean(likelihood_mag))
     disp(std(likelihood_mag))
 
-
-
-    % Combination of likelihood (det for dynamics information from the detector, mag for magnitude information from the signal)
+    % Combination of likelihood (det for dynamics information, mag for magnitude information)
     likelihood_raw = likelihood_det .* likelihood_mag; % Combine detection and magnitude likelihoods
     
-
     % Ensure likelihood_raw is a column vector
     if size(likelihood_raw, 1) == 1 && size(likelihood_raw, 2) == N_particles
         likelihood_raw = likelihood_raw'; % Transpose to column vector
     end
 
-    % Vectorized Gaussian weighting for improved localization
-    sf = 0.15;
+    % --- 3c) WEIGHT UPDATE ---
+    % Apply Gaussian weighting around measurement for improved localization
+    % This refines the likelihood by giving higher weight to particles near the measurement
+    sf = 0.15; % Scaling factor for Gaussian kernel
+    
     % Compute squared distances for all particles at once
     dx = particles(1, :) - current_meas(1); % [1 x N_particles]
     dy = particles(2, :) - current_meas(2); % [1 x N_particles]
     dist_sq = dx .^ 2 + dy .^ 2; % [1 x N_particles]
     gauss_weights = exp(-dist_sq / (2 * sf ^ 2)); % [1 x N_particles]
 
-    % Combine likelihoods and normalize
-    new_weights = (likelihood_raw .* gauss_weights') + eps; % Add small epsilon
-    weights = new_weights / sum(new_weights);
+    % Combine likelihoods with Gaussian refinement and normalize
+    new_weights = (likelihood_raw .* gauss_weights') + eps; % Add small epsilon for numerical stability
+    weights = new_weights / sum(new_weights); % Normalize to sum to 1
 
+    % ========================================================================
+    % STATE ESTIMATION (Weighted Statistics)
+    % ========================================================================
+    % Compute point estimates and uncertainty from weighted particle distribution
+    
     % Store results in cell arrays
     particle_history{kk + 1} = particles;
     weight_history{kk + 1} = weights;
 
-    % Compute weighted statistics
+    % Compute weighted mean (MMSE estimate)
     mean_state = particles * weights; % [state_dim x 1] = [state_dim x N_particles] * [N_particles x 1]
     mean_state_history(:, kk + 1) = mean_state;
 
@@ -490,108 +608,104 @@ for kk = 1:num_steps
     combined_likelihood_field = det_likelihood_field_masked .* mag_likelihood_field;
     combined_likelihood_field = combined_likelihood_field / sum(combined_likelihood_field); % normalize
 
-    %% ========== PLOTTING - PARTICLE SCATTER VISUALIZATION ==========
-    % Show actual particles to demonstrate sampling-based representation
+    % Plot likelihood breakdown - PARTICLE-BASED VISUALIZATION (like PDA_PF)
     figure(1); % Make sure we're on the right figure
     clf; % Clear figure for fresh tiledlayout
     
-    % Create tiled layout (1 row, 3 columns)
-    t = tiledlayout(1, 3, 'TileSpacing', 'compact', 'Padding', 'compact');
+    % Create tiled layout (2 rows, 5 columns) - particle-based approach
+    t = tiledlayout(2, 5, 'TileSpacing', 'compact', 'Padding', 'compact');
 
-    % Sample a subset of particles for clearer visualization
-    n_display = min(2000, N_particles);
-    display_idx = randperm(N_particles, n_display);
+    % Row 1: Particle Likelihood Visualizations
+    % Tile 1: Particles colored by Detection Likelihood
+    nexttile(1);
+    scatter(particles(1, :), particles(2, :), 40, likelihood_det, 'filled', 'MarkerFaceAlpha', 0.7);
+    hold on;
+    plot(current_meas(1), current_meas(2), '+', 'Color', [0.2 0.2 0.2], 'MarkerSize', 12, 'LineWidth', 3);
+    plot(mean_state(1), mean_state(2), 'ro', 'MarkerSize', 10, 'LineWidth', 2);
+    plot(state_traj(1, kk), state_traj(2, kk), 'mo', 'MarkerSize', 8, 'LineWidth', 2);
+    title(['Detection Likelihood at $k=', num2str(kk), '$'], 'Interpreter', 'latex');
+    xlabel('$X$ (m)', 'Interpreter', 'latex');
+    ylabel('$Y$ (m)', 'Interpreter', 'latex');
+    xlim([-2, 2]); ylim([0, 4]);
+    axis square;
+    colorbar;
+    colormap(gca, 'hot');
 
-    % Tile 1: Prior/Prediction - Show particle scatter (all particles propagated)
-    nexttile(1); cla
-    
-    scatter(particles(1, display_idx), particles(2, display_idx), 10, [0.5 0.5 0.5], 'filled', 'MarkerFaceAlpha', 0.3);
-    hold on
-    plot(state_traj(1, kk), state_traj(2, kk), 'p', 'Color', [0.7 0.7 0.7], 'MarkerSize', 15, 'LineWidth', 2, 'MarkerFaceColor', [0.7 0.7 0.7])
-    plot(current_meas(1), current_meas(2), '+', 'Color', 'c', 'MarkerSize', 10, 'LineWidth', 2)
-    
-    title('Prior')
-    xlabel('$X$ (m)'), ylabel('$Y$ (m)')
-    xlim([-2, 2]), ylim([0, 4])
-    axis square
-    grid on
+    % Tile 2: Particles colored by Magnitude Likelihood  
+    nexttile(2);
+    scatter(particles(1, :), particles(2, :), 40, likelihood_mag, 'filled', 'MarkerFaceAlpha', 0.7);
+    hold on;
+    plot(current_meas(1), current_meas(2), '+', 'Color', [0.2 0.2 0.2], 'MarkerSize', 12, 'LineWidth', 3);
+    plot(mean_state(1), mean_state(2), 'ro', 'MarkerSize', 10, 'LineWidth', 2);
+    plot(state_traj(1, kk), state_traj(2, kk), 'mo', 'MarkerSize', 8, 'LineWidth', 2);
+    title(['Magnitude Likelihood at $k=', num2str(kk), '$'], 'Interpreter', 'latex');
+    xlabel('$X$ (m)', 'Interpreter', 'latex');
+    ylabel('$Y$ (m)', 'Interpreter', 'latex');
+    xlim([-2, 2]); ylim([0, 4]);
+    axis square;
+    colorbar;
+    colormap(gca, 'cool');
 
-    % Tile 2: Combined Likelihood - Particles colored by combined likelihood
-    nexttile(2); cla
+    % Tile 3: Particles colored by Combined Likelihood
+    nexttile(3);
     combined_likelihood_particles = likelihood_det .* likelihood_mag;
-    scatter(particles(1, display_idx), particles(2, display_idx), 10, combined_likelihood_particles(display_idx), 'filled', 'MarkerFaceAlpha', 0.6);
-    hold on
-    plot(current_meas(1), current_meas(2), '+', 'Color', 'c', 'MarkerSize', 10, 'LineWidth', 2)
+    disp(size(likelihood_det))
+    disp(size(likelihood_mag))
+
+    disp(size(combined_likelihood_particles))
+    scatter(particles(1, :), particles(2, :), 40, combined_likelihood_particles, 'filled', 'MarkerFaceAlpha', 0.7);
+    hold on;
+    plot(current_meas(1), current_meas(2), '+', 'Color', [0.2 0.2 0.2], 'MarkerSize', 12, 'LineWidth', 3);
+    plot(mean_state(1), mean_state(2), 'ro', 'MarkerSize', 10, 'LineWidth', 2);
+    plot(state_traj(1, kk), state_traj(2, kk), 'mo', 'MarkerSize', 8, 'LineWidth', 2);
+    title(['Combined Likelihood at $k=', num2str(kk), '$'], 'Interpreter', 'latex');
+    xlabel('$X$ (m)', 'Interpreter', 'latex');
+    ylabel('$Y$ (m)', 'Interpreter', 'latex');
+    xlim([-2, 2]); ylim([0, 4]);
+    axis square;
+    colorbar;
+    colormap(gca, 'parula');
+
+    % Tile 4: mWidar Signal with Detections
+    nexttile(4);
+    % Display mWidar signal as background
+    imagesc(xgrid, ygrid, curr_signal / max(curr_signal(:)));
+    set(gca, 'YDir', 'normal');
+    hold on;
     
-    title('Combined Likelihood')
-    xlabel('$X$ (m)'), ylabel('$Y$ (m)')
-    xlim([-2, 2]), ylim([0, 4])
-    axis square
-    colormap(gca, 'hot')
-    c = colorbar;
-    c.TickLabelInterpreter = 'latex';
-    grid on
-
-    % Tile 3: Posterior - Particles colored by weights + trajectory tree
-    nexttile(3); cla
+    % Overlay detections prominently
+    plot(current_meas(1), current_meas(2), 'r*', 'MarkerSize', 15, 'LineWidth', 3);
     
-    % Plot particle trajectory histories (hypothesis tree) with transparency
-    n_traj_to_plot = min(500, N_particles); % Limit trajectories for clarity
-    traj_indices = randperm(N_particles, n_traj_to_plot);
-    for p = traj_indices
-        traj = particle_trajectories{p};
-        if size(traj, 2) > 1
-            plot(traj(1, :), traj(2, :), 'Color', [0.5 0.5 0.5 0.15], 'LineWidth', 0.5);
-            hold on
-        end
-    end
+    % Show state estimate and true state
+    plot(mean_state(1), mean_state(2), 'bs', 'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'blue');
+    plot(state_traj(1, kk), state_traj(2, kk), 'mo', 'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'magenta');
     
-    % Show current particles colored by their posterior weights
-    scatter(particles(1, display_idx), particles(2, display_idx), 10, weights(display_idx), 'filled', 'MarkerFaceAlpha', 0.6);
-    hold on
-    plot(state_traj(1, kk), state_traj(2, kk), 'p', 'Color', [0.7 0.7 0.7], 'MarkerSize', 15, 'LineWidth', 2, 'MarkerFaceColor', [0.7 0.7 0.7])
-    plot(mean_state(1), mean_state(2), 'ro', 'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'r')
-    
-    % Show trajectory history
-    if kk > 2
-        plot(mean_state_history(1, 2:kk+1), mean_state_history(2, 2:kk+1), 'r-', 'LineWidth', 2)
-        plot(state_traj(1, 2:kk), state_traj(2, 2:kk), 'Color', [0.7 0.7 0.7], 'LineWidth', 2)
-    end
-    
-    title('Posterior')
-    xlabel('$X$ (m)'), ylabel('$Y$ (m)')
-    xlim([-2, 2]), ylim([0, 4])
-    axis square
-    colormap(gca, 'hot')
-    c = colorbar;
-    c.TickLabelInterpreter = 'latex';
-    grid on
+    title(['mWidar Signal + Detections at $k=', num2str(kk), '$'], 'Interpreter', 'latex');
+    xlabel('$X$ (m)', 'Interpreter', 'latex');
+    ylabel('$Y$ (m)', 'Interpreter', 'latex');
+    xlim([-2, 2]); ylim([0, 4]);
+    axis square;
+    colorbar;
+    colormap(gca, 'parula');
 
-    % Add suptitle with timestep
-    sgtitle(sprintf('Particle Filter: $k=%d$', kk), "Interpreter", "latex", 'FontSize', 14);
+    % Tile 5: Particles colored by Final Weights
+    nexttile(5);
+    scatter(particles(1, :), particles(2, :), 40, weights, 'filled', 'MarkerFaceAlpha', 0.7);
+    hold on;
+    plot(mean_state(1), mean_state(2), 'ro', 'MarkerSize', 10, 'LineWidth', 3);
+    plot(state_traj(1, kk), state_traj(2, kk), 'o', 'Color', [0.2 0.2 0.2], ...
+         'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', [0.7 0.7 0.7]);
+    plot(current_meas(1), current_meas(2), '+', 'Color', [0.2 0.2 0.2], ...
+         'MarkerSize', 12, 'LineWidth', 3);
+    title(['Particle Weights at $k=', num2str(kk), '$'], 'Interpreter', 'latex');
+    xlabel('$X$ (m)', 'Interpreter', 'latex');
+    ylabel('$Y$ (m)', 'Interpreter', 'latex');
+    xlim([-2, 2]); ylim([0, 4]);
+    axis square;
+    colorbar;
+    colormap(gca, 'parula');
 
-    % Save frame to GIF if requested
-    if SAVE_FLAG
-        frame = getframe(gcf);
-        im = frame2im(frame);
-        [imind, cm] = rgb2ind(im, 256);
-
-        if kk == 1
-            imwrite(imind, cm, gif_filename, 'gif', 'Loopcount', inf, 'DelayTime', 0.2);
-        else
-            imwrite(imind, cm, gif_filename, 'gif', 'WriteMode', 'append', 'DelayTime', 0.2);
-        end
-    end
-
-    % Pause only if plots are visible
-    if PLOT_FLAG
-        pause(0.2); % Small pause to see animation
-    end
-
-    fprintf('\t  Mean state error: [%.3f, %.3f] m\n', mean_state(1) - state_traj(1, kk), mean_state(2) - state_traj(2, kk));
-
-    % Skip old complex visualization
-    if false
+    % Row 2: Analysis and Comparison
     % Tile 6: Detection vs Magnitude Likelihood Scatter
     nexttile(6);
     scatter(likelihood_det, likelihood_mag, 20, weights, 'filled', 'MarkerFaceAlpha', 0.7);
@@ -672,7 +786,24 @@ for kk = 1:num_steps
     % legend('Min', 'Mean', 'Max', 'Location', 'best');
     % grid on;
 
-    end % end if false (skip old visualization)
+    % Save frame to GIF if requested
+    if SAVE_FLAG
+        frame = getframe(gcf);
+        im = frame2im(frame);
+        [imind, cm] = rgb2ind(im, 256);
+
+        if kk == 1
+            imwrite(imind, cm, gif_filename, 'gif', 'Loopcount', inf, 'DelayTime', 0.1);
+        else
+            imwrite(imind, cm, gif_filename, 'gif', 'WriteMode', 'append', 'DelayTime', 0.1);
+        end
+
+    end
+
+    % Pause only if plots are visible
+    if PLOT_FLAG
+        pause(0.001); % Small pause to see animation
+    end
 
     % Compute estimation errors
     pos_error = mean_state(1:2) - state_traj(1:2, kk);
@@ -768,7 +899,7 @@ grid on
 
 % Save figure if requested
 if SAVE_FLAG
-    print(gcf, fullfile(SAVE_PATH, 'hybrid_pf_results_summary.png'), '-dpng', '-r600');
+    print(gcf, fullfile(SAVE_PATH, 'rbpf_results_summary.png'), '-dpng', '-r600');
 end
 
 %% Estimation Error Visualization
@@ -807,7 +938,7 @@ sgtitle('Estimation Errors with ±2 Std Dev Bounds')
 
 % Save figure if requested
 if SAVE_FLAG
-    print(gcf, fullfile(SAVE_PATH, 'hybrid_pf_error_visualization.png'), '-dpng', '-r600');
+    print(gcf, fullfile(SAVE_PATH, 'rbpf_error_visualization.png'), '-dpng', '-r600');
 end
 
 %% State Trajectory Visualization
@@ -845,7 +976,7 @@ legend([h_true(1), h_est(1)], {'True Trajectory', 'Estimated Trajectory'}, ...
 
 % Save figure if requested
 if SAVE_FLAG
-    print(gcf, fullfile(SAVE_PATH, 'hybrid_pf_state_trajectories.png'), '-dpng', '-r600');
+    print(gcf, fullfile(SAVE_PATH, 'rbpf_state_trajectories.png'), '-dpng', '-r600');
 end
 
 %% Weight history visualization
@@ -917,7 +1048,7 @@ grid on
 
 % Save figure if requested
 if SAVE_FLAG
-    print(gcf, fullfile(SAVE_PATH, 'hybrid_pf_weight_analysis.png'), '-dpng', '-r600');
+    print(gcf, fullfile(SAVE_PATH, 'rbpf_weight_analysis.png'), '-dpng', '-r600');
 end
 
 %% Print performance summary
@@ -926,7 +1057,7 @@ final_rmse_pos = sqrt(mean(pos_errors(1, :) .^ 2 + pos_errors(2, :) .^ 2));
 final_rmse_vel = sqrt(mean(vel_errors(1, :) .^ 2 + vel_errors(2, :) .^ 2));
 final_rmse_acc = sqrt(mean(acc_errors(1, :) .^ 2 + acc_errors(2, :) .^ 2));
 
-fprintf('\n=== Hybrid Particle Filter Performance Summary ===\n');
+fprintf('\n=== Rao-Blackwellized Particle Filter Performance Summary ===\n');
 fprintf('Number of particles: %d\n', N_particles);
 fprintf('RMSE Position error: %.4f m\n', final_rmse_pos);
 fprintf('RMSE Velocity error: %.4f m/s\n', final_rmse_vel);

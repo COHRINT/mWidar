@@ -67,7 +67,7 @@ classdef PDA_PF < DA_Filter
 
         % SIR Resampling Parameters
         ESS_threshold_percentage = 0.95 % ESS threshold as percentage of N_p for resampling (default: 95 % - behaves like bootstrap)
-        hybrid_resample_fraction = 0.8 % Fraction of particles to resample (remaining are uniform) for robustness (default: 0.8 = 80% resample, 20% uniform)
+        hybrid_resample_fraction = 0.8 % Fraction of particles to resample (remaining are uniform) for robustness (default: 0.8 = 80 % resample, 20 % uniform)
 
         % Dynamic Plotting (inherited from DA_Filter)
         dynamic_figure_handle % Figure handle for dynamic plotting
@@ -87,6 +87,13 @@ classdef PDA_PF < DA_Filter
         % Update GIF filename for dynamic plotting (inherited from DA_Filter)
         gif_filename = '' % Filename for saving dynamic plot as GIF (empty = no GIF)
         gif_frame_counter = 0; % Frame counter for GIF creation
+
+        % History storage (RBPF-compatible for post-processing visualization)
+        % NOTE: 'history' is inherited from DA_Filter — do not redeclare here
+        particle_association_histories
+        particle_state_trajectories
+        particle_measurement_trajectories
+        last_association_indices = []
     end
 
     methods
@@ -179,6 +186,7 @@ classdef PDA_PF < DA_Filter
             obj.debug = options.Debug;
             obj.DynamicPlot = options.DynamicPlot;
             obj.validation_sigma_bounds = options.ValidationSigma;
+            obj.ESS_threshold_percentage = options.ESSThreshold;
 
             % Set hybrid resample fraction
             obj.hybrid_resample_fraction = hybrid_resample_frac;
@@ -314,6 +322,22 @@ classdef PDA_PF < DA_Filter
             obj.gif_filename = '';
             obj.gif_frame_counter = 0;
 
+            % Initialize RBPF-style history storage (struct([]) via DA_Filter inheritance)
+            % Field schema: x_est, P_est, measurements, true_state, timestep_num, ESS,
+            %               particle_weights, particle_associations (+full fields when
+            %               store_full_history=true)
+            obj.history = struct([]);
+
+            obj.particle_association_histories = cell(1, obj.N_p);
+            obj.particle_state_trajectories = cell(1, obj.N_p);
+            obj.particle_measurement_trajectories = cell(1, obj.N_p);
+
+            for p = 1:obj.N_p
+                obj.particle_association_histories{p} = [];
+                obj.particle_state_trajectories{p} = obj.particles(:, p);
+                obj.particle_measurement_trajectories{p} = [];
+            end
+
         end
 
         %% ========== TIMESTEP ==========
@@ -348,6 +372,15 @@ classdef PDA_PF < DA_Filter
             %   - Supports optional real-time visualization
             %
             % See also prediction, measurement_update, resample
+
+            % Advance timestep counter (used by storeHistory as history index)
+            obj.timestep_counter = obj.timestep_counter + 1;
+
+            if nargin > 2
+                true_state = varargin{1};
+            else
+                true_state = [];
+            end
 
             % Handle both legacy measurement format and new struct format
             if isstruct(z)
@@ -437,8 +470,16 @@ classdef PDA_PF < DA_Filter
             obj.measurement_update(z_to_process, z_mag);
 
             % Step 5: SIR Resampling - Check ESS and resample if needed
-            ESS = 1 / sum(obj.weights .^ 2);
+            ESS = 1 / sum(obj.weights .^ 2); % ESS before resampling
             ESS_threshold = obj.ESS_threshold_percentage * obj.N_p;
+
+            % Cache ESS for storeHistory() (called externally by test bench)
+            obj.current_ESS = ESS;
+
+            % Update per-particle trajectory buffers (for full history)
+            particle_associations = obj.sampleAssociationIndicesForHistory(z_to_process);
+            obj.last_association_indices = particle_associations;
+            obj.appendParticleHistoryStep(particle_associations, z_to_process);
 
             if ESS < ESS_threshold
 
@@ -483,8 +524,7 @@ classdef PDA_PF < DA_Filter
             % Update dynamic plot if enabled
             if obj.DynamicPlot
 
-                if nargin > 2
-                    true_state = varargin{1};
+                if ~isempty(true_state)
                     obj.updateDynamicPlot(z_to_process, true_state, z_original);
                 else
                     obj.updateDynamicPlot(z_to_process, [], z_original);
@@ -781,9 +821,6 @@ classdef PDA_PF < DA_Filter
 
                 measurement_weights = obj.computeWeightsForMeasurement(z(:, i));
 
-                fprintf("Size of measuremnt_weights");
-                disp(size(measurement_weights))
-
                 % Marginalize out particles (sum across all particles)
                 normalization_constants(i) = sum(measurement_weights);
 
@@ -972,7 +1009,7 @@ classdef PDA_PF < DA_Filter
             %   For PDA_PF, computes the marginal association probabilities by calculating
             %   normalization constants for each measurement hypothesis. These represent
             %   p(y, a_i) - the joint probability of the measurement set and association hypothesis i.
-            %   
+            %
             %   Unlike MC_PF which samples associations per particle, PDA marginalizes over
             %   all association hypotheses, so this returns the probability distribution
             %   computed from the normalization constants.
@@ -984,28 +1021,161 @@ classdef PDA_PF < DA_Filter
             %
             % See also computeNormalizationConstants, measurement_update
 
-            % Check if measurements provided
+            % If no measurements provided, use live association data (no history needed)
             if nargin < 2 || isempty(z)
-                warning('PDA_PF:NoMeasurements', ...
-                    'No measurements provided. Cannot compute association distribution for PDA.');
-                association_dist = [];
+
+                if ~isempty(obj.last_association_indices)
+                    particle_assocs  = obj.last_association_indices(:);
+                    particle_weights = obj.weights(:);
+                    max_assoc = max([particle_assocs; 0]);
+                    association_dist = zeros(max_assoc + 1, 1); % [meas_1..meas_N, clutter]
+
+                    for idx = 1:max_assoc
+                        association_dist(idx) = sum(particle_weights(particle_assocs == idx));
+                    end
+
+                    association_dist(end) = sum(particle_weights(particle_assocs == 0));
+                    association_dist = association_dist / max(sum(association_dist), eps);
+                else
+                    association_dist = [];
+                end
+
                 return;
             end
 
             % Compute normalization constants for all hypotheses
             % These represent p(y, a_i) for each association hypothesis i
             normalization_constants = obj.computeNormalizationConstants(z);
-            
+
             % Normalize to get probability distribution p(a_i | y)
             % This is the marginal association probability for each hypothesis
             association_dist = normalization_constants / sum(normalization_constants);
-            
+
             if obj.debug
                 fprintf('[PDA ASSOCIATION DIST] Computed from normalization constants:\n');
-                for i = 1:length(association_dist)-1
+
+                for i = 1:length(association_dist) - 1
                     fprintf('  Measurement %d: %.4f\n', i, association_dist(i));
                 end
+
                 fprintf('  Clutter: %.4f\n', association_dist(end));
+            end
+
+        end
+
+        function visualizeHistory(obj, varargin)
+            % VISUALIZEHISTORY RBPF-style post-processing visualization for PDA_PF
+            visualize_PF_history(obj, varargin{:});
+        end
+
+        function association_samples = sampleAssociationIndicesForHistory(obj, measurements)
+            % SAMPLEASSOCIATIONINDICESFORHISTORY Sample per-particle associations for history plots
+            if isempty(measurements)
+                association_samples = zeros(1, obj.N_p);
+                return;
+            end
+
+            assoc_dist = obj.getAssociationDistribution(measurements);
+
+            if isempty(assoc_dist)
+                association_samples = zeros(1, obj.N_p);
+                return;
+            end
+
+            assoc_dist = assoc_dist(:) / max(sum(assoc_dist), eps);
+            assoc_cdf = cumsum(assoc_dist);
+            draws = rand(obj.N_p, 1);
+            sampled_assoc = arrayfun(@(u) find(assoc_cdf >= u, 1, 'first'), draws);
+
+            % Convert clutter hypothesis (last index) to 0 for RBPF-compatible plotting
+            clutter_idx = length(assoc_dist);
+            sampled_assoc(sampled_assoc == clutter_idx) = 0;
+            association_samples = sampled_assoc';
+        end
+
+        function appendParticleHistoryStep(obj, particle_associations, measurements)
+            % APPENDPARTICLEHISTORYSTEP Append current per-particle state/association history
+            if isempty(particle_associations)
+                particle_associations = zeros(1, obj.N_p);
+            end
+
+            if size(particle_associations, 2) ~= obj.N_p
+                particle_associations = repmat(particle_associations(1), 1, obj.N_p);
+            end
+
+            for p = 1:obj.N_p
+                obj.particle_state_trajectories{p}(:, end + 1) = obj.particles(:, p);
+                obj.particle_association_histories{p}(end + 1) = particle_associations(p);
+
+                assoc_idx = particle_associations(p);
+
+                if assoc_idx > 0 && ~isempty(measurements) && assoc_idx <= size(measurements, 2)
+                    obj.particle_measurement_trajectories{p}(:, end + 1) = measurements(:, assoc_idx);
+                else
+                    obj.particle_measurement_trajectories{p}(:, end + 1) = NaN(obj.N_z, 1);
+                end
+
+            end
+
+        end
+
+        function storeHistory(obj, measurements, varargin)
+            % STOREHISTORY  Snapshot internal PDA-PF state into obj.history.
+            %
+            % SYNTAX:
+            %   obj.storeHistory(measurements)
+            %   obj.storeHistory(measurements, true_state)
+            %
+            % INPUTS:
+            %   measurements - Raw measurements passed to timestep()  [N_z x N_m]
+            %   true_state   - (optional) Ground-truth state          [N_x x 1]
+            %                  Pass [] or omit if GT is unavailable.
+            %
+            % ALWAYS STORED (history(k).field):
+            %   x_est                  [N_x x 1]   - Weighted-mean state estimate
+            %   P_est                  [N_x x N_x] - Weighted-covariance estimate
+            %   measurements           [N_z x N_m] - Raw measurements this step
+            %   true_state             [N_x x 1]   - Ground truth ([] if unknown)
+            %   timestep_num           scalar       - Timestep counter
+            %   ESS                    scalar       - ESS before resampling
+            %   particle_weights       [N_p x 1]   - Normalised particle weights
+            %   particle_associations  [1 x N_p]   - Association index per particle
+            %
+            % WHEN store_full_history == true (default):
+            %   particle_states        [N_x x N_p] - Full particle cloud
+            %   particle_assoc_hist    {1 x N_p}   - Per-particle association history
+            %   particle_trajectories  {1 x N_p}   - Per-particle state trajectory
+            %   particle_measurements  {1 x N_p}   - Per-particle measurement trajectory
+            %
+            % See also timestep, DA_Filter.storeHistory, store_full_history
+
+            % Parse optional true_state argument
+            true_state = [];
+            if nargin > 2 && ~isempty(varargin{1})
+                true_state = varargin{1};
+            end
+
+            k = obj.timestep_counter;
+            [x_est, P_est] = obj.getGaussianEstimate();
+
+            % --- Mandatory DA_Filter contract fields ---
+            obj.history(k).x_est        = x_est;
+            obj.history(k).P_est        = P_est;
+            obj.history(k).measurements = measurements;
+            obj.history(k).true_state   = true_state;
+            obj.history(k).timestep_num = k;
+
+            % --- PF summary fields (always stored; lightweight) ---
+            obj.history(k).ESS                   = obj.current_ESS;
+            obj.history(k).particle_weights       = obj.weights';
+            obj.history(k).particle_associations  = obj.last_association_indices;
+
+            % --- Full particle cloud (only when requested) ---
+            if obj.store_full_history
+                obj.history(k).particle_states       = obj.particles;
+                obj.history(k).particle_assoc_hist   = obj.particle_association_histories;
+                obj.history(k).particle_trajectories = obj.particle_state_trajectories;
+                obj.history(k).particle_measurements = obj.particle_measurement_trajectories;
             end
         end
 
@@ -1167,7 +1337,7 @@ classdef PDA_PF < DA_Filter
             %   diversity. Resamples a configurable fraction of particles from the weighted
             %   distribution, then injects uniform particles over the search space for
             %   robustness against filter divergence.
-            %   
+            %
             %   ROBUSTNESS FEATURE: When shit hits the fan (particle deprivation, weight collapse),
             %   this prevents complete loss of diversity by injecting uniform particles.
             %   Benefits:
@@ -1175,7 +1345,7 @@ classdef PDA_PF < DA_Filter
             %     - Maintains exploration capability even with frequent resampling
             %     - Recovers from tracking loss by reintroducing spatial diversity
             %     - Default 80/20 split balances exploitation vs exploration
-            %   
+            %
             %   Configurable via constructor: PDA_PF(..., 'HybridResampleFraction', 0.9)
             %   Set to 1.0 for pure bootstrap resampling (no robustness injection)
             %   Set to 0.5 for aggressive exploration (50% uniform particles)
@@ -1231,13 +1401,18 @@ classdef PDA_PF < DA_Filter
 
             for i = 1:N_resample
                 indsampsout(i) = find(sampcdf >= urands(i), 1, 'first');
+
                 if isempty(indsampsout(i))
                     indsampsout(i) = obj.N_p;
                 end
+
             end
 
             % Resampled particles
             particles_resampled = obj.particles(:, indsampsout);
+            assoc_hist_resampled = obj.particle_association_histories(indsampsout);
+            state_traj_resampled = obj.particle_state_trajectories(indsampsout);
+            meas_traj_resampled = obj.particle_measurement_trajectories(indsampsout);
 
             % 2. Uniformly initialize remaining particles over the search area (robustness injection)
             % Define bounds for uniform initialization
@@ -1266,6 +1441,21 @@ classdef PDA_PF < DA_Filter
 
             % Combine both sets
             obj.particles = [particles_resampled, particles_uniform];
+
+            % Combine trajectory/association histories (resampled lineage + fresh uniform particles)
+            assoc_hist_uniform = cell(1, N_uniform);
+            state_traj_uniform = cell(1, N_uniform);
+            meas_traj_uniform = cell(1, N_uniform);
+
+            for u = 1:N_uniform
+                assoc_hist_uniform{u} = 0;
+                state_traj_uniform{u} = particles_uniform(:, u);
+                meas_traj_uniform{u} = NaN(obj.N_z, 1);
+            end
+
+            obj.particle_association_histories = [assoc_hist_resampled, assoc_hist_uniform];
+            obj.particle_state_trajectories = [state_traj_resampled, state_traj_uniform];
+            obj.particle_measurement_trajectories = [meas_traj_resampled, meas_traj_uniform];
 
             % Ensure all particles have y >= 0.5 after resampling
             obj.particles(2, obj.particles(2, :) < 0.5) = 0.5;
@@ -1631,6 +1821,7 @@ classdef PDA_PF < DA_Filter
 
             % Sort likelihood arrays by same indices as particles (for proper layering)
             det_likes_sorted = det_likes(sort_idx);
+
             if has_magnitude_data
                 mag_likes_sorted = mag_likes(sort_idx);
                 combined_likes_sorted = combined_likes(sort_idx);
@@ -1640,12 +1831,12 @@ classdef PDA_PF < DA_Filter
             end
 
             mean_state = particles * weights;
-            
+
             % Determine colorbar limits for weight-based plots
             % If weights are uniform (just resampled), use [0, 1] for better visibility
             weight_range = max(weights) - min(weights);
             uniform_threshold = 1e-6; % Threshold for considering weights uniform
-            
+
             if weight_range < uniform_threshold
                 % Weights are uniform - use fixed [0, 1] scale
                 weight_caxis_limits = [0, 1];
@@ -1878,56 +2069,61 @@ classdef PDA_PF < DA_Filter
             if ~isempty(obj.particle_detection_likelihoods)
                 % Tile 6: Particle State Distribution Violin Plot
                 nexttile(6);
-                
+
                 % Create violin plot data for state dimensions
                 % We'll show distributions for: X, Y, Vx, Vy (if available)
                 state_labels = {};
                 state_data = {};
                 state_means = [];
                 state_truth = [];
-                
+
                 % Position X
-                state_labels{end+1} = 'X';
-                state_data{end+1} = particles(1, :)';
-                state_means(end+1) = mean_state(1);
+                state_labels{end + 1} = 'X';
+                state_data{end + 1} = particles(1, :)';
+                state_means(end + 1) = mean_state(1);
+
                 if ~isempty(true_state)
-                    state_truth(end+1) = true_state(1);
+                    state_truth(end + 1) = true_state(1);
                 else
-                    state_truth(end+1) = NaN;
+                    state_truth(end + 1) = NaN;
                 end
-                
+
                 % Position Y
-                state_labels{end+1} = 'Y';
-                state_data{end+1} = particles(2, :)';
-                state_means(end+1) = mean_state(2);
+                state_labels{end + 1} = 'Y';
+                state_data{end + 1} = particles(2, :)';
+                state_means(end + 1) = mean_state(2);
+
                 if ~isempty(true_state) && length(true_state) >= 2
-                    state_truth(end+1) = true_state(2);
+                    state_truth(end + 1) = true_state(2);
                 else
-                    state_truth(end+1) = NaN;
+                    state_truth(end + 1) = NaN;
                 end
-                
+
                 % Velocity X (if available)
                 if size(particles, 1) >= 4
-                    state_labels{end+1} = 'Vx';
-                    state_data{end+1} = particles(3, :)';
-                    state_means(end+1) = mean_state(3);
+                    state_labels{end + 1} = 'Vx';
+                    state_data{end + 1} = particles(3, :)';
+                    state_means(end + 1) = mean_state(3);
+
                     if ~isempty(true_state) && length(true_state) >= 4
-                        state_truth(end+1) = true_state(3);
+                        state_truth(end + 1) = true_state(3);
                     else
-                        state_truth(end+1) = NaN;
+                        state_truth(end + 1) = NaN;
                     end
-                    
+
                     % Velocity Y
-                    state_labels{end+1} = 'Vy';
-                    state_data{end+1} = particles(4, :)';
-                    state_means(end+1) = mean_state(4);
+                    state_labels{end + 1} = 'Vy';
+                    state_data{end + 1} = particles(4, :)';
+                    state_means(end + 1) = mean_state(4);
+
                     if ~isempty(true_state) && length(true_state) >= 4
-                        state_truth(end+1) = true_state(4);
+                        state_truth(end + 1) = true_state(4);
                     else
-                        state_truth(end+1) = NaN;
+                        state_truth(end + 1) = NaN;
                     end
+
                 end
-                
+
                 % Use MATLAB's built-in violin plot if available, otherwise create custom
                 try
                     % Try using violinplot from File Exchange (if user has it)
@@ -1937,37 +2133,38 @@ classdef PDA_PF < DA_Filter
                     hold on;
                     n_states = length(state_data);
                     colors = lines(n_states);
-                    
+
                     for i = 1:n_states
                         data = state_data{i};
-                        
+
                         % Create kernel density estimate for violin shape
                         [f, xi] = ksdensity(data, 'NumPoints', 50);
                         f = f / max(f) * 0.35; % Normalize width
-                        
+
                         % Plot left and right sides of violin
                         fill([i - f, i + fliplr(f)], [xi, fliplr(xi)], colors(i, :), ...
                             'FaceAlpha', 0.6, 'EdgeColor', colors(i, :), 'LineWidth', 1.5);
-                        
+
                         % Plot median line
-                        plot([i-0.35, i+0.35], [median(data), median(data)], 'k-', 'LineWidth', 2);
-                        
+                        plot([i - 0.35, i + 0.35], [median(data), median(data)], 'k-', 'LineWidth', 2);
+
                         % Plot mean as circle
                         plot(i, state_means(i), 'ro', 'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'r');
-                        
+
                         % Plot true state as diamond (if available)
                         if ~isnan(state_truth(i))
                             plot(i, state_truth(i), 'md', 'MarkerSize', 8, 'LineWidth', 2, 'MarkerFaceColor', 'm');
                         end
+
                     end
-                    
+
                     % Format plot
                     xlim([0.5, n_states + 0.5]);
                     xticks(1:n_states);
                     xticklabels(state_labels);
                     grid on;
                 end
-                
+
                 xlabel('State Variable', 'Interpreter', 'latex');
                 ylabel('Value', 'Interpreter', 'latex');
                 title('Particle State Distributions', 'Interpreter', 'latex');
@@ -2095,76 +2292,81 @@ classdef PDA_PF < DA_Filter
             % Tile 10: Association Distribution (Normalized Normalization Constants)
             nexttile(10);
             cla;
-            
+
             % Get association distribution from normalization constants
             if ~isempty(all_measurements)
                 association_dist = obj.getAssociationDistribution(all_measurements);
                 N_associations = length(association_dist);
-                
+
                 % Create bar plot of association distribution with color coding
                 % Orange for gated (prob >= clutter), yellow for rejected (prob < clutter)
                 clutter_threshold = association_dist(end);
-                
+
                 % Create bar plot
                 bar_handle = bar(1:N_associations, association_dist, 'EdgeColor', 'k', 'LineWidth', 1.5);
                 hold on;
-                
+
                 % Color each bar individually based on gating threshold
                 bar_colors = zeros(N_associations, 3);
                 orange_color = [1.0, 0.6, 0.0]; % Orange for gated measurements
                 yellow_color = [1.0, 0.9, 0.3]; % Yellow for rejected measurements
-                
+
                 for i = 1:N_associations
+
                     if association_dist(i) >= clutter_threshold
                         bar_colors(i, :) = orange_color; % Gated (valid)
                     else
                         bar_colors(i, :) = yellow_color; % Rejected by gating
                     end
+
                 end
-                
+
                 % Apply colors to bars
                 bar_handle.FaceColor = 'flat';
                 bar_handle.CData = bar_colors;
-                
+
                 % Find the measurement closest to ground truth and mark it with a gold star
                 if ~isempty(true_state)
                     % Calculate distances from each measurement to ground truth
                     N_meas = size(all_measurements, 2);
                     distances = zeros(1, N_meas);
+
                     for meas_idx = 1:N_meas
                         dx = all_measurements(1, meas_idx) - true_state(1);
                         dy = all_measurements(2, meas_idx) - true_state(2);
-                        distances(meas_idx) = sqrt(dx^2 + dy^2);
+                        distances(meas_idx) = sqrt(dx ^ 2 + dy ^ 2);
                     end
-                    
+
                     % Find index of closest measurement
                     [~, closest_idx] = min(distances);
-                    
+
                     % Place a gold star at the top of the correct association bin
-                    star_y = association_dist(closest_idx) * 1.15; % Place 15% above bar
+                    star_y = association_dist(closest_idx) * 1.15; % Place 15 % above bar
                     plot(closest_idx, star_y, '*', 'Color', [1 0.843 0], 'MarkerSize', 25, 'LineWidth', 3);
-                    
+
                     % Add text label
                     text(closest_idx, star_y * 1.1, 'True Assoc.', ...
                         'HorizontalAlignment', 'center', 'FontSize', 9, 'FontWeight', 'bold', 'Color', [0.8 0.5 0]);
                 end
-                
+
                 % Formatting
                 xlabel('Association Hypothesis', 'Interpreter', 'latex', 'FontSize', 11);
                 ylabel('Probability', 'Interpreter', 'latex', 'FontSize', 11);
                 title(['Association Distribution (Step ', num2str(obj.timestep_counter), ')'], 'Interpreter', 'latex', 'FontSize', 12);
-                
+
                 % Set x-axis labels (measurements + clutter)
                 if N_associations > 1
                     xtick_labels = cell(1, N_associations);
-                    for i = 1:(N_associations-1)
+
+                    for i = 1:(N_associations - 1)
                         xtick_labels{i} = sprintf('M%d', i);
                     end
+
                     xtick_labels{N_associations} = 'Clutter';
                     xticks(1:N_associations);
                     xticklabels(xtick_labels);
                 end
-                
+
                 ylim([0, max(association_dist) * 1.3]); % Add space for star and label
                 grid on;
                 axis square;

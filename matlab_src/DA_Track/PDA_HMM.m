@@ -236,6 +236,9 @@ classdef PDA_HMM < DA_Filter
                 fprintf('------------------------------\n');
             end
 
+            % Advance timestep counter (used by storeHistory as history index)
+            obj.timestep_counter = obj.timestep_counter + 1;
+
             % Step 1: Prediction step
             obj.prediction();
 
@@ -820,6 +823,65 @@ classdef PDA_HMM < DA_Filter
                 fprintf('[ENTROPY] Current entropy: %.4f\n', full(entropy));
             end
 
+        end
+
+        %% ========== STATE HISTORY ==========
+        function storeHistory(obj, measurements, varargin)
+            % STOREHISTORY  Snapshot internal PDA-HMM state into obj.history.
+            %
+            % SYNTAX:
+            %   obj.storeHistory(measurements)
+            %   obj.storeHistory(measurements, true_state)
+            %
+            % INPUTS:
+            %   measurements - Raw measurements passed to timestep()  [N_z x N_m]
+            %   true_state   - (optional) Ground-truth state          [N_x x 1]
+            %                  Pass [] or omit if GT is unavailable.
+            %
+            % ALWAYS STORED (history(k).field):
+            %   x_est          [N_x x 1]   - Gaussian mean extracted from grid
+            %   P_est          [N_x x N_x] - Gaussian covariance extracted from grid
+            %   measurements   [N_z x N_m] - Raw measurements this step
+            %   true_state     [N_x x 1]   - Ground truth ([] if unknown)
+            %   timestep_num   scalar       - Timestep counter
+            %   prior_prob     [npx2 x 1]  - Predicted distribution P(x_k | z_1:k-1)
+            %   likelihood_prob [npx2 x 1] - Combined PDA likelihood grid
+            %   posterior_prob [npx2 x 1]  - Updated distribution P(x_k | z_1:k)
+            %   grid_entropy   scalar       - Shannon entropy of posterior (nat)
+            %
+            % WHEN store_full_history == false:
+            %   Omits prior_prob, likelihood_prob, and posterior_prob to save memory.
+            %   Suitable for large Monte-Carlo runs where grid memory dominates.
+            %
+            % See also timestep, DA_Filter.storeHistory, store_full_history
+
+            % Parse optional true_state argument
+            true_state = [];
+            if nargin > 2 && ~isempty(varargin{1})
+                true_state = varargin{1};
+            end
+
+            k = obj.timestep_counter;
+            [x_est, P_est] = obj.getGaussianEstimate();
+
+            % --- Mandatory DA_Filter contract fields ---
+            obj.history(k).x_est        = x_est;
+            obj.history(k).P_est        = P_est;
+            obj.history(k).measurements = measurements;
+            obj.history(k).true_state   = true_state;
+            obj.history(k).timestep_num = k;
+
+            % --- Grid entropy (lightweight, always stored) ---
+            p = full(obj.posterior_prob);
+            p = p(p > 0); % Avoid log(0)
+            obj.history(k).grid_entropy = -sum(p .* log(p));
+
+            % --- Full grid distributions (only if requested) ---
+            if obj.store_full_history
+                obj.history(k).prior_prob      = obj.prior_prob;
+                obj.history(k).likelihood_prob = obj.likelihood_prob;
+                obj.history(k).posterior_prob  = obj.posterior_prob;
+            end
         end
 
         %% ========== VISUALIZATION ==========

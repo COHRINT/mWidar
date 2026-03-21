@@ -85,3 +85,6 @@ output_*.log
 *_temp.*
 *.large
 *.huge
+
+# AI config files 
+CLAUDE.md

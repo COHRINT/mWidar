@@ -37,8 +37,8 @@ function [] = mWidar_TuningPlot(performance, Data, current_k, filter_type, datas
 
     % Determine state dimensionality based on filter type
     switch lower(filter_type)
-        case 'hmm'
-            state_dim = 2; % HMM only estimates position
+        case {'hmm', 'hmm_rbpf'}
+            state_dim = 2; % HMM / HMM-RBPF only estimate position
         case {'kf', 'hybridpf'}
             state_dim = 6; % KF and PF estimate full state (pos, vel, acc)
         otherwise
@@ -70,7 +70,7 @@ function [] = mWidar_TuningPlot(performance, Data, current_k, filter_type, datas
             % 1 trajectory row + 3 state error rows
             fig_height = 1000;
             num_state_rows = 4; % 1 for trajectory + 3 for states
-        case 'hmm'
+        case {'hmm', 'hmm_rbpf'}
             % 1 state (pos) x 2 dimensions + 1 trajectory plot
             % Use 2 rows: top row for trajectory, bottom row for X and Y errors
             fig_height = 600;
@@ -83,7 +83,7 @@ function [] = mWidar_TuningPlot(performance, Data, current_k, filter_type, datas
     set(gcf, 'Position', [100, 100, 1400, fig_height], 'Visible', 'off');
 
     %% SUBPLOT A: State Trajectory (True vs Estimated)
-    if strcmp(lower(filter_type), 'hmm')
+    if ismember(lower(filter_type), {'hmm', 'hmm_rbpf'})
         subplot(num_state_rows, 3, 1:2); hold on; grid on;
     else
         % KF/PF: trajectory spans all 3 columns of first row
@@ -136,8 +136,8 @@ function [] = mWidar_TuningPlot(performance, Data, current_k, filter_type, datas
             state_indices = [1 3 5; 2 4 6]; % [x_states; y_states]
             gt_indices = [1 3 5; 2 4 6]; % Ground truth indices for KF/PF
             num_states = 3;
-        case 'hmm'
-            % HMM only estimates position in x and y
+        case {'hmm', 'hmm_rbpf'}
+            % HMM / HMM-RBPF only estimate position in x and y
             state_names = {'pos'};
             state_labels = {'Position (m)'};
             state_indices = [1; 2]; % [x_pos; y_pos]
@@ -155,8 +155,8 @@ function [] = mWidar_TuningPlot(performance, Data, current_k, filter_type, datas
 
         for xy_idx = 1:2 % 1=x, 2=y
             % Calculate subplot position based on filter type
-            if strcmp(lower(filter_type), 'hmm')
-                % HMM: Row 1 = trajectory (cols 1:2), Row 2 = errors (X in col 1, Y in col 2)
+            if ismember(lower(filter_type), {'hmm', 'hmm_rbpf'})
+                % HMM / HMM-RBPF: Row 1 = trajectory (cols 1:2), Row 2 = errors (X in col 1, Y in col 2)
                 row = 2; % Always second row for errors
                 col = xy_idx; % Column 1 for X, column 2 for Y
                 subplot_idx = (row - 1) * 3 + col;
@@ -180,8 +180,8 @@ function [] = mWidar_TuningPlot(performance, Data, current_k, filter_type, datas
 
             for k = 1:current_k
 
-                if strcmp(lower(filter_type), 'hmm')
-                    % HMM: GT has only position, x_est has only position
+                if ismember(lower(filter_type), {'hmm', 'hmm_rbpf'})
+                    % HMM / HMM-RBPF: GT has only position, x_est has only position
                     if est_state_idx <= size(x_est, 1) && gt_state_idx <= size(GT, 1)
                         state_error(k) = GT(gt_state_idx, k) - x_est(est_state_idx, k);
                     end

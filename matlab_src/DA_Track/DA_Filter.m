@@ -1,31 +1,76 @@
 classdef (Abstract) DA_Filter < handle
-    % DA_Filter Abstract base class for Data Association filters
+    % DA_Filter  Abstract base class for all Data Association filters.
     %
     % DESCRIPTION:
-    %   Abstract base class defining the common interface for all data association
-    %   filters in the mWidar tracking system. Provides standard methods and
-    %   properties that all concrete filter implementations must support.
+    %   Defines the common interface, shared properties, and concrete utility
+    %   methods for every filter in the mWidar single- and multi-target
+    %   tracking system.  All concrete filter subclasses must implement the
+    %   abstract methods declared here; the concrete methods are available to
+    %   every subclass for free.
     %
-    % ABSTRACT PROPERTIES:
-    %   All concrete subclasses must define these properties
+    % USAGE MODES:
+    %   Implementation / demo  -- call timestep() then getGaussianEstimate().
+    %                             No history is accumulated; zero overhead.
+    %   Testing / analysis     -- call timestep(), then storeHistory() to
+    %                             snapshot the full internal state into
+    %                             obj.history.  Analyse obj.history offline.
     %
-    % ABSTRACT METHODS:
-    %   timestep                - Process single time step with measurements
-    %   getGaussianEstimate     - Extract Gaussian state estimate 
-    %   prediction              - Perform prediction step
-    %   measurement_update      - Perform measurement update step
+    % ABSTRACT PROPERTIES (subclasses must declare):
+    %   debug                  - Enable verbose debug output
+    %   DynamicPlot            - Enable real-time step-by-step visualization
+    %   dynamic_figure_handle  - Figure handle used by DynamicPlot
     %
-    % CONCRETE METHODS:
-    %   updateDynamicPlot       - Update real-time visualization
-    %   getTimestepCount        - Get current timestep counter
-    %   validateCommonInputs    - Input validation utilities
+    % SHARED PUBLIC PROPERTIES:
+    %   history                - Struct array populated by storeHistory().
+    %                            Always has fields x_est and P_est; each
+    %                            subclass adds its own filter-specific fields.
+    %   store_full_history     - When true (default), storeHistory() saves
+    %                            the complete internal state (e.g. full
+    %                            particle clouds, full HMM grids per
+    %                            particle).  When false, only lightweight
+    %                            summary statistics are stored.  Set via
+    %                            FilterConfig before constructing the filter.
+    %   current_ESS            - Most-recently computed Effective Sample Size
+    %                            (NaN for non-particle filters).  Updated
+    %                            inside timestep() BEFORE resampling so that
+    %                            storeHistory() can read it without the caller
+    %                            having to pass it explicitly.
+    %   Frames                 - Cell array of captured figure frames for
+    %                            GIF / video export.
+    %
+    % ABSTRACT METHODS (subclasses must implement):
+    %   timestep               - Run one full predict-update cycle
+    %   getGaussianEstimate    - Return [mean, covariance] Gaussian summary
+    %   prediction             - Prediction step only
+    %   measurement_update     - Measurement-update step only
+    %   visualize              - Render current filter state to a figure
+    %   storeHistory           - Snapshot full internal state into obj.history
+    %
+    % CONCRETE METHODS (available to all subclasses):
+    %   initializeDynamicPlot  - Create the real-time visualization figure
+    %   updateDynamicPlot      - Refresh visualization after each timestep
+    %   plotUpdate             - Manual visualization refresh (external call)
+    %   getTimestepCount       - Return current timestep counter value
+    %   resetTimestepCount     - Reset timestep counter to zero
+    %   validateCommonInputs   - Basic measurement sanity checks
+    %   printFilterInfo        - Print current configuration to console
+    %   captureFrame           - Capture current figure frame for animation
+    %   saveAnimation          - Save captured frames as animated GIF
+    %   clearFrames            - Free frame buffer memory
+    %   hasFrames              - True if any frames have been captured
+    %   getFrameCount          - Number of captured frames
+    %
+    % STATIC METHODS:
+    %   parseFilterOptions     - Parse common constructor name-value pairs
     %
     % SUBCLASSES:
-    %   PDA_PF                  - Particle Filter with PDA data association
-    %   PDA_HMM                 - Hidden Markov Model with PDA data association
-    %   GNN_PF                  - Particle Filter with GNN data association
+    %   KF-based  : PDA_KF, GNN_KF
+    %   PF-based  : PDA_PF, GNN_PF, MC_PF
+    %   HMM-based : PDA_HMM, GNN_HMM
+    %   RBPF      : KF_RBPF, HMM_RBPF
+    %   Multi-obj : JPDA_KF, KF_RBPF_multi
     %
-    % See also PDA_PF, PDA_HMM, GNN_PF
+    % See also PDA_KF, PDA_PF, PDA_HMM, KF_RBPF, HMM_RBPF
     
     properties (Abstract)
         % Core filter properties that all subclasses must implement
@@ -40,8 +85,41 @@ classdef (Abstract) DA_Filter < handle
     end
     
     properties (Access = public)
-        % Frame storage for animation recording
-        Frames = {}            % Cell array to store captured frames for animation
+        % -----------------------------------------------------------------
+        % History / state-snapshot storage
+        % -----------------------------------------------------------------
+
+        % history - Struct array populated by storeHistory().
+        %   Each element history(k) corresponds to one timestep.
+        %   Guaranteed fields (set by every subclass):
+        %     .x_est        [N_x x 1]   - Gaussian mean state estimate
+        %     .P_est        [N_x x N_x] - Gaussian covariance estimate
+        %     .measurements [N_z x N_m] - Raw measurements passed in
+        %     .true_state   [N_x x 1]   - Ground truth ([] if not provided)
+        %     .timestep_num scalar       - Timestep index
+        %   Additional filter-specific fields are appended by each subclass.
+        history = struct([])
+
+        % store_full_history - Controls verbosity of storeHistory().
+        %   true  (default) : Save complete internal state -- full particle
+        %                     clouds, full HMM grid distributions per
+        %                     particle, all trajectory buffers, etc.
+        %                     Use for offline analysis and visualisation.
+        %   false           : Save only lightweight summary statistics
+        %                     (x_est, P_est, ESS, association indices).
+        %                     Use for large Monte-Carlo runs where memory
+        %                     is a concern.
+        store_full_history = true
+
+        % current_ESS - Effective Sample Size computed in the most recent
+        %   timestep(), captured BEFORE resampling.  Read by storeHistory()
+        %   so the caller never needs to pass it explicitly.
+        %   NaN for non-particle-based filters (KF, HMM variants).
+        current_ESS = NaN
+
+        % Frames - Cell array of figure frames for GIF / video animation.
+        %   Populated by captureFrame(); saved by saveAnimation().
+        Frames = {}
     end
     
     methods (Abstract)
@@ -93,6 +171,41 @@ classdef (Abstract) DA_Filter < handle
         % DESCRIPTION:
         %   Create visualization of current filter state. Implementation
         %   varies by filter type (particles, probability grid, etc.).
+
+        storeHistory(obj, measurements, varargin)
+        % STOREHISTORY  Snapshot the full internal filter state into obj.history.
+        %
+        % SYNTAX:
+        %   obj.storeHistory(measurements)
+        %   obj.storeHistory(measurements, true_state)
+        %
+        % INPUTS:
+        %   measurements - Raw measurements passed to this timestep [N_z x N_m].
+        %   true_state   - (optional) Ground-truth state [N_x x 1].
+        %                  Pass [] or omit when GT is unavailable (e.g. live data).
+        %
+        % DESCRIPTION:
+        %   Appends a new struct to obj.history containing the complete
+        %   internal state of the filter at the current timestep.  The
+        %   level of detail is controlled by obj.store_full_history:
+        %     true  -- full state (particles, grids, trajectories, etc.)
+        %     false -- lightweight summary only (x_est, P_est, ESS, etc.)
+        %
+        %   This method is intentionally NOT called inside timestep() so
+        %   that filters can be used in live / demo contexts with zero
+        %   history overhead.  The test bench calls it explicitly:
+        %
+        %     filter.timestep(z);
+        %     filter.storeHistory(z, GT(:,k));   % testing only
+        %
+        %   Every subclass implementation MUST populate at minimum:
+        %     history(k).x_est        - Gaussian mean
+        %     history(k).P_est        - Gaussian covariance
+        %     history(k).measurements - Raw measurements
+        %     history(k).true_state   - Ground truth ([] if unavailable)
+        %     history(k).timestep_num - Timestep counter value
+        %
+        % See also getGaussianEstimate, timestep, store_full_history
     end
     
     methods
@@ -459,12 +572,8 @@ classdef (Abstract) DA_Filter < handle
             addParameter(p, 'Debug', false, @islogical);
             addParameter(p, 'DynamicPlot', false, @islogical);
             addParameter(p, 'ValidationSigma', 2, @(x) isnumeric(x) && x > 0);
-            
-            % TODO: Add more common options:
-            % - 'Verbose', false
-            % - 'ValidationLevel', 'basic'
-            % - 'PlotStyle', 'default'
-            
+            addParameter(p, 'ESSThreshold', 0.5, @(x) isnumeric(x) && x > 0 && x <= 1);
+
             parse(p, varargin{:});
             options = p.Results;
         end

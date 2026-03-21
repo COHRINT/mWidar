@@ -48,11 +48,20 @@ classdef GNN_KF < DA_Filter
         S_innovation % Innovation covariance [N_z x N_z]
 
         % Control Flags (inherited from DA_Filter)
-        debug = false % Enable debug output
-        DynamicPlot = false % Enable real-time visualization
+        debug = false      % Enable verbose debug output
+        DynamicPlot = false % Enable real-time step-by-step visualization
 
         % Dynamic Plotting (inherited from DA_Filter)
         dynamic_figure_handle % Figure handle for dynamic plotting
+
+        % -----------------------------------------------------------------
+        % Intermediate update quantities — written by measurement_update(),
+        % read by storeHistory() and by NIS / diagnostic computations.
+        % -----------------------------------------------------------------
+        selected_z  = []  % Measurement selected by GNN          [N_z x 1]
+        innovation  = []  % Innovation = selected_z - z_predicted [N_z x 1]
+        kalman_gain = []  % Kalman gain K at last update          [N_x x N_z]
+        valid_z     = []  % Gated measurements at last step       [N_z x N_valid]
     end
 
     methods
@@ -392,10 +401,16 @@ classdef GNN_KF < DA_Filter
             end
 
             % Step 3: Standard Kalman measurement update
-            KK = obj.P_predicted * obj.H' / obj.S_innovation;
+            KK    = obj.P_predicted * obj.H' / obj.S_innovation;
             innov = y - obj.z_predicted;
             obj.x_current = obj.x_predicted + KK * innov;
             obj.P_current = (eye(size(obj.F, 1)) - KK * obj.H) * obj.P_predicted;
+
+            % Cache intermediates for storeHistory() / diagnostics
+            obj.selected_z  = y;
+            obj.innovation  = innov;
+            obj.kalman_gain = KK;
+            obj.valid_z     = valid_z;
 
             if obj.debug
                 fprintf('[MEASUREMENT UPDATE] Complete. State: [%.4f, %.4f]\n', obj.x_current(1), obj.x_current(2));
@@ -529,6 +544,69 @@ classdef GNN_KF < DA_Filter
             xlim([-2 2]);
             ylim([0 4]);
             axis square;
+        end
+
+        %% ========== HISTORY SNAPSHOT ==========
+        function storeHistory(obj, measurements, varargin)
+            % STOREHISTORY  Snapshot full GNN-KF state into obj.history.
+            %
+            % SYNTAX:
+            %   obj.storeHistory(measurements)
+            %   obj.storeHistory(measurements, true_state)
+            %
+            % INPUTS:
+            %   measurements - Raw measurements passed to this timestep [N_z x N_m].
+            %   true_state   - (optional) Ground-truth state [N_x x 1].
+            %                  Pass [] or omit when GT is unavailable.
+            %
+            % DESCRIPTION:
+            %   Appends one struct to obj.history at index obj.timestep_counter.
+            %
+            %   Fields always written (DA_Filter contract):
+            %     .x_est         [N_x x 1]   - Post-update state estimate
+            %     .P_est         [N_x x N_x] - Post-update covariance
+            %     .x_predicted   [N_x x 1]   - Pre-update predicted state
+            %     .P_predicted   [N_x x N_x] - Pre-update predicted covariance
+            %     .innovation    [N_z x 1]   - z_selected - z_predicted
+            %     .innovation_cov[N_z x N_z] - S = H*P_pred*H' + R
+            %     .kalman_gain   [N_x x N_z] - K at this timestep
+            %     .selected_z    [N_z x 1]   - Measurement chosen by GNN
+            %     .valid_z       [N_z x N_v] - Gated measurement set
+            %     .measurements  [N_z x N_m] - Raw measurements
+            %     .true_state    [N_x x 1]   - GT state ([] if unavailable)
+            %     .timestep_num  scalar       - Timestep counter value
+            %
+            % NOTE:
+            %   Innovation and innovation covariance are stored directly
+            %   (not recomputed) because they are needed for the NIS
+            %   filter-consistency metric without re-running the algorithm.
+            %
+            % See also timestep, getGaussianEstimate, store_full_history
+
+            true_state = [];
+            if nargin > 2 && ~isempty(varargin{1})
+                true_state = varargin{1};
+            end
+
+            k = obj.timestep_counter;
+
+            [x_est, P_est] = obj.getGaussianEstimate();
+
+            % DA_Filter contract fields
+            obj.history(k).x_est          = x_est;
+            obj.history(k).P_est          = P_est;
+            obj.history(k).measurements   = measurements;
+            obj.history(k).true_state     = true_state;
+            obj.history(k).timestep_num   = k;
+
+            % GNN-KF specific fields
+            obj.history(k).x_predicted    = obj.x_predicted;
+            obj.history(k).P_predicted    = obj.P_predicted;
+            obj.history(k).innovation     = obj.innovation;
+            obj.history(k).innovation_cov = obj.S_innovation;
+            obj.history(k).kalman_gain    = obj.kalman_gain;
+            obj.history(k).selected_z     = obj.selected_z;
+            obj.history(k).valid_z        = obj.valid_z;
         end
 
     end

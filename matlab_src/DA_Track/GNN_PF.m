@@ -63,6 +63,13 @@ classdef GNN_PF < DA_Filter
 
         % Dynamic Plotting (inherited from DA_Filter)
         dynamic_figure_handle % Figure handle for dynamic plotting
+
+        % History storage (RBPF-compatible for post-processing visualization)
+        % NOTE: 'history' is inherited from DA_Filter — do not redeclare here
+        particle_association_histories
+        particle_state_trajectories
+        particle_measurement_trajectories
+        last_association_indices = []
     end
 
     methods
@@ -136,6 +143,7 @@ classdef GNN_PF < DA_Filter
             obj.debug = options.Debug;
             obj.DynamicPlot = options.DynamicPlot;
             obj.validation_sigma_bounds = options.ValidationSigma;
+            obj.ESS_threshold_percentage = options.ESSThreshold;
 
             % Initialize basic properties
             obj.N_p = N_particles;
@@ -208,6 +216,18 @@ classdef GNN_PF < DA_Filter
 
             obj.weights = ones(N_particles, 1) / N_particles;
 
+            % Initialize history (struct([]) via DA_Filter inheritance)
+            obj.history = struct([]);
+
+            obj.particle_association_histories = cell(1, obj.N_p);
+            obj.particle_state_trajectories = cell(1, obj.N_p);
+            obj.particle_measurement_trajectories = cell(1, obj.N_p);
+            for p = 1:obj.N_p
+                obj.particle_association_histories{p} = [];
+                obj.particle_state_trajectories{p} = obj.particles(:, p);
+                obj.particle_measurement_trajectories{p} = [];
+            end
+
             % Store system matrices
             obj.F = F;
             obj.Q = Q;
@@ -271,6 +291,15 @@ classdef GNN_PF < DA_Filter
             %
             % See also prediction, measurement_update, resample
 
+            % Advance timestep counter (used by storeHistory as history index)
+            obj.timestep_counter = obj.timestep_counter + 1;
+
+            if nargin > 2
+                true_state = varargin{1};
+            else
+                true_state = [];
+            end
+
             if obj.debug
                 fprintf('\n=== GNN-PF TIMESTEP START ===\n');
                 fprintf('Input: %d measurements\n', size(z, 2));
@@ -311,15 +340,23 @@ classdef GNN_PF < DA_Filter
             % TODO: Implement GNN data association to select single best measurement
             % TODO: Compare likelihoods/costs for each measurement and choose optimal one
             % TODO: Handle missed detection case when no measurements pass gating
-            selected_measurement = obj.Data_Association(z_to_process);
+            [selected_measurement, selected_assoc_idx] = obj.Data_Association(z_to_process);
 
             % Step 4: Measurement Update Step
             obj.measurement_update(selected_measurement);
 
             % Step 5: Sequential Importance Resampling (SIR) based on ESS threshold
-            ESS = 1 / sum(obj.weights .^ 2);
+            ESS = 1 / sum(obj.weights .^ 2); % ESS before resampling
             ESS_percentage = ESS / obj.N_p;
-            
+
+            % Cache ESS for storeHistory() (called externally by test bench)
+            obj.current_ESS = ESS;
+
+            % Update per-particle trajectory buffers (for full history)
+            particle_associations = selected_assoc_idx * ones(1, obj.N_p);
+            obj.last_association_indices = particle_associations;
+            obj.appendParticleHistoryStep(particle_associations, selected_measurement);
+
             if ESS_percentage < obj.ESS_threshold_percentage
                 if obj.debug
                     fprintf('\n');
@@ -349,8 +386,7 @@ classdef GNN_PF < DA_Filter
             % Update dynamic plot if enabled
             if obj.DynamicPlot
 
-                if nargin > 2
-                    true_state = varargin{1};
+                if ~isempty(true_state)
                     obj.updateDynamicPlot(z_to_process, true_state);
                 else
                     obj.updateDynamicPlot(z_to_process);
@@ -462,7 +498,7 @@ classdef GNN_PF < DA_Filter
         end
 
         %% ========== GLOBAL NEAREST NEIGHBOR DATA ASSOCIATION ==========
-        function selected_measurement = Data_Association(obj, z_valid)
+        function [selected_measurement, selected_assoc_idx] = Data_Association(obj, z_valid)
             % DATA_ASSOCIATION Global Nearest Neighbor data association for validated measurements
             %
             % SYNTAX:
@@ -494,6 +530,7 @@ classdef GNN_PF < DA_Filter
             % Handle empty measurement case (missed detection)
             if isempty(z_valid)
                 selected_measurement = [];
+                selected_assoc_idx = 0;
 
                 if obj.debug
                     fprintf('[GNN DATA ASSOCIATION] No validated measurements - missed detection\n');
@@ -505,6 +542,7 @@ classdef GNN_PF < DA_Filter
             % Handle single measurement case
             if size(z_valid, 2) == 1
                 selected_measurement = z_valid;
+                selected_assoc_idx = 1;
 
                 if obj.debug
                     fprintf('[GNN DATA ASSOCIATION] Single measurement - auto-selected [%.3f, %.3f]\n', ...
@@ -537,6 +575,7 @@ classdef GNN_PF < DA_Filter
 
                 [~, best_idx] = min(distances);
                 selected_measurement = z_valid(:, best_idx);
+                selected_assoc_idx = best_idx;
 
                 if obj.debug
                     fprintf('[GNN] Selected measurement %d (closest to prediction): [%.3f, %.3f]\n', ...
@@ -572,6 +611,7 @@ classdef GNN_PF < DA_Filter
             % Otherwise (best_idx > N_measurements), it's clutter - return empty
             if best_idx <= N_measurements
                 selected_measurement = z_valid(:, best_idx);
+                selected_assoc_idx = best_idx;
                 
                 if obj.debug
                     fprintf('[GNN] Selected measurement %d (constant %.4f): [%.3f, %.3f]\n', ...
@@ -580,6 +620,7 @@ classdef GNN_PF < DA_Filter
             else
                 % Clutter hypothesis wins - missed detection
                 selected_measurement = [];
+                selected_assoc_idx = 0;
                 
                 if obj.debug
                     fprintf('[GNN] Clutter hypothesis wins (constant %.4f) - missed detection\n', ...
@@ -872,6 +913,118 @@ classdef GNN_PF < DA_Filter
             state_est_covariance = state_est_covariance +1e-8 * eye(size(state_est_covariance, 1));
         end
 
+        function association_dist = getAssociationDistribution(obj)
+            % GETASSOCIATIONDISTRIBUTION Weighted association distribution for last timestep.
+            % Reads live obj.last_association_indices and obj.weights so it works whether
+            % or not storeHistory() has been called externally.
+            if isempty(obj.last_association_indices)
+                association_dist = [];
+                return;
+            end
+
+            particle_assocs  = obj.last_association_indices(:);
+            particle_weights = obj.weights(:);
+
+            max_assoc = max([particle_assocs; 0]);
+            association_dist = zeros(max_assoc + 1, 1); % [meas_1..meas_N, clutter]
+            for idx = 1:max_assoc
+                association_dist(idx) = sum(particle_weights(particle_assocs == idx));
+            end
+            association_dist(end) = sum(particle_weights(particle_assocs == 0));
+
+            total_prob = sum(association_dist);
+            if total_prob > 0
+                association_dist = association_dist / total_prob;
+            end
+        end
+
+        function visualizeHistory(obj, varargin)
+            % VISUALIZEHISTORY RBPF-style post-processing visualization for GNN_PF
+            visualize_PF_history(obj, varargin{:});
+        end
+
+        function appendParticleHistoryStep(obj, particle_associations, selected_measurement)
+            % APPENDPARTICLEHISTORYSTEP Append current per-particle state/association history
+            if isempty(particle_associations)
+                particle_associations = zeros(1, obj.N_p);
+            end
+
+            if size(particle_associations, 2) ~= obj.N_p
+                particle_associations = repmat(particle_associations(1), 1, obj.N_p);
+            end
+
+            for p = 1:obj.N_p
+                obj.particle_state_trajectories{p}(:, end + 1) = obj.particles(:, p);
+                obj.particle_association_histories{p}(end + 1) = particle_associations(p);
+
+                if ~isempty(selected_measurement) && particle_associations(p) > 0
+                    obj.particle_measurement_trajectories{p}(:, end + 1) = selected_measurement;
+                else
+                    obj.particle_measurement_trajectories{p}(:, end + 1) = NaN(obj.N_z, 1);
+                end
+            end
+        end
+
+        function storeHistory(obj, measurements, varargin)
+            % STOREHISTORY  Snapshot internal GNN-PF state into obj.history.
+            %
+            % SYNTAX:
+            %   obj.storeHistory(measurements)
+            %   obj.storeHistory(measurements, true_state)
+            %
+            % INPUTS:
+            %   measurements - Raw measurements passed to timestep()  [N_z x N_m]
+            %   true_state   - (optional) Ground-truth state          [N_x x 1]
+            %                  Pass [] or omit if GT is unavailable.
+            %
+            % ALWAYS STORED (history(k).field):
+            %   x_est                  [N_x x 1]   - Weighted-mean state estimate
+            %   P_est                  [N_x x N_x] - Weighted-covariance estimate
+            %   measurements           [N_z x N_m] - Raw measurements this step
+            %   true_state             [N_x x 1]   - Ground truth ([] if unknown)
+            %   timestep_num           scalar       - Timestep counter
+            %   ESS                    scalar       - ESS before resampling
+            %   particle_weights       [N_p x 1]   - Normalised particle weights
+            %   particle_associations  [1 x N_p]   - Association index per particle
+            %
+            % WHEN store_full_history == true (default):
+            %   particle_states        [N_x x N_p] - Full particle cloud
+            %   particle_assoc_hist    {1 x N_p}   - Per-particle association history
+            %   particle_trajectories  {1 x N_p}   - Per-particle state trajectory
+            %   particle_measurements  {1 x N_p}   - Per-particle measurement trajectory
+            %
+            % See also timestep, DA_Filter.storeHistory, store_full_history
+
+            % Parse optional true_state argument
+            true_state = [];
+            if nargin > 2 && ~isempty(varargin{1})
+                true_state = varargin{1};
+            end
+
+            k = obj.timestep_counter;
+            [x_est, P_est] = obj.getGaussianEstimate();
+
+            % --- Mandatory DA_Filter contract fields ---
+            obj.history(k).x_est        = x_est;
+            obj.history(k).P_est        = P_est;
+            obj.history(k).measurements = measurements;
+            obj.history(k).true_state   = true_state;
+            obj.history(k).timestep_num = k;
+
+            % --- PF summary fields (always stored; lightweight) ---
+            obj.history(k).ESS                   = obj.current_ESS;
+            obj.history(k).particle_weights       = obj.weights';
+            obj.history(k).particle_associations  = obj.last_association_indices;
+
+            % --- Full particle cloud (only when requested) ---
+            if obj.store_full_history
+                obj.history(k).particle_states       = obj.particles;
+                obj.history(k).particle_assoc_hist   = obj.particle_association_histories;
+                obj.history(k).particle_trajectories = obj.particle_state_trajectories;
+                obj.history(k).particle_measurements = obj.particle_measurement_trajectories;
+            end
+        end
+
         function printState(obj, label)
             % PRINTSTATE Print current state estimate in readable format
             %
@@ -1083,6 +1236,13 @@ classdef GNN_PF < DA_Filter
 
             % Resample particles directly
             obj.particles = obj.particles(:, indsampsout);
+
+            % Resample particle trajectory/association histories to preserve lineage
+            if ~isempty(obj.particle_state_trajectories)
+                obj.particle_state_trajectories = obj.particle_state_trajectories(indsampsout);
+                obj.particle_association_histories = obj.particle_association_histories(indsampsout);
+                obj.particle_measurement_trajectories = obj.particle_measurement_trajectories(indsampsout);
+            end
 
             % Set uniform weights
             obj.weights = (1 / obj.N_p) * ones(size(obj.weights));

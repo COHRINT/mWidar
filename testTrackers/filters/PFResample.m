@@ -1,4 +1,4 @@
-function [sampsOut, wtsOut] = PFResample(sampsIn, wtsIn)
+function [sampsOut, wtsOut, indsampsout] = PFResample(sampsIn, wtsIn)
 % PFRESAMPLE Bootstrap resampling for particle filter
 %   Implements systematic resampling to reduce particle degeneracy by
 %   selecting particles with replacement according to their weights.
@@ -10,6 +10,7 @@ function [sampsOut, wtsOut] = PFResample(sampsIn, wtsIn)
 %   Outputs:
 %     sampsOut - Resampled particles (same size as sampsIn)
 %     wtsOut   - Uniform weights after resampling (1 x N_particles vector)
+%     indsampsout - Indices of resampled particles (1 x N_particles vector)
 %
 %   Algorithm:
 %     1. Normalizes input weights to sum to 1
@@ -19,7 +20,7 @@ function [sampsOut, wtsOut] = PFResample(sampsIn, wtsIn)
 %     5. Returns resampled particles with uniform weights
 %
 %   Example:
-%     [particles_new, weights_new] = PFResample(particles, weights)
+%     [particles_new, weights_new, indices] = PFResample(particles, weights)
 %
 %   See also TEST_HYBRID_PF
 

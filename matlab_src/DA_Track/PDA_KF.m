@@ -67,6 +67,12 @@ classdef PDA_KF < DA_Filter
         composite_liklihood
         valid_z
 
+        % Intermediate values cached in measurement_update() for storeHistory()
+        innovation  = []  % PDA weighted combined innovation  [N_z x 1]
+        kalman_gain = []  % Kalman gain K                     [N_x x N_z]
+        beta        = []  % PDA association weights per meas  [1 x N_valid]
+        beta0       = NaN % Probability all measurements are clutter (scalar)
+
     end
 
     methods
@@ -129,16 +135,18 @@ classdef PDA_KF < DA_Filter
         end
 
         %% ========== TIMESTEP ==========
-        function timestep(obj, measurements, signal, varargin)
+        function timestep(obj, measurements, varargin)
             % TIMESTEP Process single time step with PDA-KF algorithm
             %
             % SYNTAX:
             %   obj.timestep(measurements)
+            %   obj.timestep(measurements, signal)   % [128x128] mWidar image
             %   obj.timestep(measurements, true_state)
             %
             % INPUTS:
             %   measurements - Current measurements [N_z x N_measurements]
-            %   true_state   - (optional) True state for visualization
+            %   signal       - (optional) [128x128] raw mWidar image for magnitude likelihood
+            %   true_state   - (optional) True state for visualization [N_x x 1]
             %
             % DESCRIPTION:
             %   Implements complete PDA-KF algorithm:
@@ -147,6 +155,18 @@ classdef PDA_KF < DA_Filter
             %   Use getGaussianEstimate() to extract state estimates after timestep.
             %
             % See also prediction, measurement_update, Data_Association
+
+            % Extract optional signal (128x128 image) vs true_state from varargin
+            signal = [];
+            true_state = [];
+            for vi = 1:numel(varargin)
+                v = varargin{vi};
+                if isnumeric(v) && ~isvector(v) && ndims(v) == 2 && all(size(v) > 2) %#ok<ISMAT>
+                    signal = v;
+                elseif isnumeric(v)
+                    true_state = v;
+                end
+            end
 
             if obj.debug
                 fprintf('\n=== PDA-KF TIMESTEP START ===\n');
@@ -163,11 +183,14 @@ classdef PDA_KF < DA_Filter
                 fprintf('------------------------------\n');
             end
 
+            % Advance timestep counter (used by storeHistory as history index)
+            obj.timestep_counter = obj.timestep_counter + 1;
+
             % Step 1: Prediction step
             obj.prediction();
 
             % Step 2: Measurement update with PDA
-            obj.measurement_update(measurements,signal);
+            obj.measurement_update(measurements, signal);
 
             if obj.debug
                 [x_est, P_est] = obj.getGaussianEstimate();
@@ -178,19 +201,16 @@ classdef PDA_KF < DA_Filter
 
             % Update dynamic plot if enabled
             if obj.DynamicPlot
-
-                if nargin > 2
-                    true_state = varargin{1};
+                if ~isempty(true_state)
                     obj.updateDynamicPlot(measurements, true_state);
                 else
                     obj.updateDynamicPlot(measurements);
                 end
-
             end
 
-            obj.visualize(1,'PDA-KF State Estimate',[],signal)
-
-   
+            if ~isempty(signal)
+                obj.visualize(1, 'PDA-KF State Estimate', [], signal);
+            end
 
         end
 
@@ -338,28 +358,32 @@ classdef PDA_KF < DA_Filter
             % Smush z_mag into a col vector
             z_mag = z_mag(:);
 
+            % Determine if magnitude likelihood is available
+            use_mag = ~isempty(obj.pointlikelihood_mag) && ~isempty(z_mag);
+
             % Compute likelihood of each validated measurement
             for j = 1:size(obj.valid_z, 2)
                 detection_likelihood = (mvnpdf(obj.valid_z(:, j), obj.z_predicted, obj.S_innovation) * oPD) / lambda;
 
-                % Magnitude likelihood
-
-                % Get index in lookup table
-                % Find measurement linear index
-                [~, meas_x_idx] = min(abs(xgrid - obj.valid_z(1,j)));
-                [~, meas_y_idx] = min(abs(ygrid - obj.valid_z(2,j)));
-                meas_linear_idx = sub2ind([npx, npx], meas_y_idx, meas_x_idx);
-
-                mag_liklihood_values = obj.pointlikelihood_mag(meas_linear_idx, :);
-                magnitude_likelihood = normpdf(z_mag(meas_linear_idx),mag_liklihood_values(1),mag_liklihood_values(2)); % Weighted slightly
-
-               
-                
                 obj.detection_liklihood(j) = detection_likelihood;
-                obj.magnitude_liklihood(j) = magnitude_likelihood;
 
-                L(j) = detection_likelihood * magnitude_likelihood;
-                
+                if use_mag
+                    % Magnitude likelihood via precomputed lookup table
+                    [~, meas_x_idx] = min(abs(xgrid - obj.valid_z(1,j)));
+                    [~, meas_y_idx] = min(abs(ygrid - obj.valid_z(2,j)));
+                    meas_linear_idx = sub2ind([npx, npx], meas_y_idx, meas_x_idx);
+
+                    mag_liklihood_values = obj.pointlikelihood_mag(meas_linear_idx, :);
+                    magnitude_likelihood = normpdf(z_mag(meas_linear_idx), mag_liklihood_values(1), mag_liklihood_values(2));
+
+                    obj.magnitude_liklihood(j) = magnitude_likelihood;
+                    L(j) = detection_likelihood * magnitude_likelihood;
+                else
+                    % Detection-only fallback (no magnitude lookup table)
+                    obj.magnitude_liklihood(j) = 1;
+                    L(j) = detection_likelihood;
+                end
+
                 obj.composite_liklihood(j) = L(j);
 
                 if obj.debug
@@ -532,6 +556,12 @@ classdef PDA_KF < DA_Filter
             obj.x_current = obj.x_predicted + KK * innov;
             obj.P_current = beta0 * obj.P_predicted + (1 - beta0) * Pc + P_tilde;
 
+            % Cache intermediate values for storeHistory()
+            obj.innovation  = innov;
+            obj.kalman_gain = KK;
+            obj.beta        = beta;
+            obj.beta0       = beta0;
+
             if obj.debug
                 fprintf('[MEASUREMENT UPDATE] Complete. State: [%.4f, %.4f]\n', obj.x_current(1), obj.x_current(2));
             end
@@ -563,6 +593,74 @@ classdef PDA_KF < DA_Filter
                     x_est(1), x_est(2), det(P_est));
             end
 
+        end
+
+        %% ========== STATE HISTORY ==========
+        function storeHistory(obj, measurements, varargin)
+            % STOREHISTORY  Snapshot internal PDA-KF state into obj.history.
+            %
+            % SYNTAX:
+            %   obj.storeHistory(measurements)
+            %   obj.storeHistory(measurements, true_state)
+            %
+            % INPUTS:
+            %   measurements - Raw measurements passed to timestep()  [N_z x N_m]
+            %   true_state   - (optional) Ground-truth state          [N_x x 1]
+            %                  Pass [] or omit if GT is unavailable.
+            %
+            % ALWAYS STORED (history(k).field):
+            %   x_est          [N_x x 1]   - Posterior state estimate
+            %   P_est          [N_x x N_x] - Posterior covariance
+            %   measurements   [N_z x N_m] - Raw measurements this step
+            %   true_state     [N_x x 1]   - Ground truth ([] if unknown)
+            %   timestep_num   scalar       - Timestep counter
+            %   x_predicted    [N_x x 1]   - Prior (predicted) state
+            %   P_predicted    [N_x x N_x] - Prior (predicted) covariance
+            %   innovation     [N_z x 1]   - PDA weighted combined innovation ν̄
+            %   innovation_cov [N_z x N_z] - Innovation covariance S
+            %   kalman_gain    [N_x x N_z] - Kalman gain K
+            %   valid_z        [N_z x N_v] - Gated measurements
+            %   beta           [1 x N_v]   - PDA association weights per meas
+            %   beta0          scalar       - Clutter hypothesis probability
+            %
+            % NOTE: store_full_history flag is reserved for future extensions
+            % (e.g. per-measurement likelihood storage). Currently all fields
+            % are stored regardless of the flag.
+            %
+            % See also timestep, DA_Filter.storeHistory, store_full_history
+
+            % Parse optional true_state argument
+            true_state = [];
+            if nargin > 2 && ~isempty(varargin{1})
+                true_state = varargin{1};
+            end
+
+            k = obj.timestep_counter;
+            [x_est, P_est] = obj.getGaussianEstimate();
+
+            % --- Mandatory DA_Filter contract fields ---
+            obj.history(k).x_est        = x_est;
+            obj.history(k).P_est        = P_est;
+            obj.history(k).measurements = measurements;
+            obj.history(k).true_state   = true_state;
+            obj.history(k).timestep_num = k;
+
+            % --- KF intermediates (always stored; needed for NIS/NEES) ---
+            obj.history(k).x_predicted    = obj.x_predicted;
+            obj.history(k).P_predicted    = obj.P_predicted;
+            obj.history(k).innovation     = obj.innovation;
+            obj.history(k).innovation_cov = obj.S_innovation;
+            obj.history(k).kalman_gain    = obj.kalman_gain;
+
+            % --- PDA-specific fields ---
+            obj.history(k).valid_z = obj.valid_z;
+            obj.history(k).beta    = obj.beta;
+            obj.history(k).beta0   = obj.beta0;
+
+            % --- Likelihood diagnostics (stored when available) ---
+            obj.history(k).detection_likelihood  = obj.detection_liklihood;
+            obj.history(k).magnitude_likelihood  = obj.magnitude_liklihood;
+            obj.history(k).composite_likelihood  = obj.composite_liklihood;
         end
 
         %% ========== VISUALIZATION ==========
@@ -649,8 +747,10 @@ classdef PDA_KF < DA_Filter
             end
 
             % Plot measurements
-            plot(obj.valid_z(1, :), obj.valid_z(2, :), '+', 'Color', [1 0.5 0], ...
+            if ~isempty(obj.valid_z)
+                plot(obj.valid_z(1, :), obj.valid_z(2, :), '+', 'Color', [1 0.5 0], ...
                     'MarkerSize', 10, 'LineWidth', 3, 'DisplayName', 'Measurements');
+            end
             
 
             % Plot true state if provided
@@ -660,8 +760,8 @@ classdef PDA_KF < DA_Filter
                     'DisplayName', 'True Position');
             end
             
-            % Plot mWidar Signal if provided
-            if ~isempty(signal)
+            % Plot mWidar Signal if provided (must be a 2D matrix, not a state vector)
+            if ~isempty(signal) && ~isvector(signal)
                 Lscene = 4;
                 npx = 128;
                 xgrid = linspace(-2, 2, npx);
@@ -683,19 +783,21 @@ classdef PDA_KF < DA_Filter
             ylim([0 4]);
             axis square;
             
-            % Likelihood vs Detection index
-            nexttile
-            cla; hold on
-            bar(obj.detection_liklihood,'b')
+            % Likelihood vs Detection index (only when likelihoods are available)
+            if ~isempty(obj.detection_liklihood)
+                nexttile
+                cla; hold on
+                bar(obj.detection_liklihood,'b')
 
-            nexttile
-            cla; hold on
-            bar(obj.magnitude_liklihood,'r')
+                nexttile
+                cla; hold on
+                bar(obj.magnitude_liklihood,'r')
 
-            nexttile
-            cla; hold on
-            stacked_liklihood = [obj.detection_liklihood;obj.magnitude_liklihood;obj.composite_liklihood];
-            bar(stacked_liklihood)
+                nexttile
+                cla; hold on
+                stacked_liklihood = [obj.detection_liklihood;obj.magnitude_liklihood;obj.composite_liklihood];
+                bar(stacked_liklihood)
+            end
 
             drawnow;
         end

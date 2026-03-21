@@ -79,6 +79,9 @@ classdef GNN_HMM < DA_Filter
 
         % Dynamic Plotting (inherited from DA_Filter)
         dynamic_figure_handle % Figure handle for dynamic plotting
+
+        % GNN-selected measurement cached in timestep() for storeHistory()
+        selected_z = []  % Single measurement chosen by GNN  [N_z x 1]
     end
 
     methods
@@ -235,6 +238,9 @@ classdef GNN_HMM < DA_Filter
                 fprintf('------------------------------\n');
             end
 
+            % Advance timestep counter (used by storeHistory as history index)
+            obj.timestep_counter = obj.timestep_counter + 1;
+
             % Step 1: Prediction step
             obj.prediction();
 
@@ -243,6 +249,9 @@ classdef GNN_HMM < DA_Filter
 
             % Step 3: GNN data association - select single best measurement
             selected_measurement = obj.Data_Association(z_valid);
+
+            % Cache selected measurement for storeHistory()
+            obj.selected_z = selected_measurement;
 
             % Step 4: Measurement update with selected measurement
             obj.measurement_update(selected_measurement);
@@ -916,6 +925,69 @@ classdef GNN_HMM < DA_Filter
                 fprintf('[ENTROPY] Current entropy: %.4f\n', full(entropy));
             end
 
+        end
+
+        %% ========== STATE HISTORY ==========
+        function storeHistory(obj, measurements, varargin)
+            % STOREHISTORY  Snapshot internal GNN-HMM state into obj.history.
+            %
+            % SYNTAX:
+            %   obj.storeHistory(measurements)
+            %   obj.storeHistory(measurements, true_state)
+            %
+            % INPUTS:
+            %   measurements - Raw measurements passed to timestep()  [N_z x N_m]
+            %   true_state   - (optional) Ground-truth state          [N_x x 1]
+            %                  Pass [] or omit if GT is unavailable.
+            %
+            % ALWAYS STORED (history(k).field):
+            %   x_est          [N_x x 1]   - Gaussian mean extracted from grid
+            %   P_est          [N_x x N_x] - Gaussian covariance extracted from grid
+            %   measurements   [N_z x N_m] - Raw measurements this step
+            %   true_state     [N_x x 1]   - Ground truth ([] if unknown)
+            %   timestep_num   scalar       - Timestep counter
+            %   selected_z     [N_z x 1]   - GNN-selected measurement ([] = missed det.)
+            %   prior_prob     [npx2 x 1]  - Predicted distribution P(x_k | z_1:k-1)
+            %   likelihood_prob [npx2 x 1] - Likelihood grid for selected measurement
+            %   posterior_prob [npx2 x 1]  - Updated distribution P(x_k | z_1:k)
+            %   grid_entropy   scalar       - Shannon entropy of posterior (nat)
+            %
+            % WHEN store_full_history == false:
+            %   Omits prior_prob, likelihood_prob, and posterior_prob to save memory.
+            %   Suitable for large Monte-Carlo runs where grid memory dominates.
+            %
+            % See also timestep, DA_Filter.storeHistory, store_full_history
+
+            % Parse optional true_state argument
+            true_state = [];
+            if nargin > 2 && ~isempty(varargin{1})
+                true_state = varargin{1};
+            end
+
+            k = obj.timestep_counter;
+            [x_est, P_est] = obj.getGaussianEstimate();
+
+            % --- Mandatory DA_Filter contract fields ---
+            obj.history(k).x_est        = x_est;
+            obj.history(k).P_est        = P_est;
+            obj.history(k).measurements = measurements;
+            obj.history(k).true_state   = true_state;
+            obj.history(k).timestep_num = k;
+
+            % --- GNN-specific: which measurement was selected ---
+            obj.history(k).selected_z = obj.selected_z;
+
+            % --- Grid entropy (lightweight, always stored) ---
+            p = full(obj.posterior_prob);
+            p = p(p > 0); % Avoid log(0)
+            obj.history(k).grid_entropy = -sum(p .* log(p));
+
+            % --- Full grid distributions (only if requested) ---
+            if obj.store_full_history
+                obj.history(k).prior_prob      = obj.prior_prob;
+                obj.history(k).likelihood_prob = obj.likelihood_prob;
+                obj.history(k).posterior_prob  = obj.posterior_prob;
+            end
         end
 
         %% ========== VISUALIZATION ==========
