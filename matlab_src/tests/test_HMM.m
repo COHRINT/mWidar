@@ -25,7 +25,8 @@
 
 clear; clc; close all;
 
-addpath('../DA_Track');
+addpath('../DA_Track');                   % base: DA_Filter, KF, HMM
+addpath('../DA_Track/single');            % single-target filters
 addpath('../supplemental');
 
 fprintf('=== HMM Oracle Diagnostic Test ===\n\n');

@@ -51,6 +51,14 @@ classdef PDA_KF < DA_Filter
         PG = 0.95 % Gate probability
         lambda_clutter = 2.5 % Clutter density parameter
 
+        % Validation Gate
+        % gamma = validation_sigma_bounds^2 is the Mahalanobis-distance^2 threshold.
+        % A measurement z passes the gate when:
+        %   (z - z_pred)' * S^{-1} * (z - z_pred) < validation_sigma_bounds^2
+        % Set via 'ValidationSigma' constructor option or FilterConfig.
+        % E.g. 2 -> ~2-sigma ellipse, 5 -> very permissive gate (matches run_experiment default).
+        validation_sigma_bounds = 2
+
         % Control Flags (inherited from DA_Filter)
         debug = false % Enable debug output
         DynamicPlot = false % Enable real-time visualization
@@ -106,6 +114,7 @@ classdef PDA_KF < DA_Filter
                 options = DA_Filter.parseFilterOptions(varargin{:});
                 obj.debug = options.Debug;
                 obj.DynamicPlot = options.DynamicPlot;
+                obj.validation_sigma_bounds = options.ValidationSigma;
             end
 
             % Store filter matrices
@@ -281,7 +290,10 @@ classdef PDA_KF < DA_Filter
             % See also timestep, Data_Association
 
             meas = true; % default
-            gamma = chi2inv(0.95, 2); % 95 % confidence threshold
+            % Mahalanobis-distance^2 gate: accept z when NIS < gamma.
+            % gamma = validation_sigma_bounds^2 gives an n-sigma ellipsoid gate.
+            % Set validation_sigma_bounds via 'ValidationSigma' constructor option.
+            gamma = obj.validation_sigma_bounds^2;
             obj.valid_z = [];
 
             if obj.debug

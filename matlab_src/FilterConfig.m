@@ -133,23 +133,25 @@ function cfg = FilterConfig(filter_name, varargin)
         % ==============================================================
         case {'GNN_KF'}
         % ==============================================================
-            cfg.dt = dt;
-            cfg.F  = F;
-            cfg.Q  = Q;
-            cfg.R  = R;
-            cfg.H  = H;
+            cfg.dt              = dt;
+            cfg.F               = F;
+            cfg.Q               = Q;
+            cfg.R               = R;
+            cfg.H               = H;
+            cfg.ValidationSigma = opt.ValidationSigma;
 
         % ==============================================================
         case {'PDA_KF'}
         % ==============================================================
-            cfg.dt             = dt;
-            cfg.F              = F;
-            cfg.Q              = Q;
-            cfg.R              = R;
-            cfg.H              = H;
-            cfg.PD             = opt.PD;
-            cfg.PG             = 0.95;  % Gate probability
-            cfg.lambda_clutter = opt.lambda_clutter;
+            cfg.dt              = dt;
+            cfg.F               = F;
+            cfg.Q               = Q;
+            cfg.R               = R;
+            cfg.H               = H;
+            cfg.PD              = opt.PD;
+            cfg.PG              = 0.95;  % Gate probability
+            cfg.lambda_clutter  = opt.lambda_clutter;
+            cfg.ValidationSigma = opt.ValidationSigma;
 
         % ==============================================================
         case {'GNN_HMM', 'PDA_HMM'}

@@ -39,7 +39,8 @@ dataset_dir = opt.dataset_dir;
 
 %% ---- Paths / addpath ----------------------------------------------------
 script_dir = fileparts(mfilename('fullpath'));
-addpath(fullfile(script_dir, 'DA_Track'));
+addpath(fullfile(script_dir, 'DA_Track'));                  % base: DA_Filter, KF, HMM
+addpath(fullfile(script_dir, 'DA_Track', 'single'));         % single-target filters
 addpath(fullfile(script_dir, 'supplemental'));
 addpath(fullfile(script_dir, 'supplemental', 'Final_Test_Tracks'));
 
@@ -65,28 +66,110 @@ PF_families  = {'PDA_PF','GNN_PF','MC_PF','KF_RBPF','HMM_RBPF'};
 HMM_families = {'GNN_HMM','PDA_HMM'};
 KF_families  = {'PDA_KF','GNN_KF'};
 
-% Choose process noise per family — matches main.m tuned values exactly
-if ismember(filter_name, KF_families)
-    Q = diag([1e-4, 1e-4, 1e-3, 1e-3, 1e-2, 1e-2]);
-    F = expm([0 0 1 0 0 0; 0 0 0 1 0 0; 0 0 0 0 1 0; ...
-              0 0 0 0 0 1; 0 0 0 0 0 0; 0 0 0 0 0 0] * dt);
-elseif ismember(filter_name, PF_families)
-    if strcmp(filter_name, 'KF_RBPF')
-        Q = diag([1e-4, 1e-4, 1e-3, 1e-3, 1e-3, 1e-3]);
-        F = expm([0 0 1 0 0 0; 0 0 0 1 0 0; 0 0 0 0 1 0; ...
-                  0 0 0 0 0 1; 0 0 0 0 0 0; 0 0 0 0 0 0] * dt);
-    else  % GNN_PF, PDA_PF, MC_PF, HMM_RBPF
-        Q = diag([1e-3, 1e-3, 1e-2, 1e-2, 1e-1, 1e-1]);
-        F = [1 0 dt 0 dt^2/2 0; 0 1 0 dt 0 dt^2/2; ...
-             0 0 1  0 dt     0; 0 0 0 1  0 dt; ...
-             0 0 0  0 1      0; 0 0 0 0  0 1];
-    end
-else
-    Q = []; F = [];
+% Constant-acceleration continuous dynamics matrix (shared convenience variable)
+Fc_cont = [0 0 1 0 0 0; 0 0 0 1 0 0; 0 0 0 0 1 0; ...
+           0 0 0 0 0 1; 0 0 0 0 0 0; 0 0 0 0 0 0];
+
+% Constant-acceleration discrete F (ZOH exact) — used by KF and RBPF families
+F_zoh = expm(Fc_cont * dt);
+
+% Constant-acceleration discrete F (analytic) — used by PF families
+F_disc = [1 0 dt 0 dt^2/2 0; 0 1 0 dt 0 dt^2/2; ...
+          0 0 1  0 dt     0; 0 0 0 1  0 dt; ...
+          0 0 0  0 1      0; 0 0 0 0  0 1];
+
+% -----------------------------------------------------------------------
+% Per-filter process noise Q  [diag entries: x, y, vx, vy, ax, ay]
+%
+% TUNING GUIDE:
+%   Increase Q(i,i) to let the filter track faster state changes in dim i.
+%   Decrease Q(i,i) to smooth out noisy state estimates in dim i.
+%   Rule of thumb: start at (expected_rms_acceleration * dt)^2 for acc dims.
+%   HMM-family filters do not use Q (grid-based, not state-vector based).
+% -----------------------------------------------------------------------
+switch filter_name
+
+    %% -- Kalman Filter family (ZOH F) ----------------------------------
+    case 'GNN_KF'
+        % TUNE Q: larger position/velocity noise → filter trusts measurements more
+        %        and can track maneuvers. Too small → Kalman gain collapses,
+        %        filter ignores measurements and drifts on curves.
+        Q = diag([2e-4, 2e-4, ...   % x, y     (position)
+                  2e-3, 2e-3, ...   % vx, vy   (velocity)
+                  2e-2, 2e-2]);     % ax, ay   (acceleration)
+        % TUNE R: reduce to trust pixel measurements more (0.1 → 0.05)
+        R = 0.05 * eye(2);
+        F = F_zoh;
+
+    case 'PDA_KF'
+        % DIAGNOSIS: was diverging by step 10 with original Q.
+        % Root cause: Q_pos=1e-4 + R=0.1 → K ≈ 0.03 (nearly ignores measurements).
+        % Fix: moderate Q so Kalman gain opens up; keep R=0.1 to avoid
+        %   the over-corrected Q+small-R → non-PD covariance crash (mvnpdf).
+        % Also tune lambda_clutter post-construction (below).
+        Q = diag([5e-4, 5e-4, ...   % x, y
+                  2e-3, 2e-3, ...   % vx, vy
+                  5e-3, 5e-3]);     % ax, ay
+        % TUNE R: keep at 0.1 — smaller R amplifies Kalman gain, risks S not PD
+        R = 0.1 * eye(2);
+        F = F_zoh;
+
+    %% -- Particle Filter family (analytic F) ---------------------------
+    case 'GNN_PF'
+        % DIAGNOSIS: tightening Q to 5e-4 + setting validation_sigma_bounds=2
+        %   caused total track loss (0.46→3.48m) — gate rejected all measurements
+        %   once particles drifted, no recovery possible.
+        % Fix: revert Q to original spread; gate stays at cfg default (5-sigma).
+        Q = diag([1e-3, 1e-3, ...   % x, y
+                  1e-2, 1e-2, ...   % vx, vy
+                  1e-1, 1e-1]);     % ax, ay
+        R = 0.1 * eye(2);   % not used in PF weight update; kept for consistency
+        F = F_disc;
+
+    case 'PDA_PF'
+        % TUNE: working well at 0.11m RMSE — keep as reference baseline
+        Q = diag([1e-3, 1e-3, ...   % x, y
+                  1e-2, 1e-2, ...   % vx, vy
+                  1e-1, 1e-1]);     % ax, ay
+        R = 0.1 * eye(2);
+        F = F_disc;
+
+    case 'MC_PF'
+        % TUNE: same Q as PDA_PF — resampling fraction tuned post-construction
+        Q = diag([1e-3, 1e-3, ...   % x, y
+                  1e-2, 1e-2, ...   % vx, vy
+                  1e-1, 1e-1]);     % ax, ay
+        R = 0.1 * eye(2);
+        F = F_disc;
+
+    %% -- RBPF family ---------------------------------------------------
+    case 'KF_RBPF'
+        % TUNE: embedded KF inner filter — open Q slightly so inner KFs
+        %       can follow the S-curve; also tuned via N_particles (see
+        %       run_all_experiments default_N_particles for KF_RBPF)
+        Q = diag([5e-4, 5e-4, ...   % x, y
+                  2e-3, 2e-3, ...   % vx, vy
+                  2e-3, 2e-3]);     % ax, ay
+        % TUNE R: trust pixel measurements more in the embedded KF
+        R = 0.05 * eye(2);
+        F = F_zoh;
+
+    %% -- HMM and HMM-RBPF families (no Q/F — grid-based) --------------
+    case {'GNN_HMM', 'PDA_HMM', 'HMM_RBPF'}
+        Q = [];
+        R = [];
+        F = [];
+
+    otherwise
+        Q = [];
+        R = 0.1 * eye(2);
+        F = [];
+        warning('run_experiment:UnknownFilter', ...
+            'No Q/F tuning defined for filter ''%s'' — using empty matrices.', filter_name);
 end
-R  = 0.1 * eye(2);
 H  = [1 0 0 0 0 0; 0 1 0 0 0 0];
 P0 = diag([0.1 0.1 0.25 0.25 0.5 0.5]);
+% R is now set per-filter inside the switch above.
 
 %% ---- Build FilterConfig -------------------------------------------------
 cfg = FilterConfig(filter_name, ...
@@ -133,21 +216,53 @@ fprintf('Constructing %s filter...\n', filter_name);
 filt = FilterFactory(cfg, x0, P0_init, A_transition, pointlikelihood_image, pointlikelihood_mag);
 
 % Post-construction tuning
+% (Applied after FilterFactory so these override constructor/cfg defaults.)
+
+% --- PDA_KF: loosen clutter assumption so beta0 doesn't dominate ---------
+% DIAGNOSIS: lambda_clutter=2.5 was making the clutter hypothesis dominate
+%   even when a real measurement was nearby, causing the update to barely move.
+% TUNE: decrease lambda_clutter to assume fewer false alarms per unit area.
+if strcmp(filter_name, 'PDA_KF')
+    filt.lambda_clutter = 0.5;   % TUNE: [0.1 — 5.0]; lower = fewer expected clutter hits
+end
+
+% --- PF/MC-PF families ---------------------------------------------------
 if ismember(filter_name, {'PDA_PF','MC_PF'})
     filt.setDetectionModel(0.99, 0.25);
     filt.composite_likelihood = true;
     if strcmp(filter_name, 'PDA_PF')
-        filt.hybrid_resample_fraction = 0.9;
+        filt.hybrid_resample_fraction = 0.9;    % TUNE: [0.5 — 1.0]
     else
-        filt.hybrid_resample_fraction = 0.99;
+        % MC_PF: was 0.99 (floods with uniform particles every step → no memory).
+        % Reduce to 0.9 so 90% resample from posterior, 10% uniform exploration.
+        filt.hybrid_resample_fraction = 0.9;    % TUNE: [0.5 — 1.0]
     end
 end
+
+% --- GNN_PF: validation gate -------------------------------------------------
+% DIAGNOSIS: 2-sigma gate caused total track loss when particles drifted —
+%   tight gate rejected all measurements, no recovery possible.
+% Decision: let the cfg default ValidationSigma=5 stand (set in FilterConfig call above).
+% Do NOT override validation_sigma_bounds here unless you understand the drift risk.
+
+% --- KF_RBPF: use likelihood-guided association --------------------------
+% DIAGNOSIS: 'uniform' association wastes particles on low-probability hypotheses,
+%   causing rapid ESS collapse (100→15 in 50 steps).
+% Fix 1: switch to 'likelihood' (OIS) for smarter association sampling.
+% Fix 2: increase N_particles in run_all_experiments.m (100 → 300).
 if strcmp(filter_name, 'KF_RBPF')
-    filt.association_strategy = 'uniform';
+    filt.association_strategy = 'likelihood';   % 'uniform' | 'likelihood' | 'optimal'
 end
-if ismember(filter_name, HMM_families)
-    filt.ptarget_prob = ones(filt.npx2, 1) / filt.npx2;
-end
+
+% --- HMM families: keep constructor Gaussian init (don't reset to uniform) ---
+% The constructor initialises ptarget_prob as a Gaussian centred on x0 = GT(:,1).
+% Resetting to uniform here discards that good initialisation, causing the filter
+% to start from the grid mean (0, 2) instead of the true start position and
+% producing max-error = sqrt(4.5) ≈ 2.12 m at early timesteps.
+% NOTE: for blind-init Monte Carlo runs, re-enable the uniform reset below.
+% if ismember(filter_name, HMM_families)
+%     filt.ptarget_prob = ones(filt.npx2, 1) / filt.npx2;
+% end
 
 %% ---- Print config summary -----------------------------------------------
 print_filter_config(filter_name, cfg, Q, R, F, dt, filt);

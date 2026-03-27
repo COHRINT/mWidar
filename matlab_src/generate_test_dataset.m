@@ -18,10 +18,10 @@
 clear; clc; close all
 rng(400)
 
-%chosen_track = "RW";
-chosen_track = "LINE";
-%chosen_track = "PARABOLA";
-%chosen_track = "SCURVE";
+% chosen_track = "RW";
+% chosen_track = "LINE";
+% chosen_track = "PARABOLA";
+chosen_track = "SCURVE";
 
 
 n_tracks = 10;

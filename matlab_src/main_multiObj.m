@@ -23,7 +23,8 @@ function main_multiObj(varargin)
     %% --- Environment Configuration ---
     clc; close all
     % Add paths for MATLAB functions
-    addpath(fullfile('DA_Track'))
+    addpath(fullfile('DA_Track'))                          % base: DA_Filter, KF, HMM
+    addpath(fullfile('DA_Track', 'multi'))                 % multi-target filters
     addpath(fullfile('supplemental'))
     addpath(fullfile('supplemental', 'Final_Test_Tracks'))
     addpath(fullfile('supplemental', 'Final_Test_Tracks', 'MultiObj'))

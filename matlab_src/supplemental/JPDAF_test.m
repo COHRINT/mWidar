@@ -1,7 +1,8 @@
 %%%%%%%%%%%% Test script for validating JPDAF %%%%%%%%%%%%%%%%%%%%%
 clear; clc; close all
 
-addpath(fullfile('DA_Track'))
+addpath(fullfile('DA_Track'))                % base: DA_Filter, KF, HMM
+addpath(fullfile('DA_Track', 'multi'))       % multi-target filters
 load(fullfile('supplemental', 'Final_Test_Tracks', 'MultObj', 'JPDAF_test_traj_3.mat'))
 
 

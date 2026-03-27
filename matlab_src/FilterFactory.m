@@ -70,7 +70,8 @@ function filt = FilterFactory(cfg, x0, varargin)
         % ==============================================================
         case 'GNN_KF'
         % ==============================================================
-            filt = GNN_KF(x0, P0, cfg.F, cfg.Q, cfg.R, cfg.H, common_opts{:});
+            filt = GNN_KF(x0, P0, cfg.F, cfg.Q, cfg.R, cfg.H, common_opts{:}, ...
+                          'ValidationSigma', cfg.ValidationSigma);
 
         % ==============================================================
         case 'PDA_KF'
@@ -78,7 +79,8 @@ function filt = FilterFactory(cfg, x0, varargin)
             % PDA_KF requires a pointlikelihood_mag table; pass empty if
             % magnitude likelihood is not being used.
             filt = PDA_KF(x0, P0, cfg.F, cfg.Q, cfg.R, cfg.H, ...
-                          pointlikelihood_mag, common_opts{:});
+                          pointlikelihood_mag, common_opts{:}, ...
+                          'ValidationSigma', cfg.ValidationSigma);
             filt.PD             = cfg.PD;
             filt.PG             = cfg.PG;
             filt.lambda_clutter = cfg.lambda_clutter;
@@ -159,7 +161,7 @@ function filt = FilterFactory(cfg, x0, varargin)
             end
             filt = HMM_RBPF(x0, cfg.N_particles, A_transition, ...
                             pointlikelihood_image, common_opts_nodp{:}, ...
-                            'UniformInit', true);
+                            'UniformInit', false);
             filt.PD  = cfg.PD;
             filt.PFA = cfg.PFA;
 

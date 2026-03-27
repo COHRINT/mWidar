@@ -9,7 +9,8 @@
 clear; clc; close all;
 
 % Add paths
-addpath('../DA_Track');
+addpath('../DA_Track');                   % base: DA_Filter, KF, HMM
+addpath('../DA_Track/single');            % single-target filters
 
 fprintf('=== KF_RBPF Basic Functionality Test ===\n\n');
 

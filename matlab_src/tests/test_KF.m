@@ -1,7 +1,8 @@
 % Testing Kalman Filter implementation in MATLAB
 clear; clc; close all;
 % Add the DA_Track directory to the path
-addpath('../DA_Track');
+addpath('../DA_Track');                   % base: DA_Filter, KF, HMM
+addpath('../DA_Track/single');            % single-target filters
 
 % Define initial state and covariance
 x0 = [0; 0];
