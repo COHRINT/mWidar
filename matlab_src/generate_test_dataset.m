@@ -63,6 +63,7 @@ for i = 1:n_tracks
 end
 
 plot_test_dataset_gt(out_dir,chosen_track)
+plot_test_dataset_gt_gif(out_dir,chosen_track)
 
 function [Data] = generate_dataset(chosen_track,M,G)
     %% ---- Scene / grid setup ------------------------------------------------
