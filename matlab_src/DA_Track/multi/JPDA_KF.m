@@ -48,7 +48,7 @@ classdef JPDA_KF < DA_Filter
 
         % JPDA Specific parameters
         PD = 0.95 % Probability of detection
-        gate_probability = 0.95 % Validation-gate probability P_G
+        gate_probability = 0.975 % Validation-gate probability P_G
         lambda_clutter = 2.5 % Expected clutter count per scan over the full measurement region
         measurement_space_area = 16 % Measurement-space area in m^2 (4m x 4m)
         nt % Number of objects

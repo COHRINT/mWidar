@@ -1,6 +1,6 @@
 clear; clc; close all;
 
-addpath(fullfile('DA_Track'));
+addpath(fullfile('DA_Track','multi/'));
 addpath(fullfile('supplemental'));
 addpath(fullfile('supplemental', 'Final_Test_Tracks'));
 
@@ -126,7 +126,7 @@ end
 jpda = JPDA_KF(x0, P0_cell, F, Q, R, H, n_track, [], 'Debug', false, 'DynamicPlot', false);
 jpda.lambda_clutter = 2.5;
 jpda.measurement_space_area = 16;
-jpda.gate_probability = 0.05;
+jpda.gate_probability = 0.95;
 jpda.PD = 0.95;
 
 if save_beta_debug_figures && ~exist(beta_debug_dir, 'dir')
