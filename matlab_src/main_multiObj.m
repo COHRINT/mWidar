@@ -12,7 +12,7 @@ function main_multiObj(varargin)
     addParameter(p, 'Algorithm', 'JPDA', @(x) ismember(x, {'JPDA', 'RBPF'}));
     addParameter(p, 'Dataset', 'JPDAF_test_traj_2', @ischar);
     addParameter(p, 'NumParticles', 1000, @isnumeric); % For RBPF
-    addParameter(p, 'Debug', false, @islogical);
+    addParameter(p, 'Debug', true, @islogical);
     parse(p, varargin{:});
     
     ALGORITHM = p.Results.Algorithm;
@@ -36,8 +36,8 @@ function main_multiObj(varargin)
     end
     fprintf('================================\n\n');
 
-    load(fullfile('supplemental', 'Final_Test_Tracks', 'MultiObj', [DATASET, '.mat']), 'Data');
-
+    %load(fullfile('supplemental', 'Final_Test_Tracks', 'MultiObj', [DATASET, '.mat']), 'Data');
+    load(fullfile('supplemental', 'Final_Test_Tracks', 'MultiObj', 'demo_track2.mat'), 'Data');
      %% --- Initialize Variables ---
     % Load Data
     GT = Data.GT;
@@ -66,7 +66,7 @@ function main_multiObj(varargin)
 
     Q(6,6) = 1e-6; % Set process noise for acceleration
 
-    R = 0.1 * eye(2);
+    R = 1 * eye(2);
 
     %% --- Define Observation Matrix ---
     H = [1 0 0 0 0 0;
@@ -119,6 +119,7 @@ function main_multiObj(varargin)
     %% --- Main Tracking Loop ---
     fprintf('\nStarting tracking loop...\n');
     for k = 2:n_k
+        
         if mod(k, 10) == 0 || k == 2
             fprintf('Processing time step %d/%d\n', k, n_k);
         end
@@ -161,8 +162,8 @@ function main_multiObj(varargin)
         fprintf('RBPF particle animation GIF saved to: %s\n', gif_filename);
     else
         % Use standard Gaussian distribution visualization for JPDA
-        mWidar_FilterPlot_multiObj_Distribution(performance, Data, 0:dt:10, gif_filename);
-        fprintf('Distribution GIF saved to: %s\n', gif_filename);
+        % mWidar_FilterPlot_multiObj_Distribution(performance, Data, 0:dt:10, gif_filename);
+        % fprintf('Distribution GIF saved to: %s\n', gif_filename);
     end
     
     fprintf('Done!\n');

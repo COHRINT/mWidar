@@ -27,7 +27,7 @@ x0 = cell(1,2);
 X = cell(1,2);
 
 % IC1 -> Near array, y ~ 0
-x0{1} = [-1.75 0.5 0 0 0.065 0]'; % No y acceleration
+x0{1} = [-1.75 1 0 0 0.065 0]'; % No y acceleration
 
 % IC2 -> Far from array, opposite direction
 x0{2} = [1.75 3.5 0 0 -0.065 0]'; % No y acceleration
