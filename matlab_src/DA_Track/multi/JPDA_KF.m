@@ -211,7 +211,7 @@ classdef JPDA_KF < DA_Filter
         %% ========== VALIDATION ==========
         function [valid_z, meas, validation_matrix, valid_meas_idx] = Validation(obj,z)
             meas = true(1, obj.nt); %default
-            gamma = chi2inv(obj.gate_probability, size(obj.H, 1));
+            gamma = chi2inv(1-obj.gate_probability, size(obj.H, 1));
             valid_z = [];
             valid_meas_idx = [];
             validation_matrix_full = false(obj.nt, size(z, 2));

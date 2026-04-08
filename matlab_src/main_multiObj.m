@@ -38,7 +38,7 @@ function main_multiObj(varargin)
     fprintf('================================\n\n');
 
     %load(fullfile('supplemental', 'Final_Test_Tracks', 'MultiObj', [DATASET, '.mat']), 'Data');
-    load(fullfile('supplemental', 'Final_Test_Tracks', 'MultiObj', 'demo_track2.mat'), 'Data');
+    load(fullfile('supplemental', 'Final_Test_Tracks', 'MultiObj', 'multi_obj_2.mat'), 'Data');
      %% --- Initialize Variables ---
     % Load Data
     GT = Data.GT;
@@ -163,8 +163,8 @@ function main_multiObj(varargin)
         fprintf('RBPF particle animation GIF saved to: %s\n', gif_filename);
     else
         % Use standard Gaussian distribution visualization for JPDA
-        % mWidar_FilterPlot_multiObj_Distribution(performance, Data, 0:dt:10, gif_filename);
-        % fprintf('Distribution GIF saved to: %s\n', gif_filename);
+        mWidar_FilterPlot_multiObj_Distribution(performance, Data, 0:dt:10, gif_filename);
+        fprintf('Distribution GIF saved to: %s\n', gif_filename);
     end
     
     fprintf('Done!\n');

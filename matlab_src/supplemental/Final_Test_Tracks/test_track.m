@@ -21,12 +21,12 @@ tvec = dt:dt:n_t*dt;
 n_track = 2;
 
 % T1
-start = [-1.5, 1.5]; stop = [1.5,2.5];
-[X_GT1] = generate_Line(tvec,n_t,dt,start,stop);
+start = [-1.5, 1.5]; stop = [1.5,3.5];
+[X_GT1] = generate_Scurve(tvec,n_t,dt,start,stop);
 
 % T2
-start = [1.5, 3.5]; stop = [-1.5,3.0];
-[X_GT2] = generate_Line(tvec,n_t,dt,start,stop);
+start = [1.5, 3.5]; stop = [-1.5,1.5];
+[X_GT2] = generate_Scurve(tvec,n_t,dt,start,stop);
 
 X_GT = {X_GT1, X_GT2};
 
@@ -132,7 +132,7 @@ for i = 1:n_t
 end
 
 %% ---- Save ---------------------------------------------------------------
-file_path = fullfile(out_dir, "demo_track2.mat");
+file_path = fullfile(out_dir, "demo_track.mat");
 save(file_path,'Data', '-mat')
 fprintf('\nSaved dataset to: %s\n', file_path);
 

@@ -12,8 +12,8 @@ addpath(script_dir);
 %   Data.signal -> 1 x n_t cell, each [128 x 128]
 
 %% User config
-object_count = 2;      % Any positive integer
-track_name   = "multi_obj_"+num2str(object_count);
+object_count = 3;      % Any positive integer
+
 write_gif    = true;
 noise_flag   = false;
 

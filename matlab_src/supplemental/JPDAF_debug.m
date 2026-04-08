@@ -76,6 +76,8 @@ for k = 1:n_t
     z{k} = [cfar_meas, forced_meas];
 end
 
+save("supplemental\JPDAF_debug_outputs\true_meas.mat",'true_meas','-mat')
+
 Data = struct();
 Data.GT = GT;
 Data.y = z;
@@ -121,10 +123,10 @@ for t = 1:n_track
     P0_cell{t} = P0;
 end
 
-jpda = JPDA_KF(x0, P0_cell, F, Q, R, H, n_track, [], 'Debug', true, 'DynamicPlot', false);
+jpda = JPDA_KF(x0, P0_cell, F, Q, R, H, n_track, [], 'Debug', false, 'DynamicPlot', false);
 jpda.lambda_clutter = 2.5;
 jpda.measurement_space_area = 16;
-jpda.gate_probability = 0.95;
+jpda.gate_probability = 0.05;
 jpda.PD = 0.95;
 
 if save_beta_debug_figures && ~exist(beta_debug_dir, 'dir')
