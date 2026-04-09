@@ -94,6 +94,7 @@ classdef MC_PF < DA_Filter
         particle_state_trajectories
         particle_measurement_trajectories
         last_association_indices = []
+        Z_per_particle = []   % Per-particle total evidence Z_i, computed in Step 3 for weight update
     end
 
     methods
@@ -248,7 +249,7 @@ classdef MC_PF < DA_Filter
                     fprintf('[STANDARD INIT] Initializing particles around initial state\n');
                 end
 
-                init_spread = [0.1, 0.1, 0.25, 0.25, 0.5, 0.5]; % Position, velocity, acceleration spreads
+                init_spread = [0.1, 0.1, 0.5, 0.5, 1.0, 1.0]; % Position (tight—from GT), vel/acc (generous—zero-init)
                 % Allocate N_x+1 rows: state rows + association-index row (initialised to 0)
                 obj.particles = [repmat(x0(:), 1, N_particles); zeros(1, N_particles)];
 
@@ -458,19 +459,19 @@ classdef MC_PF < DA_Filter
             
             % Find indices of gated measurements in original measurement set
             % These are the valid association indices for MC-DA sampling
-            valid_indices = [];
+            gated_measurement_indices = [];
             if has_valid_meas
                 for i = 1:size(z_gated, 2)
                     idx = find(all(bsxfun(@eq, z_det, z_gated(:, i)), 1), 1);
                     if ~isempty(idx)
-                        valid_indices = [valid_indices, idx];
+                        gated_measurement_indices = [gated_measurement_indices, idx];
                     end
                 end
             end
             
             % Add clutter hypothesis index (N_measurements + 1)
             clutter_index = size(z_det, 2) + 1;
-            valid_indices = [valid_indices, clutter_index];
+            valid_indices = [gated_measurement_indices, clutter_index];
             
             if obj.debug
                 if has_valid_meas
@@ -484,18 +485,54 @@ classdef MC_PF < DA_Filter
                 end
             end
 
-            % Step 3: Data Association Step -- Sample associations for each particle
-            % MC-DA: Each particle samples an association hypothesis from valid indices only
-            % - Association indices: valid_indices (gated measurements + clutter)
-            % - Particles can only associate with measurements that passed gating or clutter
-            % THIS IS UNIFORM RANDOM SAMPLING PLACEHOLDER - REPLACE WITH PROPER MC-DA SAMPLING
-            if isempty(valid_indices)
-                % No valid measurements - all particles associate with clutter
+            % Step 3: Data Association Importance Distribution q(a_k | x_k^(i))
+            %
+            % Use a per-particle likelihood-weighted proposal rather than the
+            % global uniform prior.  For each particle i:
+            %
+            %   q(a_k = j | x_i) ∝ p(z_j | x_i)   (likelihood of gated detection j)
+            %   q(a_k = clutter | x_i) ∝ (1-PD)*PFA/N_p
+            %
+            % IS weight correction (exact for bootstrap x-proposal):
+            %   w_k^(i) ∝ w_{k-1}^(i) * p(z|x_i,a_i)*p(a_i) / q(a_i|x_i)
+            %           = w_{k-1}^(i) * Z_i
+            % where Z_i = sum_j L_j(x_i) + clutter — identical to PDA update.
+            % This eliminates the weight degeneracy of the uniform-prior bootstrap.
+            m_k = numel(gated_measurement_indices);
+            clutter_like = (1 - obj.PD) * obj.PFA / obj.N_p;  % scalar clutter term
+
+            if m_k == 0
+                % No gated detections — all particles assigned to clutter
+                obj.Z_per_particle = clutter_like * ones(obj.N_p, 1);
                 obj.particles(end, :) = clutter_index;
             else
-                % Sample uniformly from valid indices (gated measurements + clutter)
-                sample_idx = randi(length(valid_indices), 1, obj.N_p);
-                obj.particles(end, :) = valid_indices(sample_idx);
+                % Compute per-particle likelihoods: L_matrix [N_p x m_k]
+                L_matrix = zeros(obj.N_p, m_k);
+                for j = 1:m_k
+                    meas_idx = gated_measurement_indices(j);
+                    L_matrix(:, j) = obj.computeWeightsForMeasurement(z_det(:, meas_idx));
+                end
+
+                % Total evidence per particle (IS weight, same as PDA normalization constant)
+                obj.Z_per_particle = sum(L_matrix, 2) + clutter_like;  % [N_p x 1]
+
+                % Per-particle proposal: [N_p x (m_k+1)], normalized row-wise
+                proposal_matrix = [L_matrix, clutter_like * ones(obj.N_p, 1)];
+                norm_proposal = proposal_matrix ./ obj.Z_per_particle;  % [N_p x (m_k+1)]
+
+                % Vectorized per-particle categorical sampling
+                cdf_matrix = cumsum(norm_proposal, 2);  % [N_p x (m_k+1)]
+                u = rand(obj.N_p, 1);
+                assoc_local = sum(cdf_matrix < u, 2) + 1;  % [N_p x 1]
+                assoc_local = min(assoc_local, m_k + 1);    % safety clamp
+                all_assoc = [gated_measurement_indices, clutter_index];
+                obj.particles(end, :) = all_assoc(assoc_local');
+            end
+
+            if obj.debug
+                fprintf('[ASSOC PROPOSAL] m_k=%d gated detections, per-particle IS\n', m_k);
+                fprintf('[ASSOC PROPOSAL] Z_i: min=%.3e, max=%.3e, mean=%.3e\n', ...
+                    min(obj.Z_per_particle), max(obj.Z_per_particle), mean(obj.Z_per_particle));
             end
 
             % Step 4: Measurement Update Step (SIR: multiply by previous weights)
@@ -659,7 +696,7 @@ classdef MC_PF < DA_Filter
 
             % Create a binary mask for validation measurements -- threshold is the false
             %   alarm rate (last hypothesis)
-            threshold = normalization_constants(end) * obj.N_p;
+            threshold = normalization_constants(end);
             z_valid = z(:, normalization_constants(1:end - 1) > threshold);
             has_valid_meas = ~isempty(z_valid);
 
@@ -684,7 +721,6 @@ classdef MC_PF < DA_Filter
             %   z_mag - (optional) mWidar signal [128 x 128] for composite likelihood
             %
             % DESCRIPTION:
-            %   TODO: FIXME - Convert from PDA to MC-DA weight update
             %   MC-DA: w_new = w_old * likelihood(z_sampled | x_particle)
             %   Each particle uses ONLY its sampled association hypothesis, not a mixture.
             %   For particle i with sampled association a_i:
@@ -781,41 +817,21 @@ classdef MC_PF < DA_Filter
 
             end
 
-            % Step 2: Compute detection likelihood for each measurement and update weights
-            detection_likelihood = zeros(obj.N_p, 1); % Column vector for all particles
-
-            % Initialize total likelihood with clutter hypothesis and normalization constants
-            clutter_likelihood = (1 - obj.PD) * obj.PFA / obj.N_p;
-            normalization_constants = obj.computeNormalizationConstants(z);
-            normalization_constants = normalization_constants / sum(normalization_constants); % Normalize
-
-            % Clutter hypothesis index
-            clutter_idx = size(z, 2) + 1;
-
-            % Iterate through all possible measurement associations (including clutter)
-            for measurement_idx = 1:clutter_idx
-                % Find particles associated with this measurement
-                particle_mask = (obj.particles(end, :) == measurement_idx); % Logical mask [1 x N_p]
-
-                if ~any(particle_mask)
-                    continue; % Skip if no particles associated with this measurement
-                end
-
-                if measurement_idx == clutter_idx
-                    % Clutter hypothesis - assign clutter likelihood
-                    detection_likelihood(particle_mask) = clutter_likelihood * normalization_constants(end);
-                    continue;
-                end
-
-                % True detection - compute weights for ALL particles, then select associated ones
-                all_weights = obj.computeWeightsForMeasurement(z(:, measurement_idx)); % [N_p x 1]
-                detection_likelihood(particle_mask) = all_weights(particle_mask);% normalization_constants(measurement_idx);
-
+            % Step 2: Weight update using per-particle total evidence Z_i
+            % Computed in timestep Step 3 via the per-particle IS:
+            %   Z_i = sum_j L_j(x_i) + (1-PD)*PFA/N_p
+            % This is the IS weight correction for the likelihood-weighted proposal,
+            % equivalent to the PDA marginal likelihood over all association hypotheses.
+            if ~isempty(obj.Z_per_particle)
+                detection_likelihood = obj.Z_per_particle;
+            else
+                % Fallback (should not normally be reached): clutter-only weight
+                detection_likelihood = (1 - obj.PD) * obj.PFA / obj.N_p * ones(obj.N_p, 1);
             end
 
             obj.particle_detection_likelihoods = detection_likelihood;
 
-            new_weights = previous_weights .* detection_likelihood .* magnitude_likelihood + eps;
+            new_weights = previous_weights .* detection_likelihood + eps;
             obj.weights = new_weights / sum(new_weights);
 
             % Debug: Print final weight stats
@@ -838,7 +854,7 @@ classdef MC_PF < DA_Filter
             %   z - Current measurements [N_z x N_measurements]
             %   z_mag - (optional) mWidar signal [128 x 128] for composite likelihood
             %
-            % OUTPUTS:
+            % OUTPUTS:;;p
             %   normalization_constants - Vector of normalization constants [N_measurements + 1 x 1]
             %                           normalization_constants(i) = sum_p w_p^(i) for measurement i
             %                           normalization_constants(end) = clutter hypothesis constant

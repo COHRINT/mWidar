@@ -204,7 +204,9 @@ end
 %% ---- Initial state -------------------------------------------------------
 x0 = zeros(6, 1);
 x0(1:2) = GT(1:2, 1);          % known position, zero velocity/acceleration
-P0_init  = diag([100 100 10 10 5 5]);
+% Reasonable uncertainty: tight on position (we know GT(1:2,1)), generous on
+% velocity/acceleration (initialised to 0 but true values may be non-zero).
+P0_init = diag([0.1, 0.1, 1.0, 1.0, 2.0, 2.0]);
 
 % HMM family uses 2D state only
 if ismember(filter_name, HMM_families) || strcmp(filter_name, 'HMM_RBPF')
@@ -229,7 +231,7 @@ end
 % --- PF/MC-PF families ---------------------------------------------------
 if ismember(filter_name, {'PDA_PF','MC_PF'})
     filt.setDetectionModel(0.99, 0.25);
-    filt.composite_likelihood = true;
+    filt.composite_likelihood = false;  % detection-only for apples-to-apples comparison
     if strcmp(filter_name, 'PDA_PF')
         filt.hybrid_resample_fraction = 0.9;    % TUNE: [0.5 — 1.0]
     else

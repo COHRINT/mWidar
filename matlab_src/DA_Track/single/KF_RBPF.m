@@ -622,10 +622,7 @@ classdef KF_RBPF < DA_Filter
 
         function generateAssociations_likelihood(obj, z)
             % GENERATEASSOCIATIONS_LIKELIHOOD Likelihood-based association sampling
-
-            % PASS FOR THE MOMENT
-            fprintf('Likelihood-based association generation not yet implemented.\n');
-            fprintf('Using uniform random associations instead.\n');
+            % Falls back to uniform sampling (likelihood strategy not yet implemented).
             obj.generateAssociations_uniform(z);
         end
 
@@ -1192,29 +1189,25 @@ classdef KF_RBPF < DA_Filter
                 end
 
             else
-                % GAUSSIAN INITIALIZATION around x0 (original behavior)
-                % Define initial uncertainty for particle diversity
-                % This allows the particle filter to localize even with poor initial guess
-                % Position uncertainty: 5 meters (1-sigma)
-                % Velocity uncertainty: 2 m/s (1-sigma)
+                % GAUSSIAN INITIALIZATION around x0
+                % x0 is initialized at the first GT position with zero velocity/acceleration.
+                % We want a good start: tight on position (we know it from GT), generous
+                % on velocity and acceleration (initialised to 0, true values unknown).
                 if N_x == 4
-                    initial_uncertainty_std = [5.0; 5.0; 2.0; 2.0]; % [x, y, vx, vy]
+                    initial_uncertainty_std = [0.316; 0.316; 1.0; 1.0]; % [x, y, vx, vy]
                 else
-                    % General case: scale by state dimension
-                    initial_uncertainty_std = ones(N_x, 1);
-                    initial_uncertainty_std(1:min(2, N_x)) = 5.0; % Position states
-
-                    if N_x >= 4
-                        initial_uncertainty_std(3:4) = 2.0; % Velocity states
-                    end
-
+                    initial_uncertainty_std = [0.316; 0.316; 1.0; 1.0; 1.414; 1.414]; % [x,y,vx,vy,ax,ay]
                 end
 
-                % Initial covariance for particle states
+                % Initial covariance for particle state diversity
                 initial_particle_cov = diag(initial_uncertainty_std .^ 2);
 
-                % Initial KF covariance (larger than process noise to allow adaptation)
-                initial_kf_cov = 10 * eye(N_x); % Conservative initial uncertainty
+                % Initial KF covariance per particle — matches P0_init in run_experiment
+                if N_x == 4
+                    initial_kf_cov = diag([0.1, 0.1, 1.0, 1.0]);
+                else
+                    initial_kf_cov = diag([0.1, 0.1, 1.0, 1.0, 2.0, 2.0]);
+                end
 
                 for i = 1:num_particles
                     % Sample particle state from distribution around x0

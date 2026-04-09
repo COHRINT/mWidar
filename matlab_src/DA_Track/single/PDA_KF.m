@@ -568,6 +568,13 @@ classdef PDA_KF < DA_Filter
             obj.x_current = obj.x_predicted + KK * innov;
             obj.P_current = beta0 * obj.P_predicted + (1 - beta0) * Pc + P_tilde;
 
+            % Enforce numerical symmetry and positive-definiteness.
+            % The PDA spread-of-innovations term can introduce floating-point
+            % asymmetry that accumulates over timesteps and eventually makes
+            % P non-PD, causing mvnpdf to error.  A small jitter (1e-8*I)
+            % keeps the eigenvalues bounded away from zero.
+            obj.P_current = (obj.P_current + obj.P_current') / 2 + 1e-8 * eye(size(obj.P_current, 1));
+
             % Cache intermediate values for storeHistory()
             obj.innovation  = innov;
             obj.kalman_gain = KK;

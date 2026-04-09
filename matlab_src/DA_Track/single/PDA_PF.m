@@ -247,7 +247,7 @@ classdef PDA_PF < DA_Filter
                     fprintf('[STANDARD INIT] Initializing particles around initial state\n');
                 end
 
-                init_spread = [0.1, 0.1, 0.25, 0.25, 0.5, 0.5]; % Position, velocity, acceleration spreads
+                init_spread = [0.1, 0.1, 0.5, 0.5, 1.0, 1.0]; % Position (tight—from GT), vel/acc (generous—zero-init)
                 obj.particles = repmat(x0(:), 1, N_particles);
 
                 % Add Gaussian noise to each state component to provide diversity

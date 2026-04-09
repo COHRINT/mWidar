@@ -42,7 +42,7 @@ function run_all_experiments(varargin)
     % Override with 'N_particles' arg to use a uniform count instead.
     default_N_particles = containers.Map( ...
         {'GNN_KF', 'PDA_KF', 'GNN_HMM', 'PDA_HMM', 'GNN_PF', 'PDA_PF', 'MC_PF', 'KF_RBPF', 'HMM_RBPF'}, ...
-        {NaN, NaN, NaN, NaN, 50000, 1000, 50000, 300, 100});
+        {NaN, NaN, NaN, NaN, 50000, 1000, 100000, 250, 250});
     use_per_filter_N = isnan(opt.N_particles);
 
     %% ---- Results storage -------------------------------------------------------
