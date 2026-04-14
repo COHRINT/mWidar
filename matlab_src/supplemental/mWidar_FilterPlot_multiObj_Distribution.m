@@ -75,22 +75,29 @@ each targets gaussian distribution as a heatmap.
     end
 
     %% Animation Loop
+
+    total_panels = n_t + 1;
+    [n_rows, n_cols] = choose_compact_subplot_grid(total_panels);
     
-    % Create figure once with larger size for better spacing
+    % Create figure once with size scaled to the chosen layout
     figure(66); clf;
-    set(gcf, 'Position', [100, 100, 1400, 600], 'Visible', 'off');
+    fig_width = max(1000, 420 * n_cols);
+    fig_height = max(650, 320 * n_rows);
+    set(gcf, 'Position', [100, 100, fig_width, fig_height], 'Visible', 'off');
 
     for k = 1:n_k
         clf;
+        tl = tiledlayout(n_rows, n_cols, 'TileSpacing', 'compact', 'Padding', 'compact');
         
         %% LEFT SUBPLOT: mWidar Signal with detections and true Obj
 
-        subplot(1, n_t+1, 1); cla; hold on; grid on;
+        ax_signal = nexttile(tl, 1);
+        cla(ax_signal); hold(ax_signal, 'on'); grid(ax_signal, 'on');
 
         % Plot the mWidar signal as 2D image instead of 3D surf
         imagesc(xgrid, ygrid, sim_signal{k} / (max(max(sim_signal{k}))));
-        set(gca, 'YDir', 'normal');
-        colormap('parula');
+        set(ax_signal, 'YDir', 'normal');
+        colormap(ax_signal, 'parula');
 
         % Plot true target location (2D) & estimated target location (no
         % ellipse)
@@ -111,7 +118,8 @@ each targets gaussian distribution as a heatmap.
 
         %% RIGHT SUBPLOT(s): Each objects individual distribution
         for t = 1:n_t
-            subplot(1, n_t+1, t+1); cla; hold on; grid on;
+            ax_dist = nexttile(tl, t + 1);
+            cla(ax_dist); hold(ax_dist, 'on'); grid(ax_dist, 'on');
 
             % Create 2D Gaussian distribution from mean and covariance
             innovCov = [P{t,k}(1, 1) P{t,k}(1, 2); P{t,k}(2, 1) P{t,k}(2, 2)];
@@ -130,9 +138,9 @@ each targets gaussian distribution as a heatmap.
 
             % Plot as heatmap
             imagesc(xgrid, ygrid, gaussian_2d);
-            set(gca, 'YDir', 'normal');
-            colormap('parula');
-            colorbar;
+            set(ax_dist, 'YDir', 'normal');
+            colormap(ax_dist, 'parula');
+            colorbar(ax_dist);
             
             % Overlay mean estimate
             h1 = plot(X{t,k}(1), X{t,k}(2), 'wo', 'MarkerSize', 10, 'MarkerFaceColor', 'w', 'LineWidth', 2);
@@ -187,6 +195,21 @@ each targets gaussian distribution as a heatmap.
         fprintf('GIF animation saved successfully: %s\n', gif_path);
     end
 
+end
+
+function [n_rows, n_cols] = choose_compact_subplot_grid(total_panels)
+    if total_panels <= 2
+        n_rows = 1;
+        n_cols = total_panels;
+        return;
+    end
+
+    n_cols = ceil(sqrt(total_panels));
+    n_rows = ceil(total_panels / n_cols);
+
+    while n_rows > 1 && (n_rows - 1) * n_cols >= total_panels
+        n_rows = n_rows - 1;
+    end
 end
 
 %% Helper Functions (copied from original mWidar_FilterPlot.m)

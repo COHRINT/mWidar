@@ -20,7 +20,7 @@ function [y, Signal] = sim_mWidar_image(n_t, GT, M, G, detector, NOISE_FLAG)
     % Pfa = 0.35; % Probability of false alarm
     % Ng = 5; % Guard cells
     % Nr = 20; % Training cells
-    Pfa = 0.365; % Probability of false alarm -- 36 WORKS THE BEST
+    Pfa = 0.395; % Probability of false alarm -- 36 WORKS THE BEST
     Ng = 5;    % Guard cells
     Nr = 20;   % Training cells
 
