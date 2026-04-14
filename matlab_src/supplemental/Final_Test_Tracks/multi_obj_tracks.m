@@ -12,7 +12,7 @@ addpath(script_dir);
 %   Data.signal -> 1 x n_t cell, each [128 x 128]
 
 %% User config
-object_count = 4;      % Any positive integer
+object_count = 3;      % Any positive integer
 track_name   = "multi_obj_"+num2str(object_count);
 write_gif    = true;
 noise_flag   = false;
@@ -71,7 +71,7 @@ ygrid  = linspace( 0, Lscene, npx);  % [0,  4] m
 %% ---- CA-CFAR parameters ------------------------------------------------
 %%% Might want to include this in a config file at some point ??
 
-Pfa = 0.375;   % false alarm probability (tuned for this scene)
+Pfa = 0.295;   % false alarm probability (tuned for this scene)
 Ng  = 5;       % guard cells
 Nr  = 20;      % training (reference) cells
 
@@ -108,14 +108,18 @@ for i = 1:n_t
     signal_flat = G' * signal_flat;
     sim_signal  = reshape(signal_flat, 128, 128)';
 
-    blurred            = imgaussfilt(sim_signal, 2);
+    blurred            = imgaussfilt(sim_signal, 1.3);
     Signal{i}        = blurred;
-    signal_normalized  = blurred;
+    signal_scaled = blurred;
+    signal_scaled(1:20,:) = NaN;
+    signal_scaled = asinh(signal_scaled);
+    signal_normalized  = (signal_scaled - min(signal_scaled(:))) / (max(signal_scaled(:)) - min(signal_scaled(:)));
 
     % ---- CA-CFAR detection ----
     try
-        [~, peak_x, peak_y] = CA_CFAR(signal_normalized, Pfa, Ng, Nr);
-
+        
+        [~, peak_x, peak_y] = CA_CFAR(signal_normalized(21:128,:), Pfa, Ng, Nr);
+        peak_x = peak_x + 20;
         if ~isempty(peak_x)
             pvinds   = sub2ind([npx, npx], peak_x, peak_y);
             meas_xy  = [pxgrid(pvinds)'; pygrid(pvinds)'];

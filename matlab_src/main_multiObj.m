@@ -67,7 +67,7 @@ function main_multiObj(varargin)
 
     Q(6,6) = 1e-6; % Set process noise for acceleration
 
-    R = 0.5 * eye(2);
+    R = 0.05 * eye(2);
 
     %% --- Define Observation Matrix ---
     H = [1 0 0 0 0 0;
