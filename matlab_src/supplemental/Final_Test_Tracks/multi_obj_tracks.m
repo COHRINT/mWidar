@@ -12,14 +12,14 @@ addpath(script_dir);
 %   Data.signal -> 1 x n_t cell, each [128 x 128]
 
 %% User config
-object_count = 3;      % Any positive integer
+object_count = 5;      % Any positive integer
 track_name   = "multi_obj_"+num2str(object_count);
 write_gif    = true;
 noise_flag   = false;
 min_track_y  = 1.0;    % Tracks must remain at or above this y-position [m]
 min_start_separation = 0.75; % Minimum pairwise distance between start points [m]
 
-dt   = 0.1;
+dt   = 0.01;
 tvec = 0:dt:10;
 n_t  = numel(tvec);
 
@@ -109,7 +109,7 @@ for i = 1:n_t
     sim_signal  = reshape(signal_flat, 128, 128)';
 
     blurred            = imgaussfilt(sim_signal, 1.3);
-    Signal{i}        = blurred;
+    Signal{i}        = sim_signal;
     signal_scaled = blurred;
     signal_scaled(1:20,:) = NaN;
     signal_scaled = asinh(signal_scaled);
@@ -160,12 +160,12 @@ for i = 1:n_t
 end
 
 
-file_path = fullfile(out_dir_abs, track_name + ".mat");
+file_path = fullfile(out_dir_abs, track_name + "_TI_test"+".mat");
 save(file_path, 'Data', '-mat');
 fprintf('Saved dataset to: %s\n', file_path);
 
 %% Plot summary + optional GIF
-plot_multi_object_dataset(Data, tvec, object_count, out_dir_abs, track_name, write_gif);
+%plot_multi_object_dataset(Data, tvec, object_count, out_dir_abs, track_name, write_gif);
 
 
 function starts = sample_start_points(n_obj, min_track_y, min_separation)
