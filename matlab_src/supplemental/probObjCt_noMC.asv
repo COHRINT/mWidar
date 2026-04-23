@@ -1,0 +1,106 @@
+%% --- Environment Configuration ---
+clc; close all; clear
+% Add paths for MATLAB functions
+addpath(fullfile('DA_Track'))                          % base: DA_Filter, KF, HMM
+addpath(fullfile('DA_Track', 'multi'))                 % multi-target filters
+addpath(fullfile('supplemental'))
+addpath(fullfile('supplemental', 'Final_Test_Tracks'))
+addpath(fullfile('supplemental', 'Final_Test_Tracks', 'MultiObj'))
+
+load(fullfile('supplemental', 'probObjCt_results.mat'), 'results');
+
+% Unpack
+cfg = results.cfg; % Hyperparameters used
+det_axis = results.det_axis;
+det_counts_by_obj = results.det_counts_by_obj;
+
+%% Build discrete lookup table for P(m_k | N_k)
+% N_k is indexed by row i (state), and m_k is the detection count.
+N_vals = 1:numel(det_counts_by_obj);
+m_axis = det_axis(:).'; % detection-count support (columns in lookup table)
+
+P_m_given_N = zeros(numel(N_vals), numel(m_axis)); % row i -> N_k = i
+
+for i = N_vals
+    counts_i = det_counts_by_obj{i}(:).';
+    for j = 1:length(counts_i)
+        col = counts_i(j) - m_axis(1) + 1;   % usually counts_i(j)+1 when m_axis starts at 0
+        if col >= 1 && col <= numel(m_axis)
+            P_m_given_N(i, col) = P_m_given_N(i, col) + 1;
+        end
+    end
+
+    row_sum = sum(P_m_given_N(i, :));
+    if row_sum > 0
+        P_m_given_N(i, :) = P_m_given_N(i, :) ./ row_sum;
+    end
+end
+
+% Optional lookup struct for clarity/use downstream
+pmf_lookup = struct();
+pmf_lookup.N_axis = N_vals;       % N_k values (true object count index i)
+pmf_lookup.m_axis = m_axis;       % m_k values (# detections)
+pmf_lookup.P_m_given_N = P_m_given_N;
+
+figure(1);
+bar3(P_m_given_N)
+
+%% Single iteration of recursive probability update
+% P(N_k | M_k) = alpha * P(m_k | N_k) .* sum_n P(N_k | N_{k-1}=n) P(N_{k-1}=n | M_{k-1})
+% Use uniform prior P(N_{k-1} | M_{k-1}).
+
+n_states = numel(N_vals);
+
+% Transition model: T(i,n) = P(N_k=i | N_{k-1}=n).
+% Simple "stay-or-neighbor" model.
+p_stay = 0.80;
+p_move = 0.20;
+T_Nk_given_prev = zeros(n_states, n_states);
+for n = 1:n_states
+    T_Nk_given_prev(n, n) = p_stay;
+    nbrs = [];
+    if n > 1
+        nbrs(end + 1) = n - 1; %#ok<AGROW>
+    end
+    if n < n_states
+        nbrs(end + 1) = n + 1; %#ok<AGROW>
+    end
+    if ~isempty(nbrs)
+        T_Nk_given_prev(nbrs, n) = p_move / numel(nbrs);
+    else
+        T_Nk_given_prev(n, n) = 1.0;
+    end
+end
+
+% Uniform prior over previous object-count states.
+P_prev = ones(n_states, 1) / n_states;
+
+% Select one observed detection count m_k for a single update step.
+if ~isempty(det_counts_by_obj) && ~isempty(det_counts_by_obj{1})
+    m_k_obs = det_counts_by_obj{1}(1);
+else
+    m_k_obs = m_axis(1);
+end
+
+mk_col = find(m_axis == m_k_obs, 1, 'first');
+if isempty(mk_col)
+    error('Observed m_k=%d is not present in m_axis.', m_k_obs);
+end
+
+likelihood = P_m_given_N(:, mk_col);   % P(m_k | N_k)
+pred = T_Nk_given_prev * P_prev;       % sum_n P(N_k | n) P(n | M_{k-1})
+unnorm_post = likelihood .* pred;
+norm_const = sum(unnorm_post);
+
+if norm_const > 0
+    alpha = 1 / norm_const;
+    P_post = alpha * unnorm_post;      % P(N_k | M_k)
+else
+    alpha = NaN;
+    P_post = zeros(size(unnorm_post));
+end
+
+fprintf('\nSingle-step recursive update using m_k = %d\n', m_k_obs);
+fprintf('alpha = %.6f\n', alpha);
+disp(table(N_vals(:), P_prev, pred, likelihood, P_post, ...
+    'VariableNames', {'N_k_state', 'P_prev', 'Predictive', 'P_mk_given_Nk', 'P_post'}));

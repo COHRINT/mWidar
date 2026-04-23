@@ -9,16 +9,16 @@ addpath(fullfile('supplemental'))
 addpath(fullfile('supplemental', 'Final_Test_Tracks'))
 addpath(fullfile('supplemental', 'Final_Test_Tracks', 'MultiObj'))
 
-true_ct  = 5;
+true_ct  = 3;
 
 % Construct DATASET string correctly using string concatenation or sprintf
 DATASET = "multi_obj_" + num2str(true_ct) + "_TI_test";
 % If later code expects a char array, convert to char:
 DATASET = char(DATASET);
-GIF = true;
+GIF = false;
 load(fullfile('supplemental', 'Final_Test_Tracks', 'MultiObj', [DATASET, '.mat']), 'Data');
 
-Pfa = 0.295;   % false alarm probability (tuned for this scene)
+Pfa = 0.285;   % false alarm probability (tuned for this scene)
 Ng  = 15;       % guard cells
 Nr  = 20;      % training (reference) cells
 
@@ -125,6 +125,17 @@ for k = 1:n_k
     track_ct(k) = size(clustered_meas_xy,2);
 end
 
+% P(mk | Nk = true_ct)
+P = zeros(max(track_ct) + 1,1);
+for i = 1:numel(track_ct)
+    det = track_ct(i) + 1;
+    
+    P(det) = P(det) + 1;
+end
+
+figure;
+bar(P./sum(P))
+xticklabels({0:max(track_ct)})
 pct_correct = sum(track_ct(T:end) == true_ct)/ (n_k-T+1) * 100;
 
 summaryFig = figure('Color', 'w');
@@ -139,6 +150,8 @@ legend(summaryAx, "Estimated Count", "True Object Count")
 hold(summaryAx, 'off');
 png_filename = "TI_Obj_count_" + num2str(true_ct);
 print(summaryFig, png_filename, '-dpng')
+
+
 function clustered_xy = clusterNearbyDetections(meas_xy, cluster_radius)
     if isempty(meas_xy)
         clustered_xy = zeros(2,0);

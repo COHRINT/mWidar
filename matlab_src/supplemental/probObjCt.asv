@@ -26,7 +26,7 @@ load(fullfile(script_dir, 'sampling.mat'), 'M');
 %% --- Monte Carlo settings ----------------------------------------------
 cfg = struct();
 cfg.max_obj = 5;
-cfg.MC = 100;
+cfg.MC = 10;
 cfg.verbose = true;
 
 cfg.Pfa = 0.285;
@@ -34,7 +34,7 @@ cfg.Ng = 15;
 cfg.Nr = 20;
 
 cfg.T = 25;                  % Sliding-window length
-cfg.intensity_thr = 0.25;     % Detection intensity threshold
+cfg.intensity_thr = 0.5;     % Detection intensity threshold
 cfg.cluster_radius = 0.35;   % Merge nearby detections [m]
 cfg.blur_sigma = 1.3;
 cfg.crop_rows = 20;          % Remove near-range clutter rows
@@ -51,45 +51,37 @@ cfg.dt = 0.01;
 cfg.tvec = 0:cfg.dt:10;
 
 cfg.traj_types = ["LINE", "PARABOLA"];
-cfg.prior_m = ones(cfg.max_obj + 1, 1) ./ (cfg.max_obj + 1);
+cfg.prior_m = ones(cfg.max_obj, 1) ./ cfg.max_obj;
 
 n_k = numel(cfg.tvec);
 
 %% --- Run Monte Carlo ----------------------------------------------------
-det_counts_by_obj = cell(cfg.max_obj+1, 1);
+det_counts_by_obj = cell(cfg.max_obj, 1);
 
-for n_obj = 0:cfg.max_obj
+for n_obj = 1:cfg.max_obj
     if cfg.verbose
         fprintf('Simulating object count m = %d\n', n_obj);
     end
 
-    det_counts_by_obj{n_obj+1} = runObjectCountTrials(n_obj, cfg, G, M);
+    det_counts_by_obj{n_obj} = runObjectCountTrials(n_obj, cfg, G, M);
 end
 
 %% --- Convert counts to probability tables -------------------------------
 max_det_observed = max(cellfun(@maxZeroSafe, det_counts_by_obj));
 det_axis = 0:max_det_observed;
 
-% N_k is indexed by row i (state), and m_k is the detection count.
-N_vals = 0:cfg.max_obj;
-m_axis = det_axis(:).'; % detection-count support (columns in lookup table)
-
-P_m_given_N = zeros(numel(N_vals), numel(m_axis)); % row i -> N_k = i
-
-for i = 1:numel(N_vals)
-    counts_i = det_counts_by_obj{N_vals(i) + 1}(:).';
-    for j = 1:length(counts_i)
-        col = counts_i(j) - m_axis(1) + 1;   % usually counts_i(j)+1 when m_axis starts at 0
-        if col >= 1 && col <= numel(m_axis)
-            P_m_given_N(i, col) = P_m_given_N(i, col) + 1;
-        end
+P_N_given_m = zeros(cfg.max_obj, numel(det_axis));
+for n_obj = 1:cfg.max_obj
+    counts = det_counts_by_obj{n_obj};
+    if isempty(counts)
+        continue
     end
 
-    row_sum = sum(P_m_given_N(i, :));
-    if row_sum > 0
-        P_m_given_N(i, :) = P_m_given_N(i, :) ./ row_sum;
-    end
+    hist_counts = accumarray(counts + 1, 1, [numel(det_axis), 1]);
+    P_N_given_m(n_obj, :) = (hist_counts ./ sum(hist_counts)).';
 end
+
+P_m_given_N = computePosteriorFromLikelihood(P_N_given_m, cfg.prior_m);
 
 %% --- Visualization ------------------------------------------------------
 figure;
@@ -98,21 +90,20 @@ xlabel('Detections N');
 ylabel( 'Objects m');
 zlabel('Probability');
 title('P(m | N)');
-xticks( 1:numel(det_axis));
-xticklabels( string(det_axis));
-yticks(1:numel(N_vals));
-yticklabels(string(N_vals));
-zlim( [0, max(P_m_given_N(:), [], 'omitnan') * 1.05 + eps]);
+xticks(ax2, 1:numel(det_axis));
+xticklabels(ax2, string(det_axis));
+yticks(ax2, 1:cfg.max_obj);
+zlim(ax2, [0, max(P_m_given_N(:), [], 'omitnan') * 1.05 + eps]);
 
 %% --- Export results -----------------------------------------------------
 results = struct();
+results.cfg = cfg;
+results.det_axis = det_axis;
+results.P_N_given_m = P_N_given_m;
 results.P_m_given_N = P_m_given_N;
 results.det_counts_by_obj = det_counts_by_obj;
-results.cfg = cfg;
 
-out_file = fullfile(script_dir, 'probObjCt_results.mat');
-%save(out_file, 'results', '-mat');
-fprintf('Saved dataset to: %s\n', out_file);
+save(fullfile(script_dir, 'probObjCt_results_demo.mat'), 'results');
 
 
 %% FUNCTIONS
@@ -125,13 +116,13 @@ function det_counts = runObjectCountTrials(n_obj, cfg, G, M)
     for trial = 1:cfg.MC
         
         % Pick n_obj random pixels to place objects in
-        X_GT = cell(n_obj, 1);
+        X_GT = cell(n_obj,1);
         for n = 1:n_obj
             x = randi(128);
-            y = randi([30 128]);
-            X_GT{n} = [x; y];
+            y = randi(128);
+            X_GT{n} = [x;y];
         end
-        
+
         sim_signal = simulateSignalFrame(X_GT, cfg, G, M);
         
 
@@ -145,6 +136,23 @@ function det_counts = runObjectCountTrials(n_obj, cfg, G, M)
 
 end
 
+function X_GT = generateTracks(n_obj, cfg)
+    X_GT = cell(1, n_obj);
+    starts = sample_start_points(n_obj, cfg.min_track_y, cfg.min_start_separation);
+    stops = sample_stop_points(n_obj, cfg.min_track_y);
+
+    for idx = 1:n_obj
+        traj_type = cfg.traj_types(mod(idx - 1, numel(cfg.traj_types)) + 1);
+        switch traj_type
+            case "LINE"
+                X_GT{idx} = generate_line_track(cfg.tvec, cfg.dt, starts(:,idx), stops(:,idx));
+            case "PARABOLA"
+                X_GT{idx} = generate_parabola_track(cfg.tvec, cfg.dt, starts(:,idx), stops(:,idx));
+            otherwise
+                error('Unsupported trajectory type: %s', traj_type);
+        end
+    end
+end
 
 function sim_signal = simulateSignalFrame(X_GT, cfg, G, M)
     S = zeros(cfg.npx, cfg.npx);
@@ -212,12 +220,17 @@ function signal_normalized = normalizeSignalFrame(avgSignal, cfg)
     blurred = imgaussfilt(avgSignal, cfg.blur_sigma);
     blurred(1:cfg.crop_rows, :) = NaN;
     signal_scaled = asinh(blurred);
-    if (max(signal_scaled(:)) - min(signal_scaled(:))) ~= 0
-        signal_normalized = (signal_scaled - min(signal_scaled(:))) ./ ...
-            (max(signal_scaled(:)) - min(signal_scaled(:)));
-    else
-        signal_normalized = signal_scaled;
-    end
+    signal_normalized = (signal_scaled - min(signal_scaled(:))) ./ ...
+        (max(signal_scaled(:)) - min(signal_scaled(:)));
+end
+
+function P_m_given_N = computePosteriorFromLikelihood(P_N_given_m, prior_m)
+    weighted = P_N_given_m .* prior_m;
+    evidence = sum(weighted, 1);
+
+    P_m_given_N = zeros(size(P_N_given_m));
+    valid_cols = evidence > 0;
+    P_m_given_N(:, valid_cols) = weighted(:, valid_cols) ./ evidence(valid_cols);
 end
 
 function clustered_xy = clusterNearbyDetections(meas_xy, cluster_radius)
@@ -268,3 +281,95 @@ function value = maxZeroSafe(x)
     end
 end
 
+function starts = sample_start_points(n_obj, min_track_y, min_separation)
+    starts = sample_points_with_min_separation(n_obj, min_track_y, 3.4, min_separation);
+end
+
+function stops = sample_stop_points(n_obj, min_track_y)
+    stops = zeros(2, n_obj);
+    stops(1,:) = -1.8 + 3.6 .* rand(1, n_obj);
+    stops(2,:) = min_track_y + (3.4 - min_track_y) .* rand(1, n_obj);
+end
+
+function pts = sample_points_with_min_separation(n_obj, y_min, y_max, min_separation)
+    pts = zeros(2, n_obj);
+    max_attempts = 500;
+
+    for k = 1:n_obj
+        placed = false;
+        for attempt = 1:max_attempts
+            candidate = [-1.8 + 3.6 .* rand(); y_min + (y_max - y_min) .* rand()];
+            if k == 1
+                pts(:,k) = candidate;
+                placed = true;
+                break
+            end
+
+            deltas = pts(:,1:k-1) - candidate;
+            distances = sqrt(sum(deltas.^2, 1));
+            if all(distances >= min_separation)
+                pts(:,k) = candidate;
+                placed = true;
+                break
+            end
+        end
+
+        if ~placed
+            error(['Could not place %d start points with %.2f m separation ' ...
+                'after %d attempts.'], n_obj, min_separation, max_attempts);
+        end
+    end
+end
+
+function X = generate_line_track(tvec, dt, start_xy, stop_xy)
+    T = tvec(end);
+    delta_pos = stop_xy - start_xy;
+    a_progress = -0.01 + 0.02 .* rand();
+    v0_progress = (1 - 0.5 * a_progress * T^2) / T;
+
+    progress = v0_progress .* tvec + 0.5 .* a_progress .* tvec.^2;
+    x = start_xy(1) + delta_pos(1) .* progress;
+    y = start_xy(2) + delta_pos(2) .* progress;
+
+    x = clamp(x, -2, 2);
+    y = clamp(y, 1, 4);
+
+    vx = gradient(x, dt);
+    vy = gradient(y, dt);
+    ax = gradient(vx, dt);
+    ay = gradient(vy, dt);
+    X = [x; y; vx; vy; ax; ay];
+end
+
+function X = generate_parabola_track(tvec, dt, start_xy, stop_xy)
+    n_t = numel(tvec);
+    T = tvec(end);
+    tau = tvec ./ T;
+
+    x = start_xy(1) + (stop_xy(1) - start_xy(1)) .* tau;
+
+    mid = 0.5 * (start_xy + stop_xy);
+    y_peak = min(3.8, max(1.1, mid(2) + 0.5 + 0.4 .* rand()));
+
+    c = start_xy(2);
+    a = 2 * (start_xy(2) + stop_xy(2) - 2 * y_peak);
+    b = stop_xy(2) - c - a;
+    y = a .* tau.^2 + b .* tau + c;
+
+    x = clamp(x, -2, 2);
+    y = clamp(y, 1, 4);
+
+    vx = gradient(x, dt);
+    vy = gradient(y, dt);
+    ax = gradient(vx, dt);
+    ay = gradient(vy, dt);
+
+    X = [x; y; vx; vy; ax; ay];
+    if size(X, 2) ~= n_t
+        error('Parabola track length mismatch.');
+    end
+end
+
+function out = clamp(in, lo, hi)
+    out = min(hi, max(lo, in));
+end
