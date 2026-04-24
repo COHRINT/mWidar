@@ -712,9 +712,6 @@ classdef PDA_PF < DA_Filter
                 if obj.debug
                     fprintf('[MAGNITUDE LIKELIHOOD] Computed once for timestep: min/max/mean = %.2e / %.2e / %.2e\n', ...
                         min(magnitude_likelihood), max(magnitude_likelihood), mean(magnitude_likelihood));
-
-                    fprintf("DEBUGGING -- THIS IS THE RANGE OF THE MAG LIKELIHOODS\n")
-
                 end
 
                 % Store for visualization

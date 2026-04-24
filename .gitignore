@@ -49,6 +49,8 @@ dist/
 *.npz
 *.h5
 *.hdf5
+matlab_src/data
+matlab_src/results
 
 ## Tabular data
 *.csv

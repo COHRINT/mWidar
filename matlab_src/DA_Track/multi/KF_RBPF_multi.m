@@ -106,6 +106,14 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
 
         % History storage for post-processing visualization
         history % Struct array storing timestep data
+
+        % Visualization support (DynamicPlot)
+        DynamicPlot              % Enable real-time visualization (default: false)
+        dynamic_figure_handle    % Figure handle for real-time plot
+        plot_bounds_x            % [xmin, xmax] static position bounds ([] = auto)
+        plot_bounds_y            % [ymin, ymax] static position bounds ([] = auto)
+        gif_filename             % Path for GIF export ([] = disabled)
+        gif_first_frame          % Internal flag for GIF writing
     end
 
     methods
@@ -128,20 +136,29 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
             % Parse optional arguments
             p = inputParser;
             addParameter(p, 'Debug', false, @islogical);
+            addParameter(p, 'DynamicPlot', false, @islogical);
             addParameter(p, 'PD', 0.95, @(x) x >= 0 && x <= 1);
             addParameter(p, 'PFA', 0.05, @(x) x >= 0 && x <= 1);
             addParameter(p, 'ESSThreshold', 0.5, @(x) x > 0 && x <= 1);
             addParameter(p, 'AssociationStrategy', 'optimal', @(x) ismember(x, {'uniform', 'optimal', 'likelihood'}));
             addParameter(p, 'UniformInit', false, @islogical);
+            % InitSigmaPos / InitSigmaVel: std-dev for Gaussian particle init.
+            % Default (5 m, 2 m/s) is appropriate for unknown initial state.
+            % Set smaller (e.g., 0.3 / 0.2) when initialising from known GT.
+            addParameter(p, 'InitSigmaPos', 5.0, @(x) x >= 0);
+            addParameter(p, 'InitSigmaVel', 2.0, @(x) x >= 0);
             parse(p, varargin{:});
 
             obj.debug = p.Results.Debug;
+            obj.DynamicPlot = p.Results.DynamicPlot;
             obj.PD = p.Results.PD;
             obj.PFA = p.Results.PFA;
             obj.ESS_threshold_percentage = p.Results.ESSThreshold;
             obj.association_strategy = p.Results.AssociationStrategy;
             obj.N_t = length(x0_cell); % Number of targets from initial states
             uniform_init = p.Results.UniformInit;
+            init_sigma_pos = p.Results.InitSigmaPos;
+            init_sigma_vel = p.Results.InitSigmaVel;
 
             % Store dimensions
             obj.N_p = N_particles;
@@ -155,7 +172,14 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
             obj.R = R;
 
             % Initialize particle array
-            obj.particles = KF_RBPF_multi.initialize_particles(N_particles, x0_cell, F, Q, H, R, uniform_init);
+            obj.particles = KF_RBPF_multi.initialize_particles(N_particles, x0_cell, F, Q, H, R, uniform_init, init_sigma_pos, init_sigma_vel);
+
+            % Initialize visualization properties
+            obj.dynamic_figure_handle = [];
+            obj.plot_bounds_x = [];
+            obj.plot_bounds_y = [];
+            obj.gif_filename  = [];
+            obj.gif_first_frame = true;
 
             % Initialize timestep counter and history storage
             obj.timestep_counter = 0;
@@ -382,56 +406,57 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
             %   End
             %   Normalize weights
 
-            clutter_density = 1; % Placeholder for clutter model
-
             for i = 1:obj.N_p
-                % Initialize particle weight (will be product over all targets)
-                particle_weight = 1;
-
-                % Process each target
+                % Update each target's KF using its sampled association
                 for t = 1:obj.N_t
                     assoc_t = obj.particles{i}.associations(t);
-
-                    if assoc_t > 0 % Detection hypothesis for target t
-                        % Measurement associated with target t
-                        z_t = z(:, assoc_t);
-                        obj.particles{i}.kfs{t}.measurement_update(z_t);
-
-                        % Compute likelihood contribution from this target
-                        innov = obj.particles{i}.kfs{t}.z; % Innovation
-                        S = obj.particles{i}.kfs{t}.S; % Innovation covariance
-                        likelihood = mvnpdf(innov', zeros(1, obj.N_z), S);
-                        particle_weight = particle_weight * (obj.PD * likelihood);
-
-                    else % Clutter/missed detection for target t
-                        % No measurement update for this target - keep predicted state
-                        % Weight contribution from missed detection
-                        particle_weight = particle_weight * ((1 - obj.PD) * clutter_density);
+                    if assoc_t > 0
+                        obj.particles{i}.kfs{t}.measurement_update(z(:, assoc_t));
                     end
-
+                    % assoc_t == 0: missed detection — KF keeps predicted state
                 end
 
-                % Assign computed weight to particle
-                obj.particles{i}.weight = particle_weight;
+                % Per Sarkka RBPF: w_k^i = w_{k-1}^i * Z^i
+                % Z^i is the normalizing constant of the optimal importance distribution
+                % p(z_k | x_{k|k-1}^i), computed in generateAssociations_optimalimportancedist.
+                obj.particles{i}.weight = obj.particles{i}.weight * obj.particles{i}.Z_i;
             end
 
             % Normalize weights across all particles
             total_weight = sum(cellfun(@(p) p.weight, obj.particles));
 
-            for i = 1:obj.N_p
-                obj.particles{i}.weight = obj.particles{i}.weight / total_weight;
+            if total_weight < eps || ~isfinite(total_weight)
+                % Weight collapse — reset to uniform so tracking can recover
+                if obj.debug
+                    warning('KF_RBPF_multi:WeightCollapse', ...
+                        'All particle weights collapsed at step %d — resetting to uniform.', ...
+                        obj.timestep_counter + 1);
+                end
+                for i = 1:obj.N_p
+                    obj.particles{i}.weight = 1 / obj.N_p;
+                end
+            else
+                for i = 1:obj.N_p
+                    obj.particles{i}.weight = obj.particles{i}.weight / total_weight;
+                end
             end
 
         end
 
         function generateAssociations_uniform(obj, z)
             % GENERATEASSOCIATIONS_UNIFORM Uniform random association sampling
+            % Each target independently draws a random association in [0, N_meas].
             N_measurements = size(z, 2);
 
             for i = 1:obj.N_p
-                % Randomly choose association index (0 = clutter)
-                obj.particles{i}.association = randi([0, N_measurements]);
-                obj.particles{i}.association_history = [obj.particles{i}.association_history, obj.particles{i}.association];
+                % Sample an independent random association for each target
+                assoc_vec = zeros(obj.N_t, 1);
+                for t = 1:obj.N_t
+                    assoc_vec(t) = randi([0, N_measurements]);
+                end
+                obj.particles{i}.associations = assoc_vec;
+                obj.particles{i}.association_history = ...
+                    [obj.particles{i}.association_history, assoc_vec];
             end
 
         end
@@ -473,6 +498,8 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
                 % For N_t targets and M measurements, need (M+1)^N_t tensor
                 % Dimension: each target can associate with 0 (clutter) or 1:M (measurements)
 
+                Z_i = 0; % normalizing constant of optimal proposal (filled by each branch)
+
                 if obj.N_t == 1
                     % Single target - use original algorithm
                     association_weights = zeros(1, N_measurements + 1);
@@ -485,11 +512,15 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
 
                     association_weights(end) = p_clutter;
 
-                    % Normalize and sample
-                    association_weights = association_weights / sum(association_weights);
+                    % Normalizing constant for RBPF weight (Sarkka: w^i *= Z^i)
+                    Z_i = sum(association_weights);
+                    if Z_i < eps, Z_i = eps; end
+                    association_weights = association_weights / Z_i;
                     cumulative_weights = cumsum(association_weights);
+                    cumulative_weights(end) = 1.0;  % Clamp for floating-point safety
                     r = rand();
                     sampled_idx = find(cumulative_weights >= r, 1);
+                    if isempty(sampled_idx), sampled_idx = numel(cumulative_weights); end
                     obj.particles{i}.associations(1) = (sampled_idx <= N_measurements) * sampled_idx;
 
                 elseif obj.N_t == 2
@@ -502,21 +533,19 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
                     target1_weights = zeros(1, N_measurements + 1);
                     target2_weights = zeros(1, N_measurements + 1);
 
-                    % Target 1 weights
+                    % Target 1 weights: index 1 = missed detection, index m+1 = measurement m
+                    target1_weights(1) = p_clutter;
                     for m = 1:N_measurements
                         [innov, S] = obj.particles{i}.kfs{1}.getInnovation(z(:, m));
-                        target1_weights(m) = obj.PD * mvnpdf(innov', zeros(1, obj.N_z), S);
+                        target1_weights(m+1) = obj.PD * mvnpdf(innov', zeros(1, obj.N_z), S);
                     end
 
-                    target1_weights(end) = p_clutter;
-
-                    % Target 2 weights
+                    % Target 2 weights: index 1 = missed detection, index m+1 = measurement m
+                    target2_weights(1) = p_clutter;
                     for m = 1:N_measurements
                         [innov, S] = obj.particles{i}.kfs{2}.getInnovation(z(:, m));
-                        target2_weights(m) = obj.PD * mvnpdf(innov', zeros(1, obj.N_z), S);
+                        target2_weights(m+1) = obj.PD * mvnpdf(innov', zeros(1, obj.N_z), S);
                     end
-
-                    target2_weights(end) = p_clutter;
 
                     % Build joint distribution with exclusivity constraint
                     for c1 = 0:N_measurements
@@ -539,12 +568,16 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
 
                     % Flatten matrix to vector for sampling
                     assoc_vec = assoc_matrix(:);
-                    assoc_vec = assoc_vec / sum(assoc_vec); % Normalize
+                    Z_i = sum(assoc_vec);  % normalizing constant for RBPF weight
+                    if Z_i < eps, Z_i = eps; end
+                    assoc_vec = assoc_vec / Z_i;
 
                     % Sample from flattened distribution
                     cumulative_weights = cumsum(assoc_vec);
+                    cumulative_weights(end) = 1.0;  % Clamp for floating-point safety
                     r = rand();
                     sampled_idx = find(cumulative_weights >= r, 1);
+                    if isempty(sampled_idx), sampled_idx = numel(cumulative_weights); end
 
                     % Convert linear index back to (c1, c2)
                     [row, col] = ind2sub(size(assoc_matrix), sampled_idx);
@@ -561,13 +594,12 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
                     target_weights = zeros(obj.N_t, N_measurements + 1);
 
                     for t = 1:obj.N_t
-
+                        % index 1 = missed detection, index m+1 = measurement m
+                        target_weights(t, 1) = p_clutter;
                         for m = 1:N_measurements
                             [innov, S] = obj.particles{i}.kfs{t}.getInnovation(z(:, m));
-                            target_weights(t, m) = obj.PD * mvnpdf(innov', zeros(1, obj.N_z), S);
+                            target_weights(t, m+1) = obj.PD * mvnpdf(innov', zeros(1, obj.N_z), S);
                         end
-
-                        target_weights(t, end) = p_clutter;
                     end
 
                     % Enumerate all possible joint associations
@@ -602,15 +634,22 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
 
                     end
 
-                    % Normalize and sample
-                    hypothesis_weights = hypothesis_weights / sum(hypothesis_weights);
+                    % Normalize and sample (Z_i = normalizing constant for RBPF weight)
+                    Z_i = sum(hypothesis_weights);
+                    if Z_i < eps, Z_i = eps; end
+                    hypothesis_weights = hypothesis_weights / Z_i;
                     cumulative_weights = cumsum(hypothesis_weights);
+                    cumulative_weights(end) = 1.0;  % Clamp for floating-point safety
                     r = rand();
                     sampled_h = find(cumulative_weights >= r, 1);
+                    if isempty(sampled_h), sampled_h = num_hypotheses; end
 
                     % Extract sampled association
                     obj.particles{i}.associations = hypothesis_assocs(sampled_h, :)';
                 end
+
+                % Store normalizing constant for use in measurement_update
+                obj.particles{i}.Z_i = Z_i;
 
                 % Store association history
                 obj.particles{i}.association_history = [obj.particles{i}.association_history, obj.particles{i}.associations];
@@ -654,16 +693,17 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
             if ESS < ESS_threshold
                 % Systematic resampling
                 cumulative_weights = cumsum(weights);
+                cumulative_weights(end) = 1.0;  % Force exact 1 for floating-point safety
                 step = 1 / obj.N_p;
                 start = rand * step;
-                positions = start:step:1;
+                positions = start + (0:obj.N_p-1) * step;  % Always exactly N_p elements
 
                 new_particles = cell(1, obj.N_p);
                 index = 1;
 
                 for i = 1:obj.N_p
 
-                    while positions(i) > cumulative_weights(index)
+                    while positions(i) > cumulative_weights(index) && index < obj.N_p
                         index = index + 1;
                     end
 
@@ -741,11 +781,11 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
 
         end
 
-        function visualize(obj, true_state, measurements)
-            % VISUALIZE Plot particle distribution and estimates
+        function visualize(obj, true_states, measurements)
+            % VISUALIZE Plot multi-target particle distribution and estimates
             %
             % INPUTS:
-            %   true_state   - (optional) Ground truth state [N_x x 1]
+            %   true_states  - (optional) Ground truth cell {1xN_t} or [N_x x N_t]
             %   measurements - (optional) Current measurements [N_z x N_meas]
             %
             % CREATES:
@@ -756,329 +796,151 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
             %   Subplot 4: Association histogram
 
             % Handle optional arguments
-            if nargin < 2 || isempty(true_state)
-                true_state = [];
+            if nargin < 2, true_states = []; end
+            if nargin < 3, measurements = []; end
+
+            % Normalize true_states to cell array {1 x N_t}
+            if ~isempty(true_states) && ~iscell(true_states)
+                % Matrix [N_x x N_t] passed — convert to cell
+                gt_cell = cell(1, obj.N_t);
+                for t = 1:obj.N_t
+                    gt_cell{t} = true_states(:, t);
+                end
+                true_states = gt_cell;
             end
 
-            if nargin < 3 || isempty(measurements)
-                measurements = [];
-            end
-
-            % Create or use existing figure
+            % Create or reuse figure
             if isempty(obj.dynamic_figure_handle) || ~isvalid(obj.dynamic_figure_handle)
-                obj.dynamic_figure_handle = figure('Name', 'KF-RBPF Tracking', ...
-                    'NumberTitle', 'off', 'Position', [50, 50, 1600, 400]);
+                obj.dynamic_figure_handle = figure('Name', 'KF-RBPF-Multi Tracking', ...
+                    'NumberTitle', 'off', 'Position', [50, 50, 400*obj.N_t, 800]);
             else
                 figure(obj.dynamic_figure_handle);
                 clf;
             end
 
-            % Extract particle states and weights
-            [x_est, P_est] = obj.getGaussianEstimate();
-            particle_positions = zeros(obj.N_x, obj.N_p);
-            particle_associations = zeros(1, obj.N_p);
-            particle_weights = zeros(1, obj.N_p);
+            % Get estimates and particle weights
+            [x_est_cell, P_est_cell] = obj.getGaussianEstimate();
+            weights = cellfun(@(p) p.weight, obj.particles);
+            ESS = 1 / sum(weights .^ 2);
+            colors = lines(obj.N_t);
 
+            % Compute global spatial bounds from all particles + measurements
+            all_x = [];  all_y = [];
             for i = 1:obj.N_p
-                particle_positions(:, i) = obj.particles{i}.kf.x;
-                particle_associations(i) = obj.particles{i}.association;
-                particle_weights(i) = obj.particles{i}.weight;
-            end
-
-            % Compute ESS
-            ESS = 1 / sum(particle_weights .^ 2);
-
-            % Define spatial bounds - use static bounds if set, otherwise compute dynamically
-            if ~isempty(obj.plot_bounds_x) && ~isempty(obj.plot_bounds_y)
-                % Use pre-set static bounds
-                Xbounds = obj.plot_bounds_x;
-                Ybounds = obj.plot_bounds_y;
-            else
-                % Compute dynamic bounds based on particles, measurements, and true state
-                all_x = particle_positions(1, :);
-                all_y = particle_positions(2, :);
-
-                if ~isempty(measurements)
-                    all_x = [all_x, measurements(1, :)];
-                    all_y = [all_y, measurements(2, :)];
+                for t = 1:obj.N_t
+                    pos = obj.particles{i}.kfs{t}.x(1:2);
+                    all_x(end+1) = pos(1); %#ok<AGROW>
+                    all_y(end+1) = pos(2); %#ok<AGROW>
                 end
-
-                if ~isempty(true_state)
-                    all_x = [all_x, true_state(1)];
-                    all_y = [all_y, true_state(2)];
-                end
-
-                % Compute bounds with 20% margin
-                x_range = max(all_x) - min(all_x);
-                y_range = max(all_y) - min(all_y);
-                margin = 0.2; % 20 % margin
-
-                Xbounds = [min(all_x) - margin * x_range, max(all_x) + margin * x_range];
-                Ybounds = [min(all_y) - margin * y_range, max(all_y) + margin * y_range];
-
-                % Ensure minimum range for visualization
-                if x_range < 0.5
-                    x_center = mean(Xbounds);
-                    Xbounds = [x_center - 0.5, x_center + 0.5];
-                end
-
-                if y_range < 0.5
-                    y_center = mean(Ybounds);
-                    Ybounds = [y_center - 0.5, y_center + 0.5];
-                end
-
             end
-
-            %% SUBPLOT 1: Position colored by weight
-            subplot(1, 4, 1);
-            cla; hold on;
-
-            % Scatter particles
-            scatter(particle_positions(1, :), particle_positions(2, :), 20, ...
-                particle_weights, 'filled', 'MarkerFaceAlpha', 0.6);
-            colormap('hot');
-            cb = colorbar;
-            cb.Label.String = 'Weight';
-
-            % Plot mean estimate
-            plot(x_est(1), x_est(2), 'go', 'MarkerSize', 12, 'LineWidth', 3);
-
-            % Plot covariance ellipse
-            if obj.N_x >= 2
-                pos_cov = P_est(1:2, 1:2);
-                ellipse_1sigma = obj.computeCovarianceEllipse(x_est(1:2), pos_cov, 1);
-                plot(ellipse_1sigma(1, :), ellipse_1sigma(2, :), 'g-', 'LineWidth', 2);
-            end
-
-            % Plot true state
-            if ~isempty(true_state)
-                plot(true_state(1), true_state(2), 'md', 'MarkerSize', 10, ...
-                    'LineWidth', 2, 'MarkerFaceColor', 'm');
-            end
-
-            % Plot measurements
             if ~isempty(measurements)
-                plot(measurements(1, :), measurements(2, :), 'r+', ...
-                    'MarkerSize', 10, 'LineWidth', 2);
-
-                % Mark the closest measurement to true state with a star (correct association)
-                % Only if a true measurement actually exists (not a missed detection)
-                if ~isempty(true_state) && obj.true_meas_exists
-                    % Compute distance from each measurement to true position
-                    true_pos = true_state(1:2);
-                    dists = vecnorm(measurements - true_pos, 2, 1);
-                    [~, closest_idx] = min(dists);
-
-                    % Plot star on top of closest measurement
-                    plot(measurements(1, closest_idx), measurements(2, closest_idx), ...
-                        'p', 'MarkerSize', 18, 'LineWidth', 2.5, ...
-                        'MarkerEdgeColor', 'k', 'MarkerFaceColor', 'y');
+                all_x = [all_x, measurements(1,:)];
+                all_y = [all_y, measurements(2,:)];
+            end
+            if ~isempty(true_states)
+                for t = 1:obj.N_t
+                    all_x(end+1) = true_states{t}(1);
+                    all_y(end+1) = true_states{t}(2);
                 end
-
             end
 
-            title(sprintf('Position (Weighted)\nESS: %.1f', ESS), 'Interpreter', 'latex');
-            xlabel('X (m)'); ylabel('Y (m)');
-            xlim(Xbounds); ylim(Ybounds);
-            axis square; grid on;
-
-            %% SUBPLOT 2: Position colored by association
-            subplot(1, 4, 2);
-            cla; hold on;
-
-            % Get unique associations
-            unique_assocs = unique(particle_associations);
-            N_meas = max(unique_assocs);
-
-            % Create colormap for associations
-            if N_meas > 0
-                assoc_colors = lines(N_meas + 1); % +1 for clutter
+            if ~isempty(obj.plot_bounds_x)
+                Xb = obj.plot_bounds_x; Yb = obj.plot_bounds_y;
             else
-                assoc_colors = [0.5 0.5 0.5]; % Gray for all clutter
+                xr = max(all_x) - min(all_x); yr = max(all_y) - min(all_y);
+                mg = 0.15;
+                Xb = [min(all_x)-mg*max(xr,0.5), max(all_x)+mg*max(xr,0.5)];
+                Yb = [min(all_y)-mg*max(yr,0.5), max(all_y)+mg*max(yr,0.5)];
             end
 
-            % Plot particles by association
-            for assoc = unique_assocs
-                idx = particle_associations == assoc;
+            %% ROW 1: one subplot per target — position clouds
+            for t = 1:obj.N_t
+                subplot(2, obj.N_t, t);
+                cla; hold on;
 
-                if assoc == 0
-                    % Clutter: gray
-                    scatter(particle_positions(1, idx), particle_positions(2, idx), ...
-                        20, [0.5 0.5 0.5], 'filled', 'MarkerFaceAlpha', 0.4);
-                else
-                    % Measurement assoc: colored
-                    scatter(particle_positions(1, idx), particle_positions(2, idx), ...
-                        20, assoc_colors(assoc, :), 'filled', 'MarkerFaceAlpha', 0.7);
+                % Particle positions for this target, colored by weight
+                pos_t = zeros(2, obj.N_p);
+                assoc_t = zeros(1, obj.N_p);
+                for i = 1:obj.N_p
+                    pos_t(:,i) = obj.particles{i}.kfs{t}.x(1:2);
+                    assoc_t(i) = obj.particles{i}.associations(t);
                 end
 
-            end
-
-            % Plot mean estimate
-            plot(x_est(1), x_est(2), 'ko', 'MarkerSize', 12, 'LineWidth', 3);
-
-            % Plot covariance ellipse
-            if obj.N_x >= 2
-                pos_cov = P_est(1:2, 1:2);
-                ellipse_1sigma = obj.computeCovarianceEllipse(x_est(1:2), pos_cov, 1);
-                plot(ellipse_1sigma(1, :), ellipse_1sigma(2, :), 'k-', 'LineWidth', 2);
-            end
-
-            % Plot true state
-            if ~isempty(true_state)
-                plot(true_state(1), true_state(2), 'md', 'MarkerSize', 10, ...
-                    'LineWidth', 2, 'MarkerFaceColor', 'm');
-            end
-
-            % Plot measurements with matching colors
-            if ~isempty(measurements)
-
-                for j = 1:size(measurements, 2)
-                    plot(measurements(1, j), measurements(2, j), 'x', ...
-                        'Color', assoc_colors(min(j, N_meas), :), ...
-                        'MarkerSize', 12, 'LineWidth', 3);
-                end
-
-                % Mark the closest measurement to true state with a star (correct association)
-                % Only if a true measurement actually exists (not a missed detection)
-                if ~isempty(true_state) && obj.true_meas_exists
-                    % Compute distance from each measurement to true position
-                    true_pos = true_state(1:2);
-                    dists = vecnorm(measurements - true_pos, 2, 1);
-                    [~, closest_idx] = min(dists);
-
-                    % Plot star on top of closest measurement
-                    plot(measurements(1, closest_idx), measurements(2, closest_idx), ...
-                        'p', 'MarkerSize', 18, 'LineWidth', 2.5, ...
-                        'MarkerEdgeColor', 'k', 'MarkerFaceColor', 'y');
-                end
-
-            end
-
-            title('Position (Association)', 'Interpreter', 'latex');
-            xlabel('X (m)'); ylabel('Y (m)');
-            xlim(Xbounds); ylim(Ybounds);
-            axis square; grid on;
-
-            %% SUBPLOT 3: Velocity (if available) or Acceleration
-            subplot(1, 4, 3);
-            cla; hold on;
-
-            if obj.N_x >= 4
-                % Plot velocity
-                scatter(particle_positions(3, :), particle_positions(4, :), 20, ...
-                    particle_weights, 'filled', 'MarkerFaceAlpha', 0.6);
+                scatter(pos_t(1,:), pos_t(2,:), 15, weights, 'filled', ...
+                    'MarkerFaceAlpha', 0.5);
                 colormap('hot');
 
-                % Plot mean
-                plot(x_est(3), x_est(4), 'go', 'MarkerSize', 12, 'LineWidth', 3);
+                % Estimate + 1-sigma ellipse
+                xe = x_est_cell{t};
+                Pe = P_est_cell{t};
+                plot(xe(1), xe(2), 'o', 'Color', colors(t,:), ...
+                    'MarkerSize', 10, 'LineWidth', 2.5, 'MarkerFaceColor', colors(t,:));
+                th = linspace(0, 2*pi, 100);
+                try
+                    L = chol(Pe(1:2,1:2))';
+                    ell = xe(1:2) + L * [cos(th); sin(th)];
+                    plot(ell(1,:), ell(2,:), '-', 'Color', colors(t,:), 'LineWidth', 1.5);
+                catch, end
 
-                % Plot covariance ellipse
-                vel_cov = P_est(3:4, 3:4);
-                ellipse_1sigma = obj.computeCovarianceEllipse(x_est(3:4), vel_cov, 1);
-                plot(ellipse_1sigma(1, :), ellipse_1sigma(2, :), 'g-', 'LineWidth', 2);
-
-                % Plot true velocity
-                if ~isempty(true_state) && length(true_state) >= 4
-                    plot(true_state(3), true_state(4), 'md', 'MarkerSize', 10, ...
-                        'LineWidth', 2, 'MarkerFaceColor', 'm');
+                % Ground truth
+                if ~isempty(true_states)
+                    gt = true_states{t};
+                    plot(gt(1), gt(2), 'd', 'Color', colors(t,:), ...
+                        'MarkerSize', 10, 'LineWidth', 2, 'MarkerFaceColor', 'w');
                 end
 
-                % Compute velocity bounds - use static if set, otherwise dynamic
-                if ~isempty(obj.plot_bounds_vx) && ~isempty(obj.plot_bounds_vy)
-                    Vxbounds = obj.plot_bounds_vx;
-                    Vybounds = obj.plot_bounds_vy;
-                else
-                    % Compute dynamic velocity bounds
-                    all_vx = particle_positions(3, :);
-                    all_vy = particle_positions(4, :);
-
-                    if ~isempty(true_state) && length(true_state) >= 4
-                        all_vx = [all_vx, true_state(3)];
-                        all_vy = [all_vy, true_state(4)];
-                    end
-
-                    vx_range = max(all_vx) - min(all_vx);
-                    vy_range = max(all_vy) - min(all_vy);
-                    margin_v = 0.2;
-
-                    Vxbounds = [min(all_vx) - margin_v * max(vx_range, 0.5), ...
-                                    max(all_vx) + margin_v * max(vx_range, 0.5)];
-                    Vybounds = [min(all_vy) - margin_v * max(vy_range, 0.5), ...
-                                    max(all_vy) + margin_v * max(vy_range, 0.5)];
+                % Measurements
+                if ~isempty(measurements)
+                    plot(measurements(1,:), measurements(2,:), 'r+', ...
+                        'MarkerSize', 8, 'LineWidth', 1.5);
                 end
 
-                title('Velocity', 'Interpreter', 'latex');
-                xlabel('V_x (m/s)'); ylabel('V_y (m/s)');
-                xlim(Vxbounds); ylim(Vybounds);
-                axis square; grid on;
-            else
-                % No velocity data
-                text(0.5, 0.5, 'N/A (State dim < 4)', ...
-                    'HorizontalAlignment', 'center', ...
-                    'Units', 'normalized', 'FontSize', 14);
-                title('Velocity', 'Interpreter', 'latex');
-                axis off;
+                xlim(Xb); ylim(Yb);
+                xlabel('X (m)'); ylabel('Y (m)');
+                title(sprintf('Target %d  |  ESS=%.0f', t, ESS));
+                grid on; axis square;
             end
 
-            %% SUBPLOT 4: Association Histogram
-            subplot(1, 4, 4);
-            cla; hold on;
+            %% ROW 2: one subplot per target — MAP association bar
+            for t = 1:obj.N_t
+                subplot(2, obj.N_t, obj.N_t + t);
+                cla; hold on;
 
-            % Count particles per association
-            assoc_counts = histcounts(particle_associations, ...
-                'BinEdges', -0.5:(max(particle_associations) + 0.5));
-
-            % Create bar chart
-            bar(0:max(particle_associations), assoc_counts, 'FaceColor', [0.3 0.5 0.8]);
-
-            % Add percentage labels on bars
-            for i = 0:max(particle_associations)
-
-                if assoc_counts(i + 1) > 0
-                    pct = 100 * assoc_counts(i + 1) / obj.N_p;
-                    text(i, assoc_counts(i + 1), sprintf('%.1f%%', pct), ...
-                        'HorizontalAlignment', 'center', ...
-                        'VerticalAlignment', 'bottom', 'FontSize', 9);
+                assoc_t = zeros(1, obj.N_p);
+                for i = 1:obj.N_p
+                    assoc_t(i) = obj.particles{i}.associations(t);
                 end
 
+                max_a = max(assoc_t);
+                if max_a < 1, max_a = 1; end
+                counts = histcounts(assoc_t, 'BinEdges', -0.5:(max_a+0.5));
+                bar(0:max_a, counts, 'FaceColor', colors(t,:));
+
+                xlabel('Association (0=miss)'); ylabel('Count');
+                title(sprintf('T%d Assoc. Dist.', t));
+                if max_a <= 10, xticks(0:max_a); end
+                grid on;
             end
 
-            title('Association Distribution', 'Interpreter', 'latex');
-            xlabel('Association (0=Clutter)');
-            ylabel('Particle Count');
-            grid on;
-
-            % Format x-axis
-            if max(particle_associations) <= 10
-                xticks(0:max(particle_associations));
-            end
-
-            %% Overall title
-            sgtitle(sprintf('KF-RBPF Timestep %d | Strategy: %s | N_p=%d', ...
-                obj.timestep_counter, obj.association_strategy, obj.N_p), ...
-                'FontSize', 14, 'FontWeight', 'bold');
-
+            sgtitle(sprintf('KF-RBPF-Multi | k=%d | Strategy=%s | N_p=%d | N_t=%d', ...
+                obj.timestep_counter, obj.association_strategy, obj.N_p, obj.N_t), ...
+                'FontSize', 12, 'FontWeight', 'bold');
             drawnow;
 
-            % Capture frame for GIF if enabled
+            % GIF export
             if ~isempty(obj.gif_filename)
                 frame = getframe(gcf);
                 im = frame2im(frame);
                 [imind, cm] = rgb2ind(im, 256);
-
                 if obj.gif_first_frame
                     imwrite(imind, cm, obj.gif_filename, 'gif', 'Loopcount', inf, 'DelayTime', 0.1);
                     obj.gif_first_frame = false;
                 else
                     imwrite(imind, cm, obj.gif_filename, 'gif', 'WriteMode', 'append', 'DelayTime', 0.1);
                 end
-
             end
 
-            % Add pause for animation visibility (0.2 seconds = 5 fps)
-            if obj.DynamicPlot
-                pause(0.2);
-            end
+            if obj.DynamicPlot, pause(0.1); end
 
         end
 
@@ -1087,7 +949,7 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
     methods (Static)
         % Helper functions can go here
 
-        function particles = initialize_particles(num_particles, x0_cell, F, Q, H, R, uniform_init)
+        function particles = initialize_particles(num_particles, x0_cell, F, Q, H, R, uniform_init, sigma_pos, sigma_vel)
             % INITIALIZE_PARTICLES Helper to create multi-target particle array
             %
             % INPUTS:
@@ -1095,20 +957,14 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
             %   x0_cell       - Cell array {1 x N_targets} of initial state estimates [N_x x 1]
             %   F, Q, H, R    - System model matrices
             %   uniform_init  - (optional) Boolean: if true, use uniform initialization
+            %   sigma_pos     - (optional) Gaussian init position std-dev (default 5.0 m)
+            %   sigma_vel     - (optional) Gaussian init velocity std-dev (default 2.0 m/s)
             % OUTPUTS:
             %   particles - Cell array of initialized particle structs
-            %
-            % ALGORITHM:
-            %   Each particle maintains N_targets Kalman filters (one per target).
-            %   If uniform_init = false (default):
-            %       Each target's KF is initialized with diverse states sampled
-            %       from distribution around corresponding x0.
-            %   If uniform_init = true:
-            %       Each target's KF is uniformly distributed across state space.
 
-            if nargin < 7
-                uniform_init = false;
-            end
+            if nargin < 7, uniform_init = false; end
+            if nargin < 8, sigma_pos = 5.0; end
+            if nargin < 9, sigma_vel = 2.0; end
 
             particles = cell(1, num_particles);
             num_targets = length(x0_cell);
@@ -1152,26 +1008,24 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
                         'associations', zeros(num_targets, 1), ... % [N_t x 1] associations (0 = clutter)
                         'kfs', {kfs}, ... % Cell {1 x N_t} of KF objects
                         'weight', 1 / num_particles, ... % Uniform initial weight
-                        'association_history', []); % History: [N_t x K] matrix over time
+                        'association_history', [], ... % History: [N_t x K] matrix over time
+                        'Z_i', 1); % RBPF normalizing constant (set by generateAssociations)
                 end
 
             else
                 % GAUSSIAN INITIALIZATION around provided initial states
-                % Define initial uncertainty for particle diversity
-                if N_x == 4
-                    initial_uncertainty_std = [5.0; 5.0; 2.0; 2.0]; % [x, y, vx, vy]
-                else
-                    initial_uncertainty_std = ones(N_x, 1);
-                    initial_uncertainty_std(1:min(2, N_x)) = 5.0; % Position
-
-                    if N_x >= 4
-                        initial_uncertainty_std(3:4) = 2.0; % Velocity
-                    end
-
+                initial_uncertainty_std = ones(N_x, 1);
+                initial_uncertainty_std(1:min(2, N_x))     = sigma_pos;  % x, y
+                if N_x >= 4
+                    initial_uncertainty_std(3:4) = sigma_vel;             % vx, vy
+                end
+                % Acceleration states (if 6-DOF): default small uncertainty
+                if N_x >= 6
+                    initial_uncertainty_std(5:6) = 1.0;
                 end
 
                 initial_particle_cov = diag(initial_uncertainty_std .^ 2);
-                initial_kf_cov = 10 * eye(N_x); % Conservative KF covariance
+                initial_kf_cov = diag(initial_uncertainty_std .^ 2);  % KF init matches particle spread
 
                 for i = 1:num_particles
                     kfs = cell(1, num_targets);
@@ -1186,7 +1040,8 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
                         'associations', zeros(num_targets, 1), ... % [N_t x 1] associations
                         'kfs', {kfs}, ... % Cell {1 x N_t} of KF objects
                         'weight', 1 / num_particles, ... % Uniform initial weight
-                        'association_history', []); % History storage
+                        'association_history', [], ... % History storage
+                        'Z_i', 1); % RBPF normalizing constant (set by generateAssociations)
                 end
 
             end

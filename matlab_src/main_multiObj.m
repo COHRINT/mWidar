@@ -9,7 +9,7 @@ function main_multiObj(varargin)
 
     %% --- Parse Input Arguments ---
     p = inputParser;
-    addParameter(p, 'Algorithm', 'JPDA', @(x) ismember(x, {'JPDA', 'RBPF'}));
+    addParameter(p, 'Algorithm', 'JPDA', @(x) ismember(x, {'JPDA', 'RBPF', 'PDA_PF_MULTI', 'HMM_RBPF_MULTI'}));
     addParameter(p, 'Dataset', 'JPDAF_test_traj_2', @ischar);
     addParameter(p, 'NumParticles', 1000, @isnumeric); % For RBPF
     addParameter(p, 'Debug', false, @islogical);
@@ -32,7 +32,7 @@ function main_multiObj(varargin)
     fprintf('=== Multi-Object Tracker Test ===\n');
     fprintf('Algorithm: %s\n', ALGORITHM);
     fprintf('Dataset: %s\n', DATASET);
-    if strcmp(ALGORITHM, 'RBPF')
+    if ismember(ALGORITHM, {'RBPF', 'PDA_PF_MULTI', 'HMM_RBPF_MULTI'})
         fprintf('Particles: %d\n', N_PARTICLES);
     end
     fprintf('================================\n\n');
@@ -97,22 +97,79 @@ function main_multiObj(varargin)
             for t = 1:nt
                 x0_cell{t} = GT{t}(:, 1);
             end
-            
+
             current_class = KF_RBPF_multi(x0_cell, N_PARTICLES, F_KF, Q, H, R, ...
                 'Debug', DEBUG, ...
                 'AssociationStrategy', 'optimal', ...
                 'PD', 0.95, ...
                 'PFA', 0.05, ...
                 'ESSThreshold', 0.5);
-            
+
+        case 'PDA_PF_MULTI'
+            fprintf('Initializing PDA-PF-Multi tracker with %d particles...\n', N_PARTICLES);
+            x0_cell = cell(1, nt);
+            for t = 1:nt
+                x0_cell{t} = GT{t}(:, 1);
+            end
+
+            % Load mWidar spatial likelihood lookup table (same table as single-target PF filters)
+            pda_pf_multi_like_file = fullfile('supplemental', 'precalc_imagegridHMMEmLike.mat');
+            if isfile(pda_pf_multi_like_file)
+                load(pda_pf_multi_like_file, 'pointlikelihood_image');
+                fprintf('  Loaded pointlikelihood_image from %s\n', pda_pf_multi_like_file);
+            else
+                pointlikelihood_image = [];
+                warning('main_multiObj:MissingLikelihoodTable', ...
+                    'Lookup table not found at %s — falling back to Gaussian likelihood.', ...
+                    pda_pf_multi_like_file);
+            end
+
+            current_class = PDA_PF_multi(x0_cell, N_PARTICLES, F_KF, Q, H, R, ...
+                'Debug', DEBUG, ...
+                'PD', 0.95, ...
+                'PFA', 0.05, ...
+                'LambdaClutter', 2.5, ...
+                'ValidationSigma', 5, ...
+                'ESSThreshold', 0.3, ...
+                'PointlikelihoodImage', pointlikelihood_image);
+
+        case 'HMM_RBPF_MULTI'
+            fprintf('Initializing HMM-RBPF-Multi tracker with %d particles...\n', N_PARTICLES);
+            % Load shared HMM lookup tables
+            hmm_like_file  = fullfile('supplemental', 'precalc_imagegridHMMEmLike.mat');
+            hmm_trans_file = fullfile('supplemental', 'precalc_imagegridHMMSTMn15.mat');
+            if ~isfile(hmm_like_file) || ~isfile(hmm_trans_file)
+                error('main_multiObj:MissingHMMData', ...
+                    'HMM_RBPF_MULTI requires lookup tables:\n  %s\n  %s', ...
+                    hmm_like_file, hmm_trans_file);
+            end
+            load(hmm_like_file,  'pointlikelihood_image');
+            load(hmm_trans_file, 'A');
+            A_transition = A; clear A;
+
+            % HMM uses only [x, y] position — slice to 2D
+            x0_cell = cell(1, nt);
+            for t = 1:nt
+                x0_cell{t} = GT{t}(1:2, 1);
+            end
+
+            current_class = HMM_RBPF_multi(x0_cell, N_PARTICLES, A_transition, ...
+                pointlikelihood_image, ...
+                'Debug', DEBUG, ...
+                'PD', 0.95, ...
+                'PFA', 0.05, ...
+                'ESSThreshold', 0.5, ...
+                'AssociationStrategy', 'optimal');
+
         otherwise
             error('Unknown algorithm: %s', ALGORITHM);
     end
 
     [performance{1}.x, performance{1}.P] = current_class.getGaussianEstimate(); % Initial Gaussian estimate
-    
-    % For RBPF, save raw particle data for visualization before conversion
-    if strcmp(ALGORITHM, 'RBPF')
+
+    % Particle-based filters return cell arrays from getGaussianEstimate(); convert to matrix
+    is_particle_filter = ismember(ALGORITHM, {'RBPF', 'PDA_PF_MULTI', 'HMM_RBPF_MULTI'});
+    if is_particle_filter
         performance{1}.particles = current_class.particles;
         performance{1}.x = convertCellToMatrix(performance{1}.x);
     end
@@ -131,14 +188,13 @@ function main_multiObj(varargin)
             % JPDA requires both measurements and signal
             current_class.timestep(current_meas, signal{k})
         else
-            % RBPF only needs measurements
+            % Particle-based multi-target filters only need measurements
             current_class.timestep(current_meas)
         end
-        
+
         [performance{k}.x, performance{k}.P] = current_class.getGaussianEstimate();
-        
-        % For RBPF, save raw particle data for visualization before conversion
-        if strcmp(ALGORITHM, 'RBPF')
+
+        if is_particle_filter
             performance{k}.particles = current_class.particles;
             performance{k}.x = convertCellToMatrix(performance{k}.x);
         end
@@ -156,10 +212,10 @@ function main_multiObj(varargin)
     % Animated GIF with distribution/particle visualization
     gif_filename = sprintf('%s_%s_tracking.gif', DATASET, ALGORITHM);
     
-    if strcmp(ALGORITHM, 'RBPF')
+    if is_particle_filter
         % Use RBPF-specific visualization with particle scatter
         mWidar_FilterPlot_multiObj_RBPF(performance, Data, 0:dt:10, gif_filename);
-        fprintf('RBPF particle animation GIF saved to: %s\n', gif_filename);
+        fprintf('Particle animation GIF saved to: %s\n', gif_filename);
     else
         % Use standard Gaussian distribution visualization for JPDA
         mWidar_FilterPlot_multiObj_Distribution(performance, Data, 0:dt:10, gif_filename);

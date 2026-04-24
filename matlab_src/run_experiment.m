@@ -62,127 +62,19 @@ dt     = Data.params.dt;
 fprintf('Dataset: %d timesteps, dt=%.2f s\n', n_k, dt);
 
 %% ---- Filter parameters --------------------------------------------------
+% Q, R, F are loaded from FilterHyperParams.m via FilterConfig.
+% TO TUNE: edit FilterHyperParams.m — that is the single source of truth.
 PF_families  = {'PDA_PF','GNN_PF','MC_PF','KF_RBPF','HMM_RBPF'};
 HMM_families = {'GNN_HMM','PDA_HMM'};
 KF_families  = {'PDA_KF','GNN_KF'};
 
-% Constant-acceleration continuous dynamics matrix (shared convenience variable)
-Fc_cont = [0 0 1 0 0 0; 0 0 0 1 0 0; 0 0 0 0 1 0; ...
-           0 0 0 0 0 1; 0 0 0 0 0 0; 0 0 0 0 0 0];
-
-% Constant-acceleration discrete F (ZOH exact) — used by KF and RBPF families
-F_zoh = expm(Fc_cont * dt);
-
-% Constant-acceleration discrete F (analytic) — used by PF families
-F_disc = [1 0 dt 0 dt^2/2 0; 0 1 0 dt 0 dt^2/2; ...
-          0 0 1  0 dt     0; 0 0 0 1  0 dt; ...
-          0 0 0  0 1      0; 0 0 0 0  0 1];
-
-% -----------------------------------------------------------------------
-% Per-filter process noise Q  [diag entries: x, y, vx, vy, ax, ay]
-%
-% TUNING GUIDE:
-%   Increase Q(i,i) to let the filter track faster state changes in dim i.
-%   Decrease Q(i,i) to smooth out noisy state estimates in dim i.
-%   Rule of thumb: start at (expected_rms_acceleration * dt)^2 for acc dims.
-%   HMM-family filters do not use Q (grid-based, not state-vector based).
-% -----------------------------------------------------------------------
-switch filter_name
-
-    %% -- Kalman Filter family (ZOH F) ----------------------------------
-    case 'GNN_KF'
-        % TUNE Q: larger position/velocity noise → filter trusts measurements more
-        %        and can track maneuvers. Too small → Kalman gain collapses,
-        %        filter ignores measurements and drifts on curves.
-        Q = diag([2e-4, 2e-4, ...   % x, y     (position)
-                  2e-3, 2e-3, ...   % vx, vy   (velocity)
-                  2e-2, 2e-2]);     % ax, ay   (acceleration)
-        % TUNE R: reduce to trust pixel measurements more (0.1 → 0.05)
-        R = 0.05 * eye(2);
-        F = F_zoh;
-
-    case 'PDA_KF'
-        % DIAGNOSIS: was diverging by step 10 with original Q.
-        % Root cause: Q_pos=1e-4 + R=0.1 → K ≈ 0.03 (nearly ignores measurements).
-        % Fix: moderate Q so Kalman gain opens up; keep R=0.1 to avoid
-        %   the over-corrected Q+small-R → non-PD covariance crash (mvnpdf).
-        % Also tune lambda_clutter post-construction (below).
-        Q = diag([5e-4, 5e-4, ...   % x, y
-                  2e-3, 2e-3, ...   % vx, vy
-                  5e-3, 5e-3]);     % ax, ay
-        % TUNE R: keep at 0.1 — smaller R amplifies Kalman gain, risks S not PD
-        R = 0.1 * eye(2);
-        F = F_zoh;
-
-    %% -- Particle Filter family (analytic F) ---------------------------
-    case 'GNN_PF'
-        % DIAGNOSIS: tightening Q to 5e-4 + setting validation_sigma_bounds=2
-        %   caused total track loss (0.46→3.48m) — gate rejected all measurements
-        %   once particles drifted, no recovery possible.
-        % Fix: revert Q to original spread; gate stays at cfg default (5-sigma).
-        Q = diag([1e-3, 1e-3, ...   % x, y
-                  1e-2, 1e-2, ...   % vx, vy
-                  1e-1, 1e-1]);     % ax, ay
-        R = 0.1 * eye(2);   % not used in PF weight update; kept for consistency
-        F = F_disc;
-
-    case 'PDA_PF'
-        % TUNE: working well at 0.11m RMSE — keep as reference baseline
-        Q = diag([1e-3, 1e-3, ...   % x, y
-                  1e-2, 1e-2, ...   % vx, vy
-                  1e-1, 1e-1]);     % ax, ay
-        R = 0.1 * eye(2);
-        F = F_disc;
-
-    case 'MC_PF'
-        % TUNE: same Q as PDA_PF — resampling fraction tuned post-construction
-        Q = diag([1e-3, 1e-3, ...   % x, y
-                  1e-2, 1e-2, ...   % vx, vy
-                  1e-1, 1e-1]);     % ax, ay
-        R = 0.1 * eye(2);
-        F = F_disc;
-
-    %% -- RBPF family ---------------------------------------------------
-    case 'KF_RBPF'
-        % TUNE: embedded KF inner filter — open Q slightly so inner KFs
-        %       can follow the S-curve; also tuned via N_particles (see
-        %       run_all_experiments default_N_particles for KF_RBPF)
-        Q = diag([5e-4, 5e-4, ...   % x, y
-                  2e-3, 2e-3, ...   % vx, vy
-                  2e-3, 2e-3]);     % ax, ay
-        % TUNE R: trust pixel measurements more in the embedded KF
-        R = 0.05 * eye(2);
-        F = F_zoh;
-
-    %% -- HMM and HMM-RBPF families (no Q/F — grid-based) --------------
-    case {'GNN_HMM', 'PDA_HMM', 'HMM_RBPF'}
-        Q = [];
-        R = [];
-        F = [];
-
-    otherwise
-        Q = [];
-        R = 0.1 * eye(2);
-        F = [];
-        warning('run_experiment:UnknownFilter', ...
-            'No Q/F tuning defined for filter ''%s'' — using empty matrices.', filter_name);
-end
-H  = [1 0 0 0 0 0; 0 1 0 0 0 0];
-P0 = diag([0.1 0.1 0.25 0.25 0.5 0.5]);
-% R is now set per-filter inside the switch above.
-
 %% ---- Build FilterConfig -------------------------------------------------
+% All noise matrices (Q, R, F) come from FilterHyperParams.m through FilterConfig.
 cfg = FilterConfig(filter_name, ...
     'dt',               dt, ...
     'N_particles',      opt.N_particles, ...
     'Debug',            opt.Debug, ...
-    'ValidationSigma',  5, ...
-    'ESS_threshold',    0.2, ...
     'store_full_history', false);
-if isfield(cfg, 'F') && ~isempty(F), cfg.F = F; end
-if isfield(cfg, 'Q') && ~isempty(Q), cfg.Q = Q; end
-if isfield(cfg, 'R'),                cfg.R = R; end
-if isfield(cfg, 'H'),                cfg.H = H; end
 
 %% ---- Load supplemental matrices if needed --------------------------------
 A_transition          = [];
@@ -267,7 +159,10 @@ end
 % end
 
 %% ---- Print config summary -----------------------------------------------
-print_filter_config(filter_name, cfg, Q, R, F, dt, filt);
+Q_print = iif(isfield(cfg,'Q'), cfg.Q, []);
+R_print = iif(isfield(cfg,'R'), cfg.R, []);
+F_print = iif(isfield(cfg,'F'), cfg.F, []);
+print_filter_config(filter_name, cfg, Q_print, R_print, F_print, dt, filt);
 
 %% ---- Determine N_x (state dimension) ------------------------------------
 [x0_est, ~] = filt.getGaussianEstimate();
