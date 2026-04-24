@@ -10,7 +10,7 @@ function main_multiObj(varargin)
     %% --- Parse Input Arguments ---
     p = inputParser;
     addParameter(p, 'Algorithm', 'JPDA', @(x) ismember(x, {'JPDA', 'RBPF', 'PDA_PF_MULTI', 'HMM_RBPF_MULTI'}));
-    addParameter(p, 'Dataset', 'JPDAF_test_traj_2', @ischar);
+    addParameter(p, 'Dataset', 'multi_obj_3', @ischar);
     addParameter(p, 'NumParticles', 1000, @isnumeric); % For RBPF
     addParameter(p, 'Debug', false, @islogical);
     parse(p, varargin{:});
@@ -38,7 +38,7 @@ function main_multiObj(varargin)
     fprintf('================================\n\n');
 
     load(fullfile('supplemental', 'Final_Test_Tracks', 'MultiObj', [DATASET, '.mat']), 'Data');
-
+    %load(fullfile('supplemental', 'Final_Test_Tracks', 'MultiObj', 'multi_obj_5.mat'), 'Data');
      %% --- Initialize Variables ---
     % Load Data
     GT = Data.GT;
@@ -67,7 +67,7 @@ function main_multiObj(varargin)
 
     Q(6,6) = 1e-6; % Set process noise for acceleration
 
-    R = 0.1 * eye(2);
+    R = 0.05 * eye(2);
 
     %% --- Define Observation Matrix ---
     H = [1 0 0 0 0 0;
@@ -89,6 +89,10 @@ function main_multiObj(varargin)
             
             % JPDA_KF requires pointliklihoodmag parameter (use [] for no magnitude likelihood)
             current_class = JPDA_KF(initial_states, initial_covs, F_KF, Q, R, H, nt, [], 'Debug', DEBUG);
+            
+            % Tuning Params
+            current_class.gate_probability = 0.975; 
+            current_class.lambda_clutter = 5.5;
             
         case 'RBPF'
             fprintf('Initializing KF-RBPF-Multi tracker with %d particles...\n', N_PARTICLES);
@@ -177,6 +181,7 @@ function main_multiObj(varargin)
     %% --- Main Tracking Loop ---
     fprintf('\nStarting tracking loop...\n');
     for k = 2:n_k
+        
         if mod(k, 10) == 0 || k == 2
             fprintf('Processing time step %d/%d\n', k, n_k);
         end
