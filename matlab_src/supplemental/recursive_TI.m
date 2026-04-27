@@ -5,14 +5,18 @@
 clc; close all; clear
 
 %% --- Environment configuration -----------------------------------------
-addpath(fullfile('DA_Track'))
-addpath(fullfile('DA_Track', 'multi'))
-addpath(fullfile('supplemental'))
-addpath(fullfile('supplemental', 'Final_Test_Tracks'))
-addpath(fullfile('supplemental', 'Final_Test_Tracks', 'MultiObj'))
+script_dir     = fileparts(mfilename('fullpath'));     % .../matlab_src/supplemental
+matlab_src_dir = fileparts(script_dir);                 % .../matlab_src
+addpath(fullfile(matlab_src_dir, 'DA_Track'))
+addpath(fullfile(matlab_src_dir, 'DA_Track', 'multi'))
+addpath(fullfile(matlab_src_dir, 'supplemental'))
+addpath(fullfile(matlab_src_dir, 'supplemental', 'track_init'))
+addpath(fullfile(matlab_src_dir, 'supplemental', 'multitarget_metrics'))
+addpath(fullfile(matlab_src_dir, 'supplemental', 'Final_Test_Tracks'))
+addpath(fullfile(matlab_src_dir, 'supplemental', 'Final_Test_Tracks', 'MultiObj'))
 
-load(fullfile('supplemental', 'probObjCt_results.mat'), 'results');
-load(fullfile('supplemental', 'Final_Test_Tracks', 'TI_test_case_const1_10s_dt0p010.mat'), 'Data');
+load(fullfile(script_dir, 'probObjCt_results.mat'), 'results');
+load(fullfile(script_dir, 'Final_Test_Tracks', 'TI_test_case_const1_10s_dt0p010.mat'), 'Data');
 
 cfg = results.cfg;
 P_m_given_N = results.P_m_given_N;
@@ -162,55 +166,12 @@ RecursiveTI.N_map_final = N_map_final;
 RecursiveTI.true_seq = true_seq;
 RecursiveTI.map_accuracy_pct = acc;
 
-save(fullfile('supplemental', 'recursive_TI_results.mat'), 'RecursiveTI');
+save(fullfile(script_dir, 'recursive_TI_results.mat'), 'RecursiveTI');
 fprintf('Saved recursive results to supplemental\\recursive_TI_results.mat\n');
 
 
-function T_Nk_given_prev = buildPoissonCountTransition(N_vals, lambda_arrival, lambda_depart)
-n_states = numel(N_vals);
-T_Nk_given_prev = zeros(n_states, n_states); % rows: N_k, cols: N_{k-1}
-
-for n = 1:n_states
-    n_prev = N_vals(n);
-
-    % Arrivals: A ~ Poisson(lambda_arrival), fold overflow tail into max state.
-    a_max = n_states + 10;
-    a_vals = 0:a_max;
-    pA = localPoissPmf(a_vals, lambda_arrival);
-    pA(end) = pA(end) + max(0, 1 - sum(pA));
-    pA = pA ./ max(sum(pA), eps);
-
-    % Departures: D ~ Poisson(lambda_depart * n_prev), truncated to [0, n_prev].
-    if n_prev > 0
-        d_vals = 0:n_prev;
-        pD = zeros(size(d_vals));
-        if n_prev > 1
-            pD(1:end-1) = localPoissPmf(0:n_prev-1, lambda_depart * n_prev);
-        end
-        pD(end) = max(0, 1 - sum(pD(1:end-1))); % tail folded into D=n_prev
-        pD = pD ./ max(sum(pD), eps);
-    else
-        d_vals = 0;
-        pD = 1;
-    end
-
-    for ia = 1:numel(a_vals)
-        for id = 1:numel(d_vals)
-            n_next = n_prev - d_vals(id) + a_vals(ia);
-            n_next = min(max(n_next, N_vals(1)), N_vals(end));
-            idx_next = n_next - N_vals(1) + 1;
-            T_Nk_given_prev(idx_next, n) = T_Nk_given_prev(idx_next, n) + pA(ia) * pD(id);
-        end
-    end
-end
-
-T_Nk_given_prev = T_Nk_given_prev ./ max(sum(T_Nk_given_prev, 1), eps);
-end
-
-function p = localPoissPmf(k, lambda)
-if lambda <= 0
-    p = double(k == 0);
-    return
-end
-p = exp(-lambda + k .* log(lambda) - gammaln(k + 1));
-end
+% buildPoissonCountTransition lives in supplemental/track_init/ as a
+% top-level function; the addpath block at the top of this script
+% picks it up. The local copy that used to live here was removed when
+% the helper was promoted so it could be shared with the
+% ProbabilisticEstimator class.

@@ -11,13 +11,15 @@ clc; close all; clear
 rng(400)
 
 %% --- Environment configuration -----------------------------------------
-addpath(fullfile('DA_Track'))
-addpath(fullfile('DA_Track', 'multi'))
-addpath(fullfile('supplemental'))
-addpath(fullfile('supplemental', 'Final_Test_Tracks'))
-addpath(fullfile('supplemental', 'Final_Test_Tracks', 'MultiObj'))
-
-script_dir = fileparts(mfilename('fullpath'));
+script_dir     = fileparts(mfilename('fullpath'));     % .../matlab_src/supplemental
+matlab_src_dir = fileparts(script_dir);                 % .../matlab_src
+addpath(fullfile(matlab_src_dir, 'DA_Track'))
+addpath(fullfile(matlab_src_dir, 'DA_Track', 'multi'))
+addpath(fullfile(matlab_src_dir, 'supplemental'))
+addpath(fullfile(matlab_src_dir, 'supplemental', 'track_init'))
+addpath(fullfile(matlab_src_dir, 'supplemental', 'multitarget_metrics'))
+addpath(fullfile(matlab_src_dir, 'supplemental', 'Final_Test_Tracks'))
+addpath(fullfile(matlab_src_dir, 'supplemental', 'Final_Test_Tracks', 'MultiObj'))
 addpath(script_dir);
 
 load(fullfile(script_dir, 'recovery.mat'), 'G');
@@ -111,7 +113,7 @@ results.det_counts_by_obj = det_counts_by_obj;
 results.cfg = cfg;
 
 out_file = fullfile(script_dir, 'probObjCt_results.mat');
-%save(out_file, 'results', '-mat');
+save(out_file, 'results', '-mat');
 fprintf('Saved dataset to: %s\n', out_file);
 
 
@@ -187,78 +189,11 @@ function [window, avgSignal, window_ready] = updateSlidingWindow(window, new_sig
     end
 end
 
-function det_count = estimateDetectionCount(avgSignal, cfg)
-    signal_normalized = normalizeSignalFrame(avgSignal, cfg);
-
-    [~, peak_x, peak_y] = CA_CFAR(signal_normalized(21:128,:), ...
-        cfg.Pfa, cfg.Ng, cfg.Nr);
-    peak_x = peak_x + cfg.crop_rows;
-
-    if isempty(peak_x)
-        det_count = 0;
-        return
-    end
-
-    pvinds = sub2ind([cfg.npx, cfg.npx], peak_x, peak_y);
-    meas_xy = [cfg.pxgrid(pvinds)'; cfg.pygrid(pvinds)'];
-    valid = meas_xy(2,:) >= 0.5 & signal_normalized(pvinds)' > cfg.intensity_thr;
-    valid_meas_xy = meas_xy(:, valid);
-
-    clustered_meas_xy = clusterNearbyDetections(valid_meas_xy, cfg.cluster_radius);
-    det_count = size(clustered_meas_xy, 2);
-end
-
-function signal_normalized = normalizeSignalFrame(avgSignal, cfg)
-    blurred = imgaussfilt(avgSignal, cfg.blur_sigma);
-    blurred(1:cfg.crop_rows, :) = NaN;
-    signal_scaled = asinh(blurred);
-    if (max(signal_scaled(:)) - min(signal_scaled(:))) ~= 0
-        signal_normalized = (signal_scaled - min(signal_scaled(:))) ./ ...
-            (max(signal_scaled(:)) - min(signal_scaled(:)));
-    else
-        signal_normalized = signal_scaled;
-    end
-end
-
-function clustered_xy = clusterNearbyDetections(meas_xy, cluster_radius)
-    if isempty(meas_xy)
-        clustered_xy = zeros(2, 0);
-        return
-    end
-
-    n_det = size(meas_xy, 2);
-    visited = false(1, n_det);
-    clustered_xy = zeros(2, 0);
-
-    for i = 1:n_det
-        if visited(i)
-            continue
-        end
-
-        component = i;
-        queue = i;
-        visited(i) = true;
-
-        while ~isempty(queue)
-            current = queue(1);
-            queue(1) = [];
-
-            for j = 1:n_det
-                if visited(j)
-                    continue
-                end
-
-                if norm(meas_xy(:, current) - meas_xy(:, j)) <= cluster_radius
-                    visited(j) = true;
-                    queue(end + 1) = j; %#ok<AGROW>
-                    component(end + 1) = j; %#ok<AGROW>
-                end
-            end
-        end
-
-        clustered_xy(:, end + 1) = mean(meas_xy(:, component), 2); %#ok<AGROW>
-    end
-end
+% Heuristic detection helpers (estimateDetectionCount,
+% normalizeSignalFrame, clusterNearbyDetections) live as top-level
+% files in supplemental/track_init/ so they can be reused by the
+% TargetCountEstimator classes. They are picked up via the addpath
+% block above.
 
 function value = maxZeroSafe(x)
     if isempty(x)

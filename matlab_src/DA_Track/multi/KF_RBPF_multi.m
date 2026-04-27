@@ -76,11 +76,25 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
         N_p % Number of particles
         N_x % State dimension (per target)
         N_z % Measurement dimension
-        N_t % Number of targets (assumed known and fixed)
+        N_t % Number of ACTIVE targets   ( = sum(obj.active) )
+        N_max % Slot-pool capacity (configurable via 'NMax' constructor option)
+
+        % Active mask: logical [1 x N_max].  obj.active(t) == true iff
+        % slot t currently tracks a target.  Inactive slots keep their
+        % association_history rows (with NaN entries for dormant frames)
+        % but their KF object is released to [].
+        active
+
+        % Stash of constructor inputs so add_target / TrackManager can
+        % re-create KF objects with consistent system matrices and init.
+        init_sigma_pos
+        init_sigma_vel
 
         % Particle Filter State
         particles % Cell array of particle structs {1 x N_p}
-        % Each struct: {associations (N_t x 1), kfs (cell {1 x N_t}), weight}
+        % Each struct: {associations (N_max x 1), kfs (cell {1 x N_max} with
+        % [] in inactive slots), weight, association_history [N_max x K]
+        % with NaN in inactive frames, Z_i}
 
         % System Model (for creating KF objects)
         F % State transition matrix [N_x x N_x]
@@ -147,6 +161,7 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
             % Set smaller (e.g., 0.3 / 0.2) when initialising from known GT.
             addParameter(p, 'InitSigmaPos', 5.0, @(x) x >= 0);
             addParameter(p, 'InitSigmaVel', 2.0, @(x) x >= 0);
+            addParameter(p, 'NMax', [], @(x) isempty(x) || (isnumeric(x) && x >= 1));
             parse(p, varargin{:});
 
             obj.debug = p.Results.Debug;
@@ -155,10 +170,22 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
             obj.PFA = p.Results.PFA;
             obj.ESS_threshold_percentage = p.Results.ESSThreshold;
             obj.association_strategy = p.Results.AssociationStrategy;
-            obj.N_t = length(x0_cell); % Number of targets from initial states
+
+            N_t_init = length(x0_cell);
+            if isempty(p.Results.NMax)
+                obj.N_max = max(N_t_init, 5);
+            else
+                obj.N_max = max(p.Results.NMax, N_t_init);
+            end
+            obj.active = false(1, obj.N_max);
+            obj.active(1:N_t_init) = true;
+            obj.N_t = N_t_init;
+
             uniform_init = p.Results.UniformInit;
             init_sigma_pos = p.Results.InitSigmaPos;
             init_sigma_vel = p.Results.InitSigmaVel;
+            obj.init_sigma_pos = init_sigma_pos;
+            obj.init_sigma_vel = init_sigma_vel;
 
             % Store dimensions
             obj.N_p = N_particles;
@@ -171,8 +198,10 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
             obj.H = H;
             obj.R = R;
 
-            % Initialize particle array
-            obj.particles = KF_RBPF_multi.initialize_particles(N_particles, x0_cell, F, Q, H, R, uniform_init, init_sigma_pos, init_sigma_vel);
+            % Initialize particle array (slot-pool layout)
+            obj.particles = KF_RBPF_multi.initialize_particles( ...
+                N_particles, x0_cell, obj.N_max, F, Q, H, R, ...
+                uniform_init, init_sigma_pos, init_sigma_vel);
 
             % Initialize visualization properties
             obj.dynamic_figure_handle = [];
@@ -270,44 +299,43 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
             %   ESS_before_resample - ESS computed before resampling
 
             k = obj.timestep_counter;
+            active_slots = find(obj.active);
 
-            % Extract particle states, associations, weights for all targets
-            % For multi-target: store states as cell array of matrices
-            particle_states_cell = cell(1, obj.N_t);
-
-            for t = 1:obj.N_t
+            % Particle states cell is sized to N_max so a slot's index is
+            % stable across the run; inactive slots get [].  active_indices
+            % is also stored so post-processors can iterate over only the
+            % live targets without scanning the cells.
+            particle_states_cell = cell(1, obj.N_max);
+            for t = active_slots
                 particle_states_cell{t} = zeros(obj.N_x, obj.N_p);
             end
 
-            particle_associations = zeros(obj.N_t, obj.N_p); % [N_t x N_p] matrix
+            particle_associations = zeros(obj.N_max, obj.N_p);
             particle_weights = zeros(1, obj.N_p);
             particle_association_histories = cell(1, obj.N_p);
 
             for i = 1:obj.N_p
-                % Extract states for each target
-                for t = 1:obj.N_t
+                for t = active_slots
                     particle_states_cell{t}(:, i) = obj.particles{i}.kfs{t}.x;
                 end
-
                 particle_associations(:, i) = obj.particles{i}.associations;
                 particle_weights(i) = obj.particles{i}.weight;
                 particle_association_histories{i} = obj.particles{i}.association_history;
             end
 
-            % Get current estimates (cell array per target)
-            [x_est_cell, P_est_cell] = obj.getGaussianEstimate();
+            [x_est_cell, P_est_cell, est_active_idx] = obj.getGaussianEstimate();
 
-            % Store in history
             obj.history(k).measurements = measurements;
             obj.history(k).true_state = true_state;
             obj.history(k).true_meas_flag = true_meas_flag;
-            obj.history(k).particle_states = particle_states_cell; % Cell {1 x N_t} of [N_x x N_p]
-            obj.history(k).particle_associations = particle_associations; % [N_t x N_p]
+            obj.history(k).particle_states = particle_states_cell;
+            obj.history(k).particle_associations = particle_associations;
             obj.history(k).particle_weights = particle_weights;
             obj.history(k).particle_association_histories = particle_association_histories;
-            obj.history(k).estimate = x_est_cell; % Cell {1 x N_t}
-            obj.history(k).covariance = P_est_cell; % Cell {1 x N_t}
+            obj.history(k).estimate = x_est_cell;
+            obj.history(k).covariance = P_est_cell;
             obj.history(k).ESS = ESS_before_resample;
+            obj.history(k).active_indices = est_active_idx;
 
         end
 
@@ -324,13 +352,12 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
             %       End
             %   End
 
-            % Loop over particles
+            % Loop over particles, predicting only ACTIVE targets
+            active_slots = find(obj.active);
             for i = 1:obj.N_p
-                % Loop over targets within each particle
-                for t = 1:obj.N_t
+                for t = active_slots
                     obj.particles{i}.kfs{t}.prediction();
                 end
-
             end
 
             % Debug output if enabled
@@ -406,9 +433,10 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
             %   End
             %   Normalize weights
 
+            active_slots = find(obj.active);
             for i = 1:obj.N_p
-                % Update each target's KF using its sampled association
-                for t = 1:obj.N_t
+                % Update each ACTIVE target's KF using its sampled association
+                for t = active_slots
                     assoc_t = obj.particles{i}.associations(t);
                     if assoc_t > 0
                         obj.particles{i}.kfs{t}.measurement_update(z(:, assoc_t));
@@ -448,15 +476,20 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
             % Each target independently draws a random association in [0, N_meas].
             N_measurements = size(z, 2);
 
+            active_slots = find(obj.active);
             for i = 1:obj.N_p
-                % Sample an independent random association for each target
-                assoc_vec = zeros(obj.N_t, 1);
-                for t = 1:obj.N_t
+                % Active slots draw a random association; inactive slots
+                % stay at 0 in associations and NaN in association_history.
+                assoc_vec = zeros(obj.N_max, 1);
+                for t = active_slots
                     assoc_vec(t) = randi([0, N_measurements]);
                 end
                 obj.particles{i}.associations = assoc_vec;
+
+                hist_col = nan(obj.N_max, 1);
+                hist_col(active_slots) = assoc_vec(active_slots);
                 obj.particles{i}.association_history = ...
-                    [obj.particles{i}.association_history, assoc_vec];
+                    [obj.particles{i}.association_history, hist_col];
             end
 
         end
@@ -487,172 +520,147 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
             % NOTE: This is computed PER PARTICLE since each has different predicted states.
 
             N_measurements = size(z, 2);
+            p_clutter = (1 - obj.PD);
 
-            % Clutter model parameters
-            clutter_density = 1; % Uniform clutter (can be made configurable)
-            p_clutter = (1 - obj.PD); % Weight for clutter/missed detection
+            active_slots = find(obj.active);
+            N_active = numel(active_slots);
 
-            % For each particle, sample joint association from exclusivity-constrained distribution
             for i = 1:obj.N_p
-                % Build multi-target association tensor
-                % For N_t targets and M measurements, need (M+1)^N_t tensor
-                % Dimension: each target can associate with 0 (clutter) or 1:M (measurements)
+                % associations is sized to the slot pool; inactive slots
+                % stay at 0 (and NaN in the saved history column).
+                assoc_full = zeros(obj.N_max, 1);
+                Z_i = 0;
 
-                Z_i = 0; % normalizing constant of optimal proposal (filled by each branch)
+                if N_active == 0
+                    % Nothing to associate
+                    obj.particles{i}.associations = assoc_full;
+                    obj.particles{i}.Z_i = 1;
+                    hist_col = nan(obj.N_max, 1);
+                    obj.particles{i}.association_history = ...
+                        [obj.particles{i}.association_history, hist_col];
+                    continue
+                end
 
-                if obj.N_t == 1
-                    % Single target - use original algorithm
+                if N_active == 1
+                    t1 = active_slots(1);
                     association_weights = zeros(1, N_measurements + 1);
-
                     for j = 1:N_measurements
-                        z_j = z(:, j);
-                        [innov, S] = obj.particles{i}.kfs{1}.getInnovation(z_j);
+                        [innov, S] = obj.particles{i}.kfs{t1}.getInnovation(z(:, j));
                         association_weights(j) = obj.PD * mvnpdf(innov', zeros(1, obj.N_z), S);
                     end
-
                     association_weights(end) = p_clutter;
 
-                    % Normalizing constant for RBPF weight (Sarkka: w^i *= Z^i)
                     Z_i = sum(association_weights);
                     if Z_i < eps, Z_i = eps; end
                     association_weights = association_weights / Z_i;
                     cumulative_weights = cumsum(association_weights);
-                    cumulative_weights(end) = 1.0;  % Clamp for floating-point safety
+                    cumulative_weights(end) = 1.0;
                     r = rand();
                     sampled_idx = find(cumulative_weights >= r, 1);
                     if isempty(sampled_idx), sampled_idx = numel(cumulative_weights); end
-                    obj.particles{i}.associations(1) = (sampled_idx <= N_measurements) * sampled_idx;
+                    assoc_full(t1) = (sampled_idx <= N_measurements) * sampled_idx;
 
-                elseif obj.N_t == 2
-                    % Two targets - use 2D association matrix with exclusivity
-                    % Rows: target 1 associations (0:M)
-                    % Cols: target 2 associations (0:M)
+                elseif N_active == 2
+                    t1 = active_slots(1);
+                    t2 = active_slots(2);
                     assoc_matrix = zeros(N_measurements + 1, N_measurements + 1);
 
-                    % Compute marginal weights for each target-measurement pair
                     target1_weights = zeros(1, N_measurements + 1);
                     target2_weights = zeros(1, N_measurements + 1);
-
-                    % Target 1 weights: index 1 = missed detection, index m+1 = measurement m
                     target1_weights(1) = p_clutter;
-                    for m = 1:N_measurements
-                        [innov, S] = obj.particles{i}.kfs{1}.getInnovation(z(:, m));
-                        target1_weights(m+1) = obj.PD * mvnpdf(innov', zeros(1, obj.N_z), S);
-                    end
-
-                    % Target 2 weights: index 1 = missed detection, index m+1 = measurement m
                     target2_weights(1) = p_clutter;
                     for m = 1:N_measurements
-                        [innov, S] = obj.particles{i}.kfs{2}.getInnovation(z(:, m));
-                        target2_weights(m+1) = obj.PD * mvnpdf(innov', zeros(1, obj.N_z), S);
+                        [innov1, S1] = obj.particles{i}.kfs{t1}.getInnovation(z(:, m));
+                        target1_weights(m+1) = obj.PD * mvnpdf(innov1', zeros(1, obj.N_z), S1);
+                        [innov2, S2] = obj.particles{i}.kfs{t2}.getInnovation(z(:, m));
+                        target2_weights(m+1) = obj.PD * mvnpdf(innov2', zeros(1, obj.N_z), S2);
                     end
 
-                    % Build joint distribution with exclusivity constraint
                     for c1 = 0:N_measurements
-
                         for c2 = 0:N_measurements
-                            idx1 = c1 + 1; % MATLAB 1-indexing
+                            idx1 = c1 + 1;
                             idx2 = c2 + 1;
-
                             if (c1 > 0) && (c2 > 0) && (c1 == c2)
-                                % EXCLUSIVITY: Same measurement for both targets is forbidden
                                 assoc_matrix(idx1, idx2) = 0;
                             else
-                                % Independent associations (product of marginals)
                                 assoc_matrix(idx1, idx2) = target1_weights(idx1) * target2_weights(idx2);
                             end
-
                         end
-
                     end
 
-                    % Flatten matrix to vector for sampling
                     assoc_vec = assoc_matrix(:);
-                    Z_i = sum(assoc_vec);  % normalizing constant for RBPF weight
+                    Z_i = sum(assoc_vec);
                     if Z_i < eps, Z_i = eps; end
                     assoc_vec = assoc_vec / Z_i;
-
-                    % Sample from flattened distribution
                     cumulative_weights = cumsum(assoc_vec);
-                    cumulative_weights(end) = 1.0;  % Clamp for floating-point safety
+                    cumulative_weights(end) = 1.0;
                     r = rand();
                     sampled_idx = find(cumulative_weights >= r, 1);
                     if isempty(sampled_idx), sampled_idx = numel(cumulative_weights); end
-
-                    % Convert linear index back to (c1, c2)
                     [row, col] = ind2sub(size(assoc_matrix), sampled_idx);
-                    obj.particles{i}.associations(1) = row - 1; % Convert back to 0-indexed
-                    obj.particles{i}.associations(2) = col - 1;
+                    assoc_full(t1) = row - 1;
+                    assoc_full(t2) = col - 1;
 
                 else
-                    % General N_t targets - use recursive tensor construction
-                    % Build N_t-dimensional tensor with exclusivity constraints
-                    tensor_size = (N_measurements + 1) * ones(1, obj.N_t);
-                    assoc_tensor = zeros(tensor_size);
-
-                    % Compute marginal weights for each target
-                    target_weights = zeros(obj.N_t, N_measurements + 1);
-
-                    for t = 1:obj.N_t
-                        % index 1 = missed detection, index m+1 = measurement m
-                        target_weights(t, 1) = p_clutter;
+                    % General N_active targets — tensor enumeration
+                    tensor_size = (N_measurements + 1) * ones(1, N_active);
+                    target_weights = zeros(N_active, N_measurements + 1);
+                    for ts = 1:N_active
+                        t = active_slots(ts);
+                        target_weights(ts, 1) = p_clutter;
                         for m = 1:N_measurements
                             [innov, S] = obj.particles{i}.kfs{t}.getInnovation(z(:, m));
-                            target_weights(t, m+1) = obj.PD * mvnpdf(innov', zeros(1, obj.N_z), S);
+                            target_weights(ts, m+1) = obj.PD * mvnpdf(innov', zeros(1, obj.N_z), S);
                         end
                     end
 
-                    % Enumerate all possible joint associations
-                    % For N_t targets, we have (M+1)^N_t hypotheses
-                    num_hypotheses = (N_measurements + 1) ^ obj.N_t;
+                    num_hypotheses = (N_measurements + 1) ^ N_active;
                     hypothesis_weights = zeros(1, num_hypotheses);
-                    hypothesis_assocs = zeros(num_hypotheses, obj.N_t);
+                    hypothesis_assocs = zeros(num_hypotheses, N_active);
 
                     for h = 1:num_hypotheses
-                        % Convert linear index to multi-dimensional association
-                        sub_indices = cell(1, obj.N_t);
+                        sub_indices = cell(1, N_active);
                         [sub_indices{:}] = ind2sub(tensor_size, h);
-                        assoc_hypothesis = cell2mat(sub_indices) - 1; % 0-indexed associations
+                        assoc_hypothesis = cell2mat(sub_indices) - 1;
                         hypothesis_assocs(h, :) = assoc_hypothesis;
 
-                        % Check exclusivity constraint
                         meas_assocs = assoc_hypothesis(assoc_hypothesis > 0);
-
                         if length(meas_assocs) ~= length(unique(meas_assocs))
-                            % Duplicate measurement assignments - forbidden
                             hypothesis_weights(h) = 0;
                         else
-                            % Valid hypothesis - compute product of marginals
                             weight = 1;
-
-                            for t = 1:obj.N_t
-                                weight = weight * target_weights(t, assoc_hypothesis(t) + 1);
+                            for ts = 1:N_active
+                                weight = weight * target_weights(ts, assoc_hypothesis(ts) + 1);
                             end
-
                             hypothesis_weights(h) = weight;
                         end
-
                     end
 
-                    % Normalize and sample (Z_i = normalizing constant for RBPF weight)
                     Z_i = sum(hypothesis_weights);
                     if Z_i < eps, Z_i = eps; end
                     hypothesis_weights = hypothesis_weights / Z_i;
                     cumulative_weights = cumsum(hypothesis_weights);
-                    cumulative_weights(end) = 1.0;  % Clamp for floating-point safety
+                    cumulative_weights(end) = 1.0;
                     r = rand();
                     sampled_h = find(cumulative_weights >= r, 1);
                     if isempty(sampled_h), sampled_h = num_hypotheses; end
 
-                    % Extract sampled association
-                    obj.particles{i}.associations = hypothesis_assocs(sampled_h, :)';
+                    sampled_local = hypothesis_assocs(sampled_h, :);
+                    for ts = 1:N_active
+                        assoc_full(active_slots(ts)) = sampled_local(ts);
+                    end
                 end
 
-                % Store normalizing constant for use in measurement_update
+                obj.particles{i}.associations = assoc_full;
                 obj.particles{i}.Z_i = Z_i;
 
-                % Store association history
-                obj.particles{i}.association_history = [obj.particles{i}.association_history, obj.particles{i}.associations];
+                % association_history column: actual values for active
+                % slots, NaN for inactive (so getClutterRate can ignore
+                % frames the slot wasn't tracking).
+                hist_col = nan(obj.N_max, 1);
+                hist_col(active_slots) = assoc_full(active_slots);
+                obj.particles{i}.association_history = ...
+                    [obj.particles{i}.association_history, hist_col];
             end
 
         end
@@ -700,6 +708,7 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
 
                 new_particles = cell(1, obj.N_p);
                 index = 1;
+                active_slots = find(obj.active);
 
                 for i = 1:obj.N_p
 
@@ -707,19 +716,18 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
                         index = index + 1;
                     end
 
-                    % Deep copy ALL KFs for this particle (one per target)
-                    new_kfs = cell(1, obj.N_t);
-
-                    for t = 1:obj.N_t
+                    % Deep-copy only ACTIVE KFs; inactive slots stay [].
+                    new_kfs = cell(1, obj.N_max);
+                    for t = active_slots
                         new_kfs{t} = KF.copyKF(obj.particles{index}.kfs{t});
                     end
 
-                    % Create new particle with deep-copied KFs
                     new_particles{i} = struct( ...
                         'associations', obj.particles{index}.associations, ...
                         'kfs', {new_kfs}, ...
                         'weight', 1 / obj.N_p, ...
-                        'association_history', obj.particles{index}.association_history);
+                        'association_history', obj.particles{index}.association_history, ...
+                        'Z_i', 1);
                 end
 
                 obj.particles = new_particles;
@@ -738,45 +746,159 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
 
         end
 
-        function [x_est_cell, P_est_cell] = getGaussianEstimate(obj)
-            % GETGAUSSIANESTIMATE Extract weighted mean state estimates (MULTI-TARGET)
+        function add_target(obj, x_init, P_init)
+            % ADD_TARGET  Activate the first inactive slot and seed it.
+            %
+            % Each particle gets a fresh KF object in the chosen slot
+            % seeded at x_init + chol(P_init)*randn. Slot's
+            % association_history row remains as it was (NaN for any
+            % past frames where the slot was inactive — no fabricated
+            % history).
+
+            if all(obj.active)
+                error('KF_RBPF_multi:add_target:full', ...
+                    'Slot pool full (N_max=%d). Reconstruct with larger NMax.', ...
+                    obj.N_max);
+            end
+            if numel(x_init) ~= obj.N_x
+                error('KF_RBPF_multi:add_target:dim', ...
+                    'x_init must be [%d x 1], got %d elements', obj.N_x, numel(x_init));
+            end
+            x_init = x_init(:);
+            P_seed = P_init + 1e-9*eye(obj.N_x);
+            sqrtP = chol(P_seed, 'lower');
+
+            t_new = find(~obj.active, 1, 'first');
+
+            for i = 1:obj.N_p
+                x_seed = x_init + sqrtP * randn(obj.N_x, 1);
+                obj.particles{i}.kfs{t_new} = KF(x_seed, P_seed, obj.F, obj.Q, obj.H, obj.R);
+                obj.particles{i}.associations(t_new) = 0;
+                % association_history row for this slot keeps whatever
+                % NaN entries are already there (or zero columns if no
+                % history yet).  No padding — past frames where the
+                % slot was inactive show as NaN, which getClutterRate
+                % skips.
+            end
+            obj.active(t_new) = true;
+            obj.N_t = sum(obj.active);
+
+            if obj.debug
+                fprintf('KF_RBPF_multi: activated slot %d -> N_t=%d\n', ...
+                    t_new, obj.N_t);
+            end
+        end
+
+        function remove_target(obj, t_idx)
+            % REMOVE_TARGET  Deactivate slot t_idx but keep its history.
+            %
+            % Releases the KF object (kfs{t_idx} = []) so it doesn't
+            % continue to consume memory in resampling. The slot's
+            % association_history row stays in place; future frames
+            % append NaN to that row until/unless the slot is
+            % re-activated.
+
+            if t_idx < 1 || t_idx > obj.N_max
+                error('KF_RBPF_multi:remove_target:bounds', ...
+                    't_idx=%d outside [1, %d]', t_idx, obj.N_max);
+            end
+            if ~obj.active(t_idx)
+                warning('KF_RBPF_multi:remove_target:inactive', ...
+                    'Slot %d already inactive', t_idx);
+                return
+            end
+            if sum(obj.active) <= 1
+                warning('KF_RBPF_multi:remove_target:lastTarget', ...
+                    'Refusing to remove last active target');
+                return
+            end
+
+            for i = 1:obj.N_p
+                obj.particles{i}.kfs{t_idx} = [];
+                obj.particles{i}.associations(t_idx) = 0;
+            end
+            obj.active(t_idx) = false;
+            obj.N_t = sum(obj.active);
+
+            if obj.debug
+                fprintf('KF_RBPF_multi: deactivated slot %d -> N_t=%d\n', ...
+                    t_idx, obj.N_t);
+            end
+        end
+
+        function idx = activeIndices(obj)
+            idx = find(obj.active);
+        end
+
+        function rate = getClutterRate(obj, K_window)
+            % GETCLUTTERRATE  Per-slot clutter-association rate over the
+            % last K_window frames.
+            %
+            % NaN entries in association_history (frames where the slot
+            % was inactive) are ignored — they don't count as clutter
+            % OR as detection. Inactive slots and slots with no
+            % non-NaN history return NaN.
+
+            if nargin < 2 || isempty(K_window), K_window = 10; end
+
+            rate = nan(obj.N_max, 1);
+
+            weights = cellfun(@(p) p.weight, obj.particles);
+            weights = weights(:) / max(sum(weights), eps);
+
+            for t = find(obj.active)
+                num = 0;
+                den = 0;
+                for i = 1:obj.N_p
+                    h = obj.particles{i}.association_history;
+                    if isempty(h), continue; end
+                    n = size(h, 2);
+                    k_use = min(K_window, n);
+                    row = h(t, n-k_use+1:n);
+                    valid = ~isnan(row);
+                    num = num + weights(i) * sum(row(valid) == 0);
+                    den = den + weights(i) * sum(valid);
+                end
+                if den > 0
+                    rate(t) = num / den;
+                end
+            end
+        end
+
+        function [x_est_cell, P_est_cell, active_idx] = getGaussianEstimate(obj)
+            % GETGAUSSIANESTIMATE Weighted mean / covariance per ACTIVE target.
             %
             % OUTPUTS:
-            %   x_est_cell - Cell array {1 x N_t} of weighted mean states [N_x x 1] per target
-            %   P_est_cell - Cell array {1 x N_t} of weighted covariances [N_x x N_x] per target
-            %
-            % ALGORITHM:
-            %   For each target t:
-            %     x_est{t} = sum_i w_i * x_i^t
-            %     P_est{t} = sum_i w_i * (P_i^t + (x_i^t - x_est{t})*(x_i^t - x_est{t})')
+            %   x_est_cell - {1 x N_t} cell of [N_x x 1] weighted means,
+            %                ordered by slot index (active_idx).
+            %   P_est_cell - {1 x N_t} cell of [N_x x N_x] weighted covs.
+            %   active_idx - [1 x N_t] vector of slot indices (find(active)).
 
-            x_est_cell = cell(1, obj.N_t);
-            P_est_cell = cell(1, obj.N_t);
+            active_idx = find(obj.active);
+            N_active = numel(active_idx);
+            x_est_cell = cell(1, N_active);
+            P_est_cell = cell(1, N_active);
 
-            % Compute estimates for each target independently
-            for t = 1:obj.N_t
+            for a = 1:N_active
+                t = active_idx(a);
                 x_est = zeros(obj.N_x, 1);
                 P_est = zeros(obj.N_x, obj.N_x);
 
-                % Compute weighted mean
                 for i = 1:obj.N_p
                     w_i = obj.particles{i}.weight;
                     x_i = obj.particles{i}.kfs{t}.x;
                     x_est = x_est + w_i * x_i;
                 end
-
-                % Compute weighted covariance
                 for i = 1:obj.N_p
                     w_i = obj.particles{i}.weight;
                     x_i = obj.particles{i}.kfs{t}.x;
                     P_i = obj.particles{i}.kfs{t}.P;
-
                     diff = x_i - x_est;
                     P_est = P_est + w_i * (P_i + diff * diff');
                 end
 
-                x_est_cell{t} = x_est;
-                P_est_cell{t} = P_est;
+                x_est_cell{a} = x_est;
+                P_est_cell{a} = P_est;
             end
 
         end
@@ -819,15 +941,16 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
             end
 
             % Get estimates and particle weights
-            [x_est_cell, P_est_cell] = obj.getGaussianEstimate();
+            [x_est_cell, P_est_cell, active_idx] = obj.getGaussianEstimate();
+            N_active = numel(active_idx);
             weights = cellfun(@(p) p.weight, obj.particles);
             ESS = 1 / sum(weights .^ 2);
-            colors = lines(obj.N_t);
+            colors = lines(max(N_active, 1));
 
             % Compute global spatial bounds from all particles + measurements
             all_x = [];  all_y = [];
             for i = 1:obj.N_p
-                for t = 1:obj.N_t
+                for t = active_idx
                     pos = obj.particles{i}.kfs{t}.x(1:2);
                     all_x(end+1) = pos(1); %#ok<AGROW>
                     all_y(end+1) = pos(2); %#ok<AGROW>
@@ -853,12 +976,12 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
                 Yb = [min(all_y)-mg*max(yr,0.5), max(all_y)+mg*max(yr,0.5)];
             end
 
-            %% ROW 1: one subplot per target — position clouds
-            for t = 1:obj.N_t
-                subplot(2, obj.N_t, t);
+            %% ROW 1: one subplot per ACTIVE target — position clouds
+            for a = 1:N_active
+                t = active_idx(a);
+                subplot(2, max(N_active,1), a);
                 cla; hold on;
 
-                % Particle positions for this target, colored by weight
                 pos_t = zeros(2, obj.N_p);
                 assoc_t = zeros(1, obj.N_p);
                 for i = 1:obj.N_p
@@ -870,26 +993,23 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
                     'MarkerFaceAlpha', 0.5);
                 colormap('hot');
 
-                % Estimate + 1-sigma ellipse
-                xe = x_est_cell{t};
-                Pe = P_est_cell{t};
-                plot(xe(1), xe(2), 'o', 'Color', colors(t,:), ...
-                    'MarkerSize', 10, 'LineWidth', 2.5, 'MarkerFaceColor', colors(t,:));
+                xe = x_est_cell{a};
+                Pe = P_est_cell{a};
+                plot(xe(1), xe(2), 'o', 'Color', colors(a,:), ...
+                    'MarkerSize', 10, 'LineWidth', 2.5, 'MarkerFaceColor', colors(a,:));
                 th = linspace(0, 2*pi, 100);
                 try
                     L = chol(Pe(1:2,1:2))';
                     ell = xe(1:2) + L * [cos(th); sin(th)];
-                    plot(ell(1,:), ell(2,:), '-', 'Color', colors(t,:), 'LineWidth', 1.5);
+                    plot(ell(1,:), ell(2,:), '-', 'Color', colors(a,:), 'LineWidth', 1.5);
                 catch, end
 
-                % Ground truth
-                if ~isempty(true_states)
-                    gt = true_states{t};
-                    plot(gt(1), gt(2), 'd', 'Color', colors(t,:), ...
+                if ~isempty(true_states) && a <= numel(true_states)
+                    gt = true_states{a};
+                    plot(gt(1), gt(2), 'd', 'Color', colors(a,:), ...
                         'MarkerSize', 10, 'LineWidth', 2, 'MarkerFaceColor', 'w');
                 end
 
-                % Measurements
                 if ~isempty(measurements)
                     plot(measurements(1,:), measurements(2,:), 'r+', ...
                         'MarkerSize', 8, 'LineWidth', 1.5);
@@ -897,13 +1017,14 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
 
                 xlim(Xb); ylim(Yb);
                 xlabel('X (m)'); ylabel('Y (m)');
-                title(sprintf('Target %d  |  ESS=%.0f', t, ESS));
+                title(sprintf('Slot %d  |  ESS=%.0f', t, ESS));
                 grid on; axis square;
             end
 
-            %% ROW 2: one subplot per target — MAP association bar
-            for t = 1:obj.N_t
-                subplot(2, obj.N_t, obj.N_t + t);
+            %% ROW 2: one subplot per ACTIVE target — MAP association bar
+            for a = 1:N_active
+                t = active_idx(a);
+                subplot(2, max(N_active,1), max(N_active,1) + a);
                 cla; hold on;
 
                 assoc_t = zeros(1, obj.N_p);
@@ -914,10 +1035,10 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
                 max_a = max(assoc_t);
                 if max_a < 1, max_a = 1; end
                 counts = histcounts(assoc_t, 'BinEdges', -0.5:(max_a+0.5));
-                bar(0:max_a, counts, 'FaceColor', colors(t,:));
+                bar(0:max_a, counts, 'FaceColor', colors(a,:));
 
                 xlabel('Association (0=miss)'); ylabel('Count');
-                title(sprintf('T%d Assoc. Dist.', t));
+                title(sprintf('Slot %d Assoc. Dist.', t));
                 if max_a <= 10, xticks(0:max_a); end
                 grid on;
             end
@@ -949,22 +1070,20 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
     methods (Static)
         % Helper functions can go here
 
-        function particles = initialize_particles(num_particles, x0_cell, F, Q, H, R, uniform_init, sigma_pos, sigma_vel)
-            % INITIALIZE_PARTICLES Helper to create multi-target particle array
+        function particles = initialize_particles(num_particles, x0_cell, N_max, F, Q, H, R, uniform_init, sigma_pos, sigma_vel)
+            % INITIALIZE_PARTICLES Build slot-pool particle array.
             %
             % INPUTS:
             %   num_particles - Number of particles
-            %   x0_cell       - Cell array {1 x N_targets} of initial state estimates [N_x x 1]
+            %   x0_cell       - {1 x N_t_init} initial states (one per active slot)
+            %   N_max         - slot-pool capacity; kfs / associations sized to this
             %   F, Q, H, R    - System model matrices
-            %   uniform_init  - (optional) Boolean: if true, use uniform initialization
-            %   sigma_pos     - (optional) Gaussian init position std-dev (default 5.0 m)
-            %   sigma_vel     - (optional) Gaussian init velocity std-dev (default 2.0 m/s)
-            % OUTPUTS:
-            %   particles - Cell array of initialized particle structs
+            %   uniform_init  - (optional) uniform vs Gaussian seeding
+            %   sigma_pos, sigma_vel - Gaussian init std-devs
 
-            if nargin < 7, uniform_init = false; end
-            if nargin < 8, sigma_pos = 5.0; end
-            if nargin < 9, sigma_vel = 2.0; end
+            if nargin < 8, uniform_init = false; end
+            if nargin < 9, sigma_pos = 5.0; end
+            if nargin < 10, sigma_vel = 2.0; end
 
             particles = cell(1, num_particles);
             num_targets = length(x0_cell);
@@ -979,37 +1098,29 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
                 initial_kf_cov = 10 * eye(N_x); % Conservative covariance
 
                 for i = 1:num_particles
-                    kfs = cell(1, num_targets);
+                    kfs = cell(1, N_max);  % all slots, inactive stay []
 
                     for t = 1:num_targets
-                        % Initialize each target state uniformly
                         x_particle = zeros(N_x, 1);
-
-                        % Position (x, y)
                         x_particle(1) = pos_bounds(1, 1) + (pos_bounds(1, 2) - pos_bounds(1, 1)) * rand();
                         x_particle(2) = pos_bounds(2, 1) + (pos_bounds(2, 2) - pos_bounds(2, 1)) * rand();
-
-                        % Velocity (vx, vy) if state dimension >= 4
                         if N_x >= 4
                             x_particle(3) = vel_bounds(1, 1) + (vel_bounds(1, 2) - vel_bounds(1, 1)) * rand();
                             x_particle(4) = vel_bounds(2, 1) + (vel_bounds(2, 2) - vel_bounds(2, 1)) * rand();
                         end
-
-                        % Acceleration (ax, ay) if state dimension >= 6
                         if N_x >= 6
                             x_particle(5) = acc_bounds(1, 1) + (acc_bounds(1, 2) - acc_bounds(1, 1)) * rand();
                             x_particle(6) = acc_bounds(2, 1) + (acc_bounds(2, 2) - acc_bounds(2, 1)) * rand();
                         end
-
                         kfs{t} = KF(x_particle, initial_kf_cov, F, Q, H, R);
                     end
 
                     particles{i} = struct( ...
-                        'associations', zeros(num_targets, 1), ... % [N_t x 1] associations (0 = clutter)
-                        'kfs', {kfs}, ... % Cell {1 x N_t} of KF objects
-                        'weight', 1 / num_particles, ... % Uniform initial weight
-                        'association_history', [], ... % History: [N_t x K] matrix over time
-                        'Z_i', 1); % RBPF normalizing constant (set by generateAssociations)
+                        'associations', zeros(N_max, 1), ...
+                        'kfs', {kfs}, ...
+                        'weight', 1 / num_particles, ...
+                        'association_history', zeros(N_max, 0), ...
+                        'Z_i', 1);
                 end
 
             else
@@ -1028,20 +1139,18 @@ classdef KF_RBPF_multi < handle % TODO: Inherit from DA_Filter if available
                 initial_kf_cov = diag(initial_uncertainty_std .^ 2);  % KF init matches particle spread
 
                 for i = 1:num_particles
-                    kfs = cell(1, num_targets);
-
+                    kfs = cell(1, N_max);  % all slots, inactive stay []
                     for t = 1:num_targets
-                        % Sample particle state from distribution around x0{t}
                         x_particle = x0_cell{t} + mvnrnd(zeros(N_x, 1), initial_particle_cov)';
                         kfs{t} = KF(x_particle, initial_kf_cov, F, Q, H, R);
                     end
 
                     particles{i} = struct( ...
-                        'associations', zeros(num_targets, 1), ... % [N_t x 1] associations
-                        'kfs', {kfs}, ... % Cell {1 x N_t} of KF objects
-                        'weight', 1 / num_particles, ... % Uniform initial weight
-                        'association_history', [], ... % History storage
-                        'Z_i', 1); % RBPF normalizing constant (set by generateAssociations)
+                        'associations', zeros(N_max, 1), ...
+                        'kfs', {kfs}, ...
+                        'weight', 1 / num_particles, ...
+                        'association_history', zeros(N_max, 0), ...
+                        'Z_i', 1);
                 end
 
             end

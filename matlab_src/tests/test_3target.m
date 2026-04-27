@@ -1,78 +1,66 @@
-% TEST_3TARGET  Self-contained synthetic 3-target tracking test
+% test_3target.m  —  Monte Carlo 3-target tracking test
 %
-% DESCRIPTION:
-%   Runs three multi-target filters on a synthetic 3-target scenario with
-%   deliberately crossing trajectories.  No mWidar signal or external .mat
-%   files are required for the KF_RBPF_multi and PDA_PF_multi tests.
-%   HMM_RBPF_multi requires the supplemental lookup tables; if they are not
-%   found the test is skipped with a warning rather than erroring out.
+% Runs three multi-target filters on a synthetic 3-target scenario with
+% crossing trajectories.  GT is fixed (one deterministic realisation);
+% each MC trial draws fresh measurement noise + clutter so results are
+% reproducible and the candidate trajectory is meaningful for all trials.
 %
 % SCENARIO:
-%   State model  : constant-velocity, [x, y, vx, vy]', dt = 0.1 s
+%   State model  : constant-velocity 4-state filter, 6-state truth propagation
 %   Duration     : 60 timesteps (6 s)
-%   3 targets with crossing geometry to stress data association:
-%     T1: (0,0)   -> vx=0.5, vy= 0.5  (right-upward drift)
-%     T2: (0,2)   -> vx=0.4, vy= 0.4  (left-ward, crosses T1)
-%     T3: (1.5,3) -> vx=0,   vy=-0.4  (descending, passes near T1/T2 crossing)
-%   Measurement noise : sigma = 0.05 m
-%   Detection prob    : PD = 0.9
-%   Clutter           : 1-3 uniform measurements per step in the scene bounds
+%   3 targets with crossing geometry:
+%     T1: (0.5, 0.5)  vx= 0.30  vy= 0.40  (rightward-upward)
+%     T2: (3.5, 0.5)  vx=-0.30  vy= 0.40  (converging toward T1)
+%     T3: (2.0, 4.0)  vx= 0.00  vy=-0.50  (descending, cuts across)
+%   sigma_z = 0.05 m,  PD = 0.9,  1-3 clutter/step
 %
-% FILTERS TESTED:
-%   0. JPDA_KF        (KF baseline)
-%   1. KF_RBPF_multi  (500 particles, optimal association)
-%   2. PDA_PF_multi   (1000 particles)
-%   3. HMM_RBPF_multi (50 particles) -- skipped if lookup tables absent
+% FILTERS:
+%   JPDA-KF, KF-RBPF-multi, PDA-PF-multi
 %
-% OUTPUTS:
-%   test_3target_GT_meas.gif         -- GT + measurements animation
-%   test_3target_JPDA_KF.png         -- per-filter trajectory + error plots
-%   test_3target_KF_RBPF.png
-%   test_3target_PDA_PF.png
-%   test_3target_rmse_comparison.png -- all-filter RMSE overlay
-%   test_3target_ess.png             -- PDA-PF ESS over time
-%   test_3target_all_filters.gif     -- combined multi-filter animation
+% OUTPUTS  (all in tests/figures/multitarget_testing/):
+%   test_3target_GT_meas.gif              — candidate trial GT + measurements
+%   test_3target_{FILTER}_candidate.png   — per-filter candidate trajectory + error
+%   test_3target_all_filters_candidate.gif — combined animation (candidate trial)
+%   test_3target_mc_comparison.png        — MC aggregate comparison
+%   test_3target_results_mc{N}.mat        — numerical results
+%   test_3target_perf_mc{N}.tex           — LaTeX performance table
 %
-% UNIFIED VISUAL VOCABULARY (consistent across every figure / GIF):
-%   Filter identity  --> color  (blue / orange / green / purple)
-%   Target identity  --> marker (T1=circle, T2=square, T3=triangle)
-%   Ground truth     --> dark-gray thick solid line
-%   Measurements     --> light-gray plus scatter
-%
-% USAGE:
-%   cd matlab_src
-%   run tests/test_3target
+% Run from matlab_src/.
 
 clear; clc; close all;
 
 %% -----------------------------------------------------------------------
-%% 0. Paths
+%% 0. Paths + output directory
 %% -----------------------------------------------------------------------
-script_dir = fileparts(mfilename('fullpath'));
-repo_root  = fullfile(script_dir, '..');
+script_dir    = fileparts(mfilename('fullpath'));
+repo_root     = fullfile(script_dir, '..');
 
 addpath(fullfile(repo_root, 'DA_Track'));
 addpath(fullfile(repo_root, 'DA_Track', 'single'));
 addpath(fullfile(repo_root, 'DA_Track', 'multi'));
 addpath(fullfile(repo_root, 'supplemental'));
+addpath(fullfile(repo_root, 'supplemental', 'multitarget_metrics'));
 
-fprintf('=== 3-Target Synthetic Tracking Test ===\n\n');
+out_dir = fullfile(script_dir, 'figures', 'multitarget_testing');
+if ~exist(out_dir, 'dir'), mkdir(out_dir); end
+
+fprintf('=== 3-Target Synthetic Tracking Test (MC) ===\n\n');
 
 %% -----------------------------------------------------------------------
 %% 1. Simulation parameters
 %% -----------------------------------------------------------------------
-dt       = 0.1;
-T        = 60;
-N_t      = 3;
-sigma_z  = 0.05;
-PD_true  = 0.9;
-rng(42);
+N_MC      = 50;
+base_seed = 42;
+dt        = 0.1;
+T         = 60;
+N_t       = 3;
+sigma_z   = 0.05;
+PD_true   = 0.9;
 
 x_bounds   = [-0.5, 5.0];
 y_bounds   = [-0.5, 5.0];
 scene_area = diff(x_bounds) * diff(y_bounds);
 
-% 6-state constant-acceleration truth model
 F_true = [1, 0, dt, 0, 0.5*dt^2, 0;
           0, 1, 0, dt, 0, 0.5*dt^2;
           0, 0, 1,  0, dt, 0;
@@ -80,478 +68,304 @@ F_true = [1, 0, dt, 0, 0.5*dt^2, 0;
           0, 0, 0,  0,  1,  0;
           0, 0, 0,  0,  0,  1];
 
-% 4-state constant-velocity filter model
 F_model = [1, 0, dt,  0;
            0, 1,  0, dt;
            0, 0,  1,  0;
            0, 0,  0,  1];
 
-H = [1, 0, 0, 0;
-     0, 1, 0, 0];
+H      = [1, 0, 0, 0; 0, 1, 0, 0];
+H_true = [1, 0, 0, 0, 0, 0; 0, 1, 0, 0, 0, 0];
 
-H_true = [1, 0, 0, 0, 0, 0;
-          0, 1, 0, 0, 0, 0];
+Q  = diag([1e-4, 1e-4, 1e-3, 1e-3]);
+R  = sigma_z^2 * eye(2);
+P0 = diag([0.1, 0.1, 0.25, 0.25]);
 
-x0_true = {[0.0; 0.0; 0.5; 0.5; 0.0;  0.0], ...  % T1: right-upward  (blue)
-           [0.0; 2.0; 0.4; 0.4; 0.0; -0.1], ...  % T2: drifting       (red)
-           [1.5; 3.0; 0.0;-0.4; 0.0;  0.0]};      % T3: descending     (yellow)
+% Different crossing geometry from original scenario
+x0_true = {[0.5; 0.5;  0.30;  0.40; 0; 0], ...   % T1 right+up
+           [3.5; 0.5; -0.30;  0.40; 0; 0], ...   % T2 left+up  (meets T1 mid-scene)
+           [2.0; 4.0;  0.00; -0.50; 0; 0]};       % T3 descending (cuts across)
 
-Q_trajectory = diag([1e-5, 1e-5, 1e-5, 1e-5, 1e-6, 1e-6]);
+Q_traj = diag([1e-5, 1e-5, 1e-5, 1e-5, 1e-6, 1e-6]);
 
 %% -----------------------------------------------------------------------
-%% 2. Ground truth trajectories
+%% 2. Fixed GT (generated once with base_seed)
 %% -----------------------------------------------------------------------
+rng(base_seed);
 GT = cell(1, N_t);
 for t = 1:N_t
     GT{t} = zeros(6, T);
     GT{t}(:, 1) = x0_true{t};
     for k = 2:T
-        GT{t}(:, k) = F_true * GT{t}(:, k-1) + sqrtm(Q_trajectory)*randn(6,1);
+        GT{t}(:, k) = F_true * GT{t}(:, k-1) + sqrtm(Q_traj) * randn(6, 1);
     end
 end
-fprintf('Ground truth generated (%d targets, %d steps).\n', N_t, T);
+
+% Initial filter states: 4-state GT + small perturbation
+x0_cell = cell(1, N_t);
+rng(base_seed + 1000);
+for t = 1:N_t
+    x0_cell{t} = GT{t}(1:4, 1) + [0.15*randn(2,1); 0.10*randn(2,1)];
+end
+
+fprintf('GT generated (%d targets, %d steps).\n', N_t, T);
 
 %% -----------------------------------------------------------------------
-%% 3. Noisy measurements
+%% 3. Visual constants (consistent across all figures/GIFs)
 %% -----------------------------------------------------------------------
-measurements = cell(1, T);
-gt_assoc     = cell(1, T);
+tgt_markers  = {'o', 's', '^'};
+tgt_msize_sm = 5;
+tgt_msize_lg = 9;
+mark_idx   = round(linspace(1, T, 10));
+gt_color   = [0.15, 0.15, 0.15];
+gt_lw      = 2.5;
+est_lw     = 1.5;
+meas_color = [0.72, 0.72, 0.72];
+tgt_colors = lines(N_t);
+t_axis     = (0:T-1) * dt;
 
-for k = 1:T
-    z_list = zeros(2, 0);
-    assoc  = zeros(1, 0);
+filter_colors = [0.12, 0.47, 0.71;   % JPDA-KF    blue
+                 0.89, 0.47, 0.10;   % KF-RBPF    orange
+                 0.17, 0.63, 0.17];  % PDA-PF     green
 
-    for t = 1:N_t
-        if rand() < PD_true
-            z_list = [z_list, H_true*GT{t}(:,k) + sigma_z*randn(2,1)]; %#ok<AGROW>
-            assoc  = [assoc, t]; %#ok<AGROW>
+filter_names_short = {'JPDA-KF', 'KF-RBPF', 'PDA-PF'};
+filter_names_full  = {'JPDA-KF (baseline)', 'KF-RBPF-multi', 'PDA-PF-multi'};
+filter_file_tags   = {'JPDA_KF', 'KF_RBPF_multi', 'PDA_PF_multi'};
+filter_names_tex   = {'JPDA-KF (baseline)', 'KF-RBPF-multi', 'PDA-PF-multi'};
+
+%% -----------------------------------------------------------------------
+%% 4. MC loop — per filter
+%% -----------------------------------------------------------------------
+mc_results = struct();
+
+for fi = 1:3
+    fname = filter_names_short{fi};
+    fprintf('\n=== %s (%d MC trials) ===\n', fname, N_MC);
+
+    rmse_trials = zeros(N_MC, N_t);   % mean-over-time per-target RMSE
+    ospa_trials = zeros(N_MC, 1);
+    runtime_sec = zeros(N_MC, 1);
+
+    cand_est  = [];
+    cand_Pest = [];
+    cand_meas = [];
+
+    for mc = 1:N_MC
+        rng(base_seed + mc);   % fresh measurements, same GT
+
+        meas = gen_measurements_3t(GT, H_true, R, PD_true, x_bounds, y_bounds, T);
+
+        % Build fresh filter
+        switch fi
+            case 1   % JPDA-KF
+                x0_jpda = cell2mat(x0_cell);
+                P0_jpda = repmat({P0}, 1, N_t);
+                filt = JPDA_KF(x0_jpda, P0_jpda, F_model, Q, R, H, N_t, []);
+                filt.PD                     = PD_true;
+                filt.lambda_clutter         = 2.0;
+                filt.measurement_space_area = scene_area;
+            case 2   % KF-RBPF-multi
+                filt = KF_RBPF_multi(x0_cell, 200, F_model, Q, H, R, ...
+                    'PD', 0.9, 'PFA', 0.05, 'ESSThreshold', 0.5, ...
+                    'AssociationStrategy', 'optimal', 'Debug', false, ...
+                    'InitSigmaPos', 0.03, 'InitSigmaVel', 0.02);
+            case 3   % PDA-PF-multi
+                filt = PDA_PF_multi(x0_cell, 1000, F_model, Q, H, R, ...
+                    'PD', 0.9, 'PFA', 0.05, 'LambdaClutter', 3.0/scene_area, ...
+                    'ValidationSigma', 5, 'ESSThreshold', 0.5, 'Debug', false, ...
+                    'InitSigmaPos', 0.03, 'InitSigmaVel', 0.05);
+        end
+
+        % Initial estimate
+        est_hist  = cell(1, T);
+        Pest_hist = cell(1, T);
+        [est_hist{1}, Pest_hist{1}] = get_estimate(filt, fi, N_t);
+
+        % Run
+        t0 = tic;
+        for k = 2:T
+            step_filter(filt, fi, meas{k});
+            [est_hist{k}, Pest_hist{k}] = get_estimate(filt, fi, N_t);
+        end
+        runtime_sec(mc) = toc(t0);
+
+        % Per-target RMSE (mean over frames)
+        for t = 1:N_t
+            err = arrayfun(@(k) norm(est_hist{k}{t}(1:2) - GT{t}(1:2, k)), 1:T);
+            rmse_trials(mc, t) = mean(err);
+        end
+
+        % Mean OSPA (fixed cardinality -> localization only)
+        ospa_k = zeros(1, T);
+        for k = 1:T
+            gt_xy  = cell2mat(cellfun(@(g) g(1:2,k), GT, 'Uni', 0));
+            est_xy = cell2mat(cellfun(@(e) e(1:2),   est_hist{k}, 'Uni', 0));
+            [ospa_k(k), ~, ~] = compute_ospa(est_xy, gt_xy, 1.0, 2);
+        end
+        ospa_trials(mc) = mean(ospa_k);
+
+        if mc == 1
+            cand_est  = est_hist;
+            cand_Pest = Pest_hist;
+            cand_meas = meas;
+        end
+
+        if mod(mc, max(1, round(N_MC / 5))) == 0 || mc == N_MC
+            fprintf('  trial %3d/%d  (%.2f s)  -- current mean OSPA: %.3f\n', ...
+            mc, N_MC, runtime_sec(mc), mean(ospa_trials(1:mc)));
         end
     end
 
-    n_clutter = randi([1, 3]);
-    for c = 1:n_clutter
-        z_list = [z_list, [x_bounds(1)+diff(x_bounds)*rand(); ...
-                            y_bounds(1)+diff(y_bounds)*rand()]]; %#ok<AGROW>
-        assoc  = [assoc, 0]; %#ok<AGROW>
-    end
+    % Aggregate
+    S.rmse_mean = mean(rmse_trials, 1);
+    S.rmse_std  = std(rmse_trials,  0, 1);
+    S.ospa_mean = mean(ospa_trials);
+    S.ospa_std  = std(ospa_trials);
+    S.runtime   = struct('mean', mean(runtime_sec), 'std', std(runtime_sec));
+    S.cand_est  = cand_est;
+    S.cand_Pest = cand_Pest;
+    S.cand_meas = cand_meas;
+    S.raw_rmse  = rmse_trials;
 
-    perm = randperm(size(z_list, 2));
-    measurements{k} = z_list(:, perm);
-    gt_assoc{k}     = assoc(perm);
-end
+    mc_results.(filter_file_tags{fi}) = S;
 
-n_meas_avg = mean(cellfun(@(z) size(z,2), measurements));
-fprintf('Measurements generated. Average per step: %.1f\n\n', n_meas_avg);
-
-%% -----------------------------------------------------------------------
-%% 4. Filter configuration — shared matrices
-%% -----------------------------------------------------------------------
-Q  = diag([1e-4, 1e-4, 1e-3, 1e-3]);
-R  = sigma_z^2 * eye(2);
-P0 = diag([0.1, 0.1, 0.25, 0.25]);
-
-x0_cell = cell(1, N_t);
-for t = 1:N_t
-    gt_state   = GT{t}(1:4, 1);
-    x0_cell{t} = gt_state + [0.15*randn(2,1); 0.10*randn(2,1)];
+    fprintf('  RMSE: T1=%.3f  T2=%.3f  T3=%.3f  OSPA=%.3f  Runtime=%.2fs\n', ...
+        S.rmse_mean(1), S.rmse_mean(2), S.rmse_mean(3), S.ospa_mean, S.runtime.mean);
 end
 
 %% -----------------------------------------------------------------------
-%% 5. Run JPDA_KF  (baseline)
+%% 5. GT + measurements animation  (candidate trial / trial 1)
 %% -----------------------------------------------------------------------
-fprintf('--- Filter 0: JPDA_KF ---\n');
-
-x0_jpda  = cell2mat(x0_cell);
-P0_jpda  = repmat({P0}, 1, N_t);
-filt_jpda = JPDA_KF(x0_jpda, P0_jpda, F_model, Q, R, H, N_t, []);
-filt_jpda.PD                   = PD_true;
-filt_jpda.lambda_clutter       = 2.0;
-filt_jpda.measurement_space_area = scene_area;
-
-jpda_to_cell = @(X) num2cell(X, 1);
-est_jpda  = cell(1, T);
-Pest_jpda = cell(1, T);
-[X_est, P_est]  = filt_jpda.getGaussianEstimate();
-est_jpda{1}     = jpda_to_cell(X_est);
-Pest_jpda{1}    = P_est;
-
-for k = 2:T
-    filt_jpda.timestep(measurements{k}, []);
-    [X_est, P_est] = filt_jpda.getGaussianEstimate();
-    est_jpda{k}    = jpda_to_cell(X_est);
-    Pest_jpda{k}   = P_est;
-end
-
-rmse_jpda = computeRMSE(est_jpda, GT, N_t, T);
-fprintf('  RMSE: T1=%.3f  T2=%.3f  T3=%.3f\n\n', ...
-    rmse_jpda(1,end), rmse_jpda(2,end), rmse_jpda(3,end));
-
-%% -----------------------------------------------------------------------
-%% 6. Run KF_RBPF_multi
-%% -----------------------------------------------------------------------
-fprintf('--- Filter 1: KF_RBPF_multi (200 particles) ---\n');
-
-filt1 = KF_RBPF_multi(x0_cell, 200, F_model, Q, H, R, ...
-    'PD', 0.9, 'PFA', 0.05, 'ESSThreshold', 0.5, ...
-    'AssociationStrategy', 'optimal', 'Debug', false, ...
-    'InitSigmaPos', 0.03, 'InitSigmaVel', 0.02);
-
-est1  = cell(1, T);
-Pest1 = cell(1, T);
-[x_est, P_est] = filt1.getGaussianEstimate();
-est1{1}  = x_est;
-Pest1{1} = P_est;
-
-for k = 2:T
-    filt1.timestep(measurements{k});
-    [x_est, P_est] = filt1.getGaussianEstimate();
-    est1{k}  = x_est;
-    Pest1{k} = P_est;
-end
-
-rmse1 = computeRMSE(est1, GT, N_t, T);
-fprintf('  RMSE: T1=%.3f  T2=%.3f  T3=%.3f\n\n', ...
-    rmse1(1,end), rmse1(2,end), rmse1(3,end));
-
-%% -----------------------------------------------------------------------
-%% 7. Run PDA_PF_multi
-%% -----------------------------------------------------------------------
-fprintf('--- Filter 2: PDA_PF_multi (1000 particles) ---\n');
-
-filt2 = PDA_PF_multi(x0_cell, 1000, F_model, Q, H, R, ...
-    'PD', 0.9, 'PFA', 0.05, 'LambdaClutter', 3.0/scene_area, ...
-    'ValidationSigma', 5, 'ESSThreshold', 0.5, 'Debug', false, ...
-    'InitSigmaPos', 0.03, 'InitSigmaVel', 0.05);
-
-est2  = cell(1, T);
-Pest2 = cell(1, T);
-[x_est, P_est] = filt2.getGaussianEstimate();
-est2{1}  = x_est;
-Pest2{1} = P_est;
-
-for k = 2:T
-    filt2.timestep(measurements{k});
-    [x_est, P_est] = filt2.getGaussianEstimate();
-    est2{k}  = x_est;
-    Pest2{k} = P_est;
-end
-
-rmse2 = computeRMSE(est2, GT, N_t, T);
-fprintf('  RMSE: T1=%.3f  T2=%.3f  T3=%.3f\n\n', ...
-    rmse2(1,end), rmse2(2,end), rmse2(3,end));
-
-%% -----------------------------------------------------------------------
-%% 8. Run HMM_RBPF_multi (optional — requires lookup tables)
-%% -----------------------------------------------------------------------
-run_hmm = false;
-
-% hmm_like_file  = fullfile(repo_root, 'supplemental', 'precalc_imagegridHMMEmLike.mat');
-% hmm_trans_file = fullfile(repo_root, 'supplemental', 'precalc_imagegridHMMSTMn15.mat');
-%
-% if isfile(hmm_like_file) && isfile(hmm_trans_file)
-%     fprintf('--- Filter 3: HMM_RBPF_multi (50 particles) ---\n');
-%     load(hmm_like_file,  'pointlikelihood_image');
-%     load(hmm_trans_file, 'A');
-%     A_transition  = A; clear A;
-%     x0_cell_2d = cellfun(@(x) x(1:2), x0_cell, 'UniformOutput', false);
-%
-%     filt3 = HMM_RBPF_multi(x0_cell_2d, 50, A_transition, pointlikelihood_image, ...
-%         'PD', 0.9, 'PFA', 0.05, 'ESSThreshold', 0.5, ...
-%         'AssociationStrategy', 'optimal', 'Debug', false);
-%
-%     est3  = cell(1, T);
-%     Pest3 = cell(1, T);
-%     [x_est, P_est] = filt3.getGaussianEstimate();
-%     est3{1}  = x_est;
-%     Pest3{1} = P_est;
-%     for k = 2:T
-%         filt3.timestep(measurements{k});
-%         [x_est, P_est] = filt3.getGaussianEstimate();
-%         est3{k} = x_est; Pest3{k} = P_est;
-%     end
-%
-%     GT_2d = cellfun(@(g) g(1:2,:), GT, 'UniformOutput', false);
-%     rmse3 = zeros(N_t, T);
-%     for k = 1:T
-%         for t = 1:N_t
-%             err = est3{k}{t}(1:2) - GT_2d{t}(:,k);
-%             rmse3(t,k) = norm(err);
-%         end
-%     end
-%     fprintf('  RMSE: T1=%.3f  T2=%.3f  T3=%.3f\n\n', ...
-%         rmse3(1,end), rmse3(2,end), rmse3(3,end));
-%     run_hmm = true;
-% else
-%     fprintf('--- Filter 3: HMM_RBPF_multi SKIPPED ---\n\n');
-% end
-
-%% -----------------------------------------------------------------------
-%% 9. Summary table
-%% -----------------------------------------------------------------------
-filter_names       = {'JPDA-KF (baseline)', 'KF-RBPF-multi', 'PDA-PF-multi'};
-filter_names_short = {'JPDA-KF',            'KF-RBPF',       'PDA-PF'};
-filter_file_tags   = {'JPDA_KF',            'KF_RBPF',       'PDA_PF'};
-est_all            = {est_jpda,  est1,  est2};
-Pest_all           = {Pest_jpda, Pest1, Pest2};
-rmse_all           = {rmse_jpda, rmse1, rmse2};
-
-if run_hmm
-    filter_names{end+1}       = 'HMM-RBPF-multi';
-    filter_names_short{end+1} = 'HMM-RBPF';
-    filter_file_tags{end+1}   = 'HMM_RBPF';
-    est_all{end+1}            = est3;
-    Pest_all{end+1}           = Pest3;
-    rmse_all{end+1}           = rmse3;
-end
-
-n_f    = length(filter_names);
-t_axis = (0:T-1) * dt;
-all_z  = cell2mat(measurements);
-
-fprintf('=== Mean RMSE (all timesteps, position only) ===\n');
-fprintf('%-22s  %6s  %6s  %6s\n', 'Filter', 'T1', 'T2', 'T3');
-fprintf('%s\n', repmat('-', 1, 44));
-for fi = 1:n_f
-    mr = mean(rmse_all{fi}, 2);
-    fprintf('%-22s  %6.3f  %6.3f  %6.3f\n', filter_names{fi}, mr(1), mr(2), mr(3));
-end
-fprintf('\n');
-
-%% -----------------------------------------------------------------------
-%% 10. Unified visual design constants
-%% -----------------------------------------------------------------------
-% Filter identity --> color  (blue / orange / green / purple)
-filter_colors = [0.12, 0.47, 0.71;   % JPDA-KF       blue
-                 0.89, 0.47, 0.10;   % KF-RBPF-multi orange
-                 0.17, 0.63, 0.17];  % PDA-PF-multi   green
-if run_hmm
-    filter_colors(end+1,:) = [0.58, 0.40, 0.74];  % HMM-RBPF purple
-end
-
-% Target identity --> marker  (circle / square / triangle)
-% These marker shapes are used in EVERY figure and GIF so T2 is always a
-% square whether you're looking at a static PNG or the combined animation.
-tgt_markers  = {'o', 's', '^'};
-tgt_msize_sm = 5;    % on static trajectory lines
-tgt_msize_lg = 9;    % on current-frame dots in animations
-
-% Marker spacing on static plots (avoid overplotting 60 markers)
-mark_idx = round(linspace(1, T, 10));
-
-% Ground truth: dark gray, not assigned to any filter
-gt_color = [0.15, 0.15, 0.15];
-gt_lw    = 2.5;
-est_lw   = 1.5;
-meas_color = [0.72, 0.72, 0.72];
-
-% Target colors for per-filter static figures (color encodes target there,
-% since only one filter is shown per figure)
-tgt_colors = lines(N_t);
-
-%% -----------------------------------------------------------------------
-%% 11. GT + measurements animation
-%% -----------------------------------------------------------------------
-fprintf('Generating GT+measurements animation...\n');
-gif_gt  = 'test_3target_GT_meas.gif';
-fig_gt  = figure('Name','GT + Measurements','Position',[50 50 620 540]);
+fprintf('\nGenerating GT+measurements animation...\n');
+meas_cand = mc_results.(filter_file_tags{1}).cand_meas;
+gif_gt    = fullfile(out_dir, 'test_3target_GT_meas.gif');
+fig_gt    = figure('Name', 'GT + Measurements', 'Position', [50 50 620 540]);
 
 for k = 1:T
     clf; hold on; grid on; axis equal;
-    title(sprintf('Ground Truth + Measurements  |  t = %.1f s', (k-1)*dt), ...
-          'FontSize', 11);
+    title(sprintf('GT + Measurements  |  t = %.1f s', (k-1)*dt), 'FontSize', 11);
     xlabel('x (m)'); ylabel('y (m)');
     xlim(x_bounds + [-0.3, 0.3]); ylim(y_bounds + [-0.3, 0.3]);
 
-    % Current measurements
-    zk = measurements{k};
+    zk = meas_cand{k};
     scatter(zk(1,:), zk(2,:), 45, meas_color, '+', 'LineWidth', 1.4, ...
             'DisplayName', 'Measurements');
 
-    % GT trails + current-frame marker (target marker encodes target identity)
     for t = 1:N_t
         plot(GT{t}(1,1:k), GT{t}(2,1:k), '-', 'Color', tgt_colors(t,:), ...
-             'LineWidth', gt_lw, 'HandleVisibility','off');
+             'LineWidth', gt_lw, 'HandleVisibility', 'off');
         plot(GT{t}(1,k), GT{t}(2,k), tgt_markers{t}, ...
              'Color', tgt_colors(t,:), 'MarkerSize', tgt_msize_lg, ...
-             'MarkerFaceColor', tgt_colors(t,:), ...
-             'DisplayName', sprintf('GT T%d', t));
+             'MarkerFaceColor', tgt_colors(t,:), 'DisplayName', sprintf('GT T%d', t));
     end
 
-    legend('Location','northeast','FontSize',9,'Box','on');
+    legend('Location', 'northeast', 'FontSize', 9, 'Box', 'on');
     drawnow;
-    writeGIF(fig_gt, gif_gt, k, dt);
+    write_gif(fig_gt, gif_gt, k, dt);
 end
 close(fig_gt);
 fprintf('  Saved: %s\n', gif_gt);
 
 %% -----------------------------------------------------------------------
-%% 12. Per-filter static PNG figures
-%%     Color = target (best encoding when only one filter is shown)
-%%     Marker = target (shared vocabulary with all other figures)
+%% 6. Per-filter candidate trajectory figures
+%%    Row 1: 2D trajectory (one subplot per target)
+%%    Row 2: x-error +/-2sigma
+%%    Row 3: y-error +/-2sigma
 %% -----------------------------------------------------------------------
-fprintf('Generating per-filter PNG figures...\n');
+fprintf('Generating per-filter candidate trajectory figures...\n');
+all_z_cand = cell2mat(meas_cand);   % all candidate measurements concatenated
 
-for fi = 1:n_f
-    fig = figure('Name', filter_names{fi}, ...
-                 'Position', [50+fi*25, 50+fi*25, 1200, 900]);
-    est  = est_all{fi};
-    Pest = Pest_all{fi};
+for fi = 1:3
+    S    = mc_results.(filter_file_tags{fi});
+    est  = S.cand_est;
+    Pest = S.cand_Pest;
+    fc   = filter_colors(fi, :);
 
-    %% Row 1 — 2D trajectory (one subplot per target)
+    fig = figure('Position', [50+fi*25, 50+fi*25, 1200, 900]);
+
+    %% Row 1 — 2D trajectory per target
     for t = 1:N_t
         subplot(3, N_t, t); hold on; grid on; axis equal;
         title(sprintf('Target %d — Trajectory', t), 'FontSize', 10);
         xlabel('x (m)'); ylabel('y (m)');
 
-        % All measurements faint background
-        scatter(all_z(1,:), all_z(2,:), 6, meas_color, '+', ...
-                'HandleVisibility','off');
+        scatter(all_z_cand(1,:), all_z_cand(2,:), 6, meas_color, '+', ...
+                'HandleVisibility', 'off');
 
-        % GT: thick solid + start marker
         plot(GT{t}(1,:), GT{t}(2,:), '-', 'Color', tgt_colors(t,:), ...
-             'LineWidth', gt_lw, 'DisplayName','GT');
+             'LineWidth', gt_lw, 'DisplayName', 'GT');
         plot(GT{t}(1,1), GT{t}(2,1), tgt_markers{t}, ...
              'Color', tgt_colors(t,:), 'MarkerSize', tgt_msize_lg, ...
-             'MarkerFaceColor', tgt_colors(t,:), 'HandleVisibility','off');
+             'MarkerFaceColor', tgt_colors(t,:), 'HandleVisibility', 'off');
 
-        % Estimate: dashed, same target color (darker shade), with target markers
         ex = cellfun(@(e) e{t}(1), est);
         ey = cellfun(@(e) e{t}(2), est);
-        ec = tgt_colors(t,:) * 0.6 + 0.1;   % slightly darker
-        plot(ex, ey, '--', 'Color', ec, 'LineWidth', est_lw, ...
-             'HandleVisibility','off');
+        ec = tgt_colors(t,:) * 0.6 + 0.1;
+        plot(ex, ey, '--', 'Color', ec, 'LineWidth', est_lw, 'HandleVisibility', 'off');
         plot(ex(mark_idx), ey(mark_idx), tgt_markers{t}, ...
-             'Color', ec, 'MarkerSize', tgt_msize_sm, ...
-             'MarkerFaceColor', ec, 'LineStyle','none', ...
-             'DisplayName','Estimate');
+             'Color', ec, 'MarkerSize', tgt_msize_sm, 'MarkerFaceColor', ec, ...
+             'LineStyle', 'none', 'DisplayName', 'Estimate');
 
-        legend('Location','best','FontSize',9,'Box','on');
-        xlim(x_bounds+[-0.3 0.3]); ylim(y_bounds+[-0.3 0.3]);
+        legend('Location', 'best', 'FontSize', 9, 'Box', 'on');
+        xlim(x_bounds + [-0.3 0.3]); ylim(y_bounds + [-0.3 0.3]);
     end
 
-    %% Row 2 — x-error ±2σ
+    %% Row 2 — x-error +/-2sigma
     for t = 1:N_t
         subplot(3, N_t, N_t+t); hold on; grid on;
-        title(sprintf('T%d  —  x-error  ±2σ_x', t), 'FontSize', 10);
+        title(sprintf('T%d  —  x-error  \\pm2\\sigma_x', t), 'FontSize', 10);
         xlabel('Time (s)'); ylabel('x error (m)');
 
         err_x  = cellfun(@(e) e{t}(1), est) - GT{t}(1,:);
         sig2_x = 2 * sqrt(cellfun(@(P) P{t}(1,1), Pest));
 
         fill([t_axis, fliplr(t_axis)], [sig2_x, fliplr(-sig2_x)], ...
-             tgt_colors(t,:), 'FaceAlpha', 0.20, 'EdgeColor','none', ...
-             'DisplayName','±2σ');
-        plot(t_axis, err_x, '-', 'Color', tgt_colors(t,:), ...
-             'LineWidth', 1.5, 'DisplayName','error');
-        yline(0, '-k', 'LineWidth', 0.5, 'HandleVisibility','off');
-        legend('Location','best','FontSize',9);
+             tgt_colors(t,:), 'FaceAlpha', 0.20, 'EdgeColor', 'none', 'DisplayName', '\pm2\sigma');
+        plot(t_axis, err_x, '-', 'Color', tgt_colors(t,:), 'LineWidth', 1.5, ...
+             'DisplayName', 'error');
+        yline(0, '-k', 'LineWidth', 0.5, 'HandleVisibility', 'off');
+        legend('Location', 'best', 'FontSize', 9);
     end
 
-    %% Row 3 — y-error ±2σ
+    %% Row 3 — y-error +/-2sigma
     for t = 1:N_t
         subplot(3, N_t, 2*N_t+t); hold on; grid on;
-        title(sprintf('T%d  —  y-error  ±2σ_y', t), 'FontSize', 10);
+        title(sprintf('T%d  —  y-error  \\pm2\\sigma_y', t), 'FontSize', 10);
         xlabel('Time (s)'); ylabel('y error (m)');
 
         err_y  = cellfun(@(e) e{t}(2), est) - GT{t}(2,:);
         sig2_y = 2 * sqrt(cellfun(@(P) P{t}(2,2), Pest));
 
         fill([t_axis, fliplr(t_axis)], [sig2_y, fliplr(-sig2_y)], ...
-             tgt_colors(t,:), 'FaceAlpha', 0.20, 'EdgeColor','none', ...
-             'DisplayName','±2σ');
-        plot(t_axis, err_y, '-', 'Color', tgt_colors(t,:), ...
-             'LineWidth', 1.5, 'DisplayName','error');
-        yline(0, '-k', 'LineWidth', 0.5, 'HandleVisibility','off');
-        legend('Location','best','FontSize',9);
+             tgt_colors(t,:), 'FaceAlpha', 0.20, 'EdgeColor', 'none', 'DisplayName', '\pm2\sigma');
+        plot(t_axis, err_y, '-', 'Color', tgt_colors(t,:), 'LineWidth', 1.5, ...
+             'DisplayName', 'error');
+        yline(0, '-k', 'LineWidth', 0.5, 'HandleVisibility', 'off');
+        legend('Location', 'best', 'FontSize', 9);
     end
 
-    sgtitle(filter_names{fi}, 'FontSize', 13, 'FontWeight','bold');
-    fname = sprintf('test_3target_%s.png', filter_file_tags{fi});
-    exportgraphics(fig, fname, 'Resolution', 150);
-    fprintf('  Saved: %s\n', fname);
+    sgtitle(sprintf('%s — Candidate Trajectory (trial 1)', filter_names_full{fi}), ...
+            'FontSize', 13, 'FontWeight', 'bold');
+
+    out_path = fullfile(out_dir, sprintf('test_3target_%s_candidate.png', filter_file_tags{fi}));
+    exportgraphics(fig, out_path, 'Resolution', 150);
+    fprintf('  Saved: %s\n', out_path);
 end
 
 %% -----------------------------------------------------------------------
-%% 13. RMSE comparison — all filters on the same axes, one panel per target
-%%     Color = filter (shared with combined animation)
+%% 7. Combined multi-filter animation  (candidate trial)
 %% -----------------------------------------------------------------------
-fprintf('Generating RMSE comparison figure...\n');
-fig_rmse = figure('Name','RMSE Comparison','Position',[100 100 1100 380]);
+fprintf('Generating combined animation (candidate trial)...\n');
 
-for t = 1:N_t
-    subplot(1, N_t, t); hold on; grid on;
-    title(sprintf('Target %d — Position RMSE', t), 'FontSize', 10);
-    xlabel('Time (s)'); ylabel('RMSE (m)');
-
-    for fi = 1:n_f
-        plot(t_axis, rmse_all{fi}(t,:), '-', ...
-             'Color', filter_colors(fi,:), 'LineWidth', 1.8, ...
-             'DisplayName', filter_names_short{fi});
-    end
-    legend('Location','best','FontSize',9,'Box','on');
-    ylim([0, inf]);
+% Re-run candidate trial to collect Pest for all filters simultaneously
+cand_est_all  = cell(1, 3);
+cand_Pest_all = cell(1, 3);
+for fi = 1:3
+    cand_est_all{fi}  = mc_results.(filter_file_tags{fi}).cand_est;
+    cand_Pest_all{fi} = mc_results.(filter_file_tags{fi}).cand_Pest;
 end
 
-sgtitle('Position RMSE — All Filters', 'FontSize', 13, 'FontWeight','bold');
-exportgraphics(fig_rmse, 'test_3target_rmse_comparison.png', 'Resolution', 150);
-fprintf('  Saved: test_3target_rmse_comparison.png\n');
-
-%% -----------------------------------------------------------------------
-%% 14. ESS over time — PDA_PF_multi
-%%     Shows particle degeneracy and resampling behavior.
-%%     ESS = 1/sum(w_i^2); drops between resamples, jumps after.
-%% -----------------------------------------------------------------------
-if isfield(filt2, 'history') && ~isempty(filt2.history) && ...
-   isfield(filt2.history, 'ESS')
-
-    fprintf('Generating ESS figure...\n');
-    ess_vals = [filt2.history.ESS];           % [1 x (T-1)]
-    ess_axis = t_axis(2:1+length(ess_vals));  % ESS starts at k=2
-
-    fig_ess = figure('Name','ESS','Position',[100 520 820 340]);
-    hold on; grid on;
-    title('Effective Sample Size — PDA-PF-multi', 'FontSize', 11);
-    xlabel('Time (s)'); ylabel('ESS');
-
-    % Shade resampling events (ESS jumped up to N_p = uniform reset)
-    N_p_pda = filt2.N_p;
-    resample_thresh = filt2.ESS_threshold_percentage * N_p_pda;
-
-    plot(ess_axis, ess_vals, '-', 'Color', filter_colors(3,:), ...
-         'LineWidth', 2.0, 'DisplayName', 'ESS');
-    yline(N_p_pda, '--k', sprintf('N_p = %d', N_p_pda), ...
-          'LineWidth', 0.9, 'LabelHorizontalAlignment','left', ...
-          'HandleVisibility','off');
-    yline(resample_thresh, ':k', sprintf('Resample threshold (%.0f%%)', ...
-          filt2.ESS_threshold_percentage*100), ...
-          'LineWidth', 0.9, 'LabelHorizontalAlignment','left', ...
-          'HandleVisibility','off');
-
-    legend('Location','best','FontSize',10,'Box','on');
-    ylim([0, N_p_pda * 1.12]);
-    xlim([ess_axis(1), ess_axis(end)]);
-
-    exportgraphics(fig_ess, 'test_3target_ess.png', 'Resolution', 150);
-    fprintf('  Saved: test_3target_ess.png\n');
-end
-
-%% -----------------------------------------------------------------------
-%% 15. Combined multi-filter animation GIF
-%%
-%%     COLOR  = filter identity  (consistent with RMSE comparison figure)
-%%     MARKER = target identity  (consistent with all static PNG figures)
-%%     GT     = dark-gray thick solid + target-marker dot
-%%     Meas   = light-gray plus scatter (current timestep only)
-%%     Ellipse= 2-sigma position covariance patch per filter per target
-%%
-%%     Legend blocks:
-%%       Filters: one colored circle-line entry per filter
-%%       Targets: one gray marker entry per target (T1=o, T2=s, T3=^)
-%%       + GT line entry + Meas entry
-%% -----------------------------------------------------------------------
-fprintf('Generating combined animation (this may take a moment)...\n');
-gif_all = 'test_3target_all_filters.gif';
-fig_all = figure('Name','All Filters','Position',[120 80 720 620]);
+gif_all = fullfile(out_dir, 'test_3target_all_filters_candidate.gif');
+fig_all = figure('Name', 'All Filters (candidate)', 'Position', [120 80 720 620]);
 
 for k = 1:T
     clf; hold on; grid on; axis equal;
@@ -559,96 +373,243 @@ for k = 1:T
     xlabel('x (m)'); ylabel('y (m)');
     xlim(x_bounds + [-0.35, 0.35]); ylim(y_bounds + [-0.35, 0.35]);
 
-    % ------ Legend dummy entries (drawn first so legend is ordered) ------
-    % Filters (colored circle-line)
-    for fi = 1:n_f
+    for fi = 1:3
         plot(NaN, NaN, '-o', 'Color', filter_colors(fi,:), ...
-             'MarkerFaceColor', filter_colors(fi,:), ...
-             'LineWidth', est_lw, 'MarkerSize', tgt_msize_sm+1, ...
-             'DisplayName', filter_names_short{fi});
+             'MarkerFaceColor', filter_colors(fi,:), 'LineWidth', est_lw, ...
+             'MarkerSize', tgt_msize_sm+1, 'DisplayName', filter_names_short{fi});
     end
-    % Ground truth
-    plot(NaN, NaN, '-', 'Color', gt_color, 'LineWidth', gt_lw, ...
-         'DisplayName','GT');
-    % Target shapes (neutral gray)
+    plot(NaN, NaN, '-', 'Color', gt_color, 'LineWidth', gt_lw, 'DisplayName', 'GT');
     for t = 1:N_t
         plot(NaN, NaN, tgt_markers{t}, 'Color', [0.45 0.45 0.45], ...
              'MarkerFaceColor', [0.45 0.45 0.45], 'MarkerSize', tgt_msize_sm+1, ...
-             'LineStyle','none', 'DisplayName', sprintf('T%d', t));
+             'LineStyle', 'none', 'DisplayName', sprintf('T%d', t));
     end
-    % Measurements
-    scatter(NaN, NaN, 45, meas_color, '+', 'LineWidth', 1.4, ...
-            'DisplayName','Meas');
+    scatter(NaN, NaN, 45, meas_color, '+', 'LineWidth', 1.4, 'DisplayName', 'Meas');
 
-    % ------ Current measurements ------
-    zk = measurements{k};
+    zk = meas_cand{k};
     scatter(zk(1,:), zk(2,:), 45, meas_color, '+', 'LineWidth', 1.4, ...
-            'HandleVisibility','off');
+            'HandleVisibility', 'off');
 
-    % ------ GT trails + current marker ------
     for t = 1:N_t
         plot(GT{t}(1,1:k), GT{t}(2,1:k), '-', 'Color', gt_color, ...
-             'LineWidth', gt_lw, 'HandleVisibility','off');
-        plot(GT{t}(1,k), GT{t}(2,k), tgt_markers{t}, ...
-             'Color', gt_color, 'MarkerSize', tgt_msize_lg, ...
-             'MarkerFaceColor', gt_color, 'HandleVisibility','off');
+             'LineWidth', gt_lw, 'HandleVisibility', 'off');
+        plot(GT{t}(1,k), GT{t}(2,k), tgt_markers{t}, 'Color', gt_color, ...
+             'MarkerSize', tgt_msize_lg, 'MarkerFaceColor', gt_color, ...
+             'HandleVisibility', 'off');
     end
 
-    % ------ Filter estimate trails + 2-sigma ellipses + current markers ------
-    for fi = 1:n_f
+    for fi = 1:3
         fc   = filter_colors(fi,:);
-        est  = est_all{fi};
-        Pest = Pest_all{fi};
-
+        est  = cand_est_all{fi};
+        Pest = cand_Pest_all{fi};
         for t = 1:N_t
             ex = cellfun(@(e) e{t}(1), est);
             ey = cellfun(@(e) e{t}(2), est);
-
-            % Estimate trail (semi-transparent)
             plot(ex(1:k), ey(1:k), '-', 'Color', [fc, 0.55], ...
-                 'LineWidth', est_lw, 'HandleVisibility','off');
-
-            % 2-sigma covariance ellipse at current step
+                 'LineWidth', est_lw, 'HandleVisibility', 'off');
             P_pos = Pest{k}{t}(1:2, 1:2);
-            exy   = covEllipse([ex(k); ey(k)], P_pos, 2);
-            patch(exy(1,:), exy(2,:), fc, ...
-                  'FaceAlpha', 0.12, 'EdgeColor', fc, 'LineWidth', 0.9, ...
-                  'HandleVisibility','off');
-
-            % Current-frame position dot (filter color + target marker)
-            plot(ex(k), ey(k), tgt_markers{t}, ...
-                 'Color', fc, 'MarkerSize', tgt_msize_lg, ...
-                 'MarkerFaceColor', fc, 'LineWidth', 1.2, ...
-                 'HandleVisibility','off');
+            exy   = cov_ellipse([ex(k); ey(k)], P_pos, 2);
+            patch(exy(1,:), exy(2,:), fc, 'FaceAlpha', 0.12, 'EdgeColor', fc, ...
+                  'LineWidth', 0.9, 'HandleVisibility', 'off');
+            plot(ex(k), ey(k), tgt_markers{t}, 'Color', fc, ...
+                 'MarkerSize', tgt_msize_lg, 'MarkerFaceColor', fc, ...
+                 'LineWidth', 1.2, 'HandleVisibility', 'off');
         end
     end
 
-    legend('Location','northeast','FontSize', 8, 'Box','on', 'NumColumns', 2);
+    legend('Location', 'northeast', 'FontSize', 8, 'Box', 'on', 'NumColumns', 2);
     drawnow;
-    writeGIF(fig_all, gif_all, k, dt);
+    write_gif(fig_all, gif_all, k, dt);
 end
 close(fig_all);
 fprintf('  Saved: %s\n', gif_all);
 
-fprintf('\nAll outputs complete.\n');
+%% -----------------------------------------------------------------------
+%% 8. MC comparison figure
+%% -----------------------------------------------------------------------
+fprintf('Generating MC comparison figure...\n');
+fig_cmp = figure('Color', 'w', 'Position', [100 100 1100 800]);
+
+% Panel 1: Per-target RMSE grouped bar (targets as groups)
+subplot(2, 2, 1); hold on; grid on; box on;
+rmse_grp = zeros(N_t, 3);
+rmse_err = zeros(N_t, 3);
+for fi = 1:3
+    rmse_grp(:, fi) = mc_results.(filter_file_tags{fi}).rmse_mean.';
+    rmse_err(:, fi) = mc_results.(filter_file_tags{fi}).rmse_std.';
+end
+b = bar(1:N_t, rmse_grp, 'grouped');
+for fi = 1:3, b(fi).FaceColor = filter_colors(fi,:); end
+ngroups = N_t; nbars = 3;
+gw = min(0.8, nbars / (nbars + 1.5));
+for fi = 1:nbars
+    xc = (1:ngroups) - gw/2 + (2*fi-1) * gw / (2*nbars);
+    errorbar(xc, rmse_grp(:, fi), rmse_err(:, fi), 'k.', 'LineWidth', 1.0);
+end
+set(gca, 'XTick', 1:N_t, 'XTickLabel', {'T1','T2','T3'});
+ylabel('Mean RMSE [m]');
+title('Per-target RMSE (mean \pm std, MC)', 'Interpreter', 'tex');
+legend(filter_names_short, 'Interpreter', 'none', 'Location', 'best');
+
+% Panel 2: Mean OSPA bar
+subplot(2, 2, 2); hold on; grid on; box on;
+ospa_m = arrayfun(@(fi) mc_results.(filter_file_tags{fi}).ospa_mean, 1:3);
+ospa_s = arrayfun(@(fi) mc_results.(filter_file_tags{fi}).ospa_std,  1:3);
+b2 = bar(1:3, ospa_m, 0.5, 'FaceColor', 'flat');
+for fi = 1:3, b2.CData(fi,:) = filter_colors(fi,:); end
+errorbar(1:3, ospa_m, ospa_s, 'k.', 'LineWidth', 1.2);
+set(gca, 'XTick', 1:3, 'XTickLabel', filter_names_short, 'TickLabelInterpreter', 'none');
+ylabel('Mean OSPA [m]');
+title('Mean OSPA (mean \pm std, MC)', 'Interpreter', 'tex');
+
+% Panel 3: Per-target RMSE distribution (box plot)
+subplot(2, 2, 3); hold on; grid on; box on;
+boxplot_data = cell(3, N_t);
+for fi = 1:3
+    raw = mc_results.(filter_file_tags{fi}).raw_rmse;   % [N_MC x N_t]
+    for t = 1:N_t
+        boxplot_data{fi, t} = raw(:, t);
+    end
+end
+grp_gap = 1;  % gap between target groups
+grp_size = 3; % one box per filter
+grp_centers = zeros(1, N_t);
+for t = 1:N_t
+    grp_start = (t-1) * (grp_size + grp_gap) + 1;
+    grp_centers(t) = grp_start + (grp_size - 1) / 2;
+    for fi = 1:3
+        bx_x = grp_start + (fi - 1);
+        d = boxplot_data{fi, t};
+        q25 = prctile(d, 25); q75 = prctile(d, 75); q50 = median(d);
+        iqr_d = q75 - q25;
+        whi_lo = max(min(d), q25 - 1.5*iqr_d);
+        whi_hi = min(max(d), q75 + 1.5*iqr_d);
+        rectangle('Position', [bx_x-0.3, q25, 0.6, q75-q25], ...
+                  'FaceColor', [filter_colors(fi,:), 0.35], 'EdgeColor', filter_colors(fi,:));
+        plot([bx_x-0.3, bx_x+0.3], [q50, q50], '-', 'Color', filter_colors(fi,:), 'LineWidth', 2);
+        plot([bx_x, bx_x], [q25, whi_lo], '-', 'Color', filter_colors(fi,:));
+        plot([bx_x, bx_x], [q75, whi_hi], '-', 'Color', filter_colors(fi,:));
+    end
+end
+set(gca, 'XTick', grp_centers, 'XTickLabel', {'T1','T2','T3'}, 'FontSize', 9);
+ylabel('RMSE [m]');
+title('RMSE distribution (MC trials)');
+
+% Panel 4: Runtime
+subplot(2, 2, 4); hold on; grid on; box on;
+rt_m = arrayfun(@(fi) mc_results.(filter_file_tags{fi}).runtime.mean, 1:3);
+rt_s = arrayfun(@(fi) mc_results.(filter_file_tags{fi}).runtime.std,  1:3);
+b4 = bar(1:3, rt_m, 0.5, 'FaceColor', 'flat');
+for fi = 1:3, b4.CData(fi,:) = filter_colors(fi,:); end
+errorbar(1:3, rt_m, rt_s, 'k.', 'LineWidth', 1.2);
+set(gca, 'XTick', 1:3, 'XTickLabel', filter_names_short, 'TickLabelInterpreter', 'none');
+ylabel('Runtime per trial [s]');
+title('Runtime (mean \pm std, MC)', 'Interpreter', 'tex');
+
+sgtitle(sprintf('3-Target MC Comparison  (N_{MC} = %d,  T = %d frames)', N_MC, T), ...
+        'Interpreter', 'tex', 'FontSize', 13);
+
+cmp_path = fullfile(out_dir, sprintf('test_3target_mc_comparison_mc%d.png', N_MC));
+exportgraphics(fig_cmp, cmp_path, 'Resolution', 150);
+fprintf('  Saved: %s\n', cmp_path);
 
 %% -----------------------------------------------------------------------
-%% Local helper functions
+%% 9. LaTeX performance table
 %% -----------------------------------------------------------------------
+tex_path = fullfile(out_dir, sprintf('test_3target_perf_mc%d.tex', N_MC));
+fid = fopen(tex_path, 'w');
+fprintf(fid, '%% Auto-generated by test_3target.m  (N_MC = %d, T = %d)\n', N_MC, T);
+fprintf(fid, '\\begin{table}[htbp]\n');
+fprintf(fid, '  \\centering\n');
+fprintf(fid, '  \\caption{3-Target Tracking Performance ($N_{\\mathrm{MC}} = %d$, $T = %d$ frames, $\\sigma_z = %.2f$\\,m)}\n', N_MC, T, sigma_z);
+fprintf(fid, '  \\label{tab:3target_mc}\n');
+fprintf(fid, '  \\begin{tabular}{lcccccc}\n');
+fprintf(fid, '    \\toprule\n');
+fprintf(fid, '    Filter & RMSE$_{T1}$ (m) & RMSE$_{T2}$ (m) & RMSE$_{T3}$ (m) & OSPA (m) & Runtime (s) \\\\\n');
+fprintf(fid, '    \\midrule\n');
+for fi = 1:3
+    S = mc_results.(filter_file_tags{fi});
+    fprintf(fid, '    %s & $%.3f \\pm %.3f$ & $%.3f \\pm %.3f$ & $%.3f \\pm %.3f$ & $%.3f \\pm %.3f$ & $%.2f \\pm %.2f$ \\\\\n', ...
+        filter_names_tex{fi}, ...
+        S.rmse_mean(1), S.rmse_std(1), ...
+        S.rmse_mean(2), S.rmse_std(2), ...
+        S.rmse_mean(3), S.rmse_std(3), ...
+        S.ospa_mean, S.ospa_std, ...
+        S.runtime.mean, S.runtime.std);
+end
+fprintf(fid, '    \\bottomrule\n');
+fprintf(fid, '  \\end{tabular}\n');
+fprintf(fid, '\\end{table}\n');
+fclose(fid);
+fprintf('  Saved: %s\n', tex_path);
 
-function rmse = computeRMSE(est_hist, GT, N_t, T)
-    % COMPUTERMSE  Per-target position RMSE from a cell estimate history.
-    rmse = zeros(N_t, T);
+%% -----------------------------------------------------------------------
+%% 10. Save numerical results
+%% -----------------------------------------------------------------------
+mat_path = fullfile(out_dir, sprintf('test_3target_results_mc%d.mat', N_MC));
+meta = struct('N_MC', N_MC, 'T', T, 'dt', dt, 'sigma_z', sigma_z, ...
+              'PD_true', PD_true, 'base_seed', base_seed, ...
+              'filter_names', {filter_names_full});
+save(mat_path, 'mc_results', 'meta', '-v7');
+fprintf('  Saved: %s\n', mat_path);
+
+%% -----------------------------------------------------------------------
+%% 11. Console summary
+%% -----------------------------------------------------------------------
+fprintf('\n=== Mean RMSE (mean over MC trials and time, position) ===\n');
+fprintf('%-22s  %6s  %6s  %6s  %6s\n', 'Filter', 'T1', 'T2', 'T3', 'OSPA');
+fprintf('%s\n', repmat('-', 1, 55));
+for fi = 1:3
+    S = mc_results.(filter_file_tags{fi});
+    fprintf('%-22s  %6.3f  %6.3f  %6.3f  %6.3f\n', filter_names_full{fi}, ...
+        S.rmse_mean(1), S.rmse_mean(2), S.rmse_mean(3), S.ospa_mean);
+end
+fprintf('\nAll outputs in: %s\n', out_dir);
+
+
+%% =======================================================================
+%%  Local helpers
+%% =======================================================================
+
+function meas = gen_measurements_3t(GT, H_true, R, PD, x_bounds, y_bounds, T)
+    meas = cell(1, T);
+    Lr   = chol(R, 'lower');
+    N_t  = numel(GT);
     for k = 1:T
+        z = zeros(2, 0);
         for t = 1:N_t
-            err = est_hist{k}{t}(1:2) - GT{t}(1:2, k);
-            rmse(t, k) = norm(err);
+            if rand() < PD
+                z(:, end+1) = H_true * GT{t}(:,k) + Lr * randn(2,1); %#ok<AGROW>
+            end
         end
+        n_c = randi([1, 3]);
+        for c = 1:n_c
+            z(:, end+1) = [x_bounds(1)+diff(x_bounds)*rand(); ...
+                           y_bounds(1)+diff(y_bounds)*rand()]; %#ok<AGROW>
+        end
+        perm = randperm(size(z,2));
+        meas{k} = z(:, perm);
     end
 end
 
-function writeGIF(fig, filename, frame_idx, dt)
-    % WRITEGIF  Append one frame to an animated GIF file.
+function step_filter(filt, fi, z)
+    if fi == 1
+        filt.timestep(z, []);
+    else
+        filt.timestep(z);
+    end
+end
+
+function [xc, Pc] = get_estimate(filt, fi, N_t)
+    if fi == 1
+        [X, Pc] = filt.getGaussianEstimate();
+        xc = num2cell(X, 1);
+    else
+        [xc, Pc] = filt.getGaussianEstimate();
+    end
+end
+
+function write_gif(fig, filename, frame_idx, dt)
     frame = getframe(fig);
     [imind, cm] = rgb2ind(frame2im(frame), 256);
     if frame_idx == 1
@@ -658,14 +619,10 @@ function writeGIF(fig, filename, frame_idx, dt)
     end
 end
 
-function pts = covEllipse(center, P, n_sigma)
-    % COVELLIPSE  Points on a 2-sigma covariance ellipse.
-    %   center  - [2x1] ellipse center
-    %   P       - [2x2] position covariance sub-block
-    %   n_sigma - number of standard deviations
+function pts = cov_ellipse(center, P, n_sigma)
     theta  = linspace(0, 2*pi, 64);
     circle = [cos(theta); sin(theta)];
     [V, D] = eig(P);
-    radii  = n_sigma * sqrt(max(diag(D), 0));   % clamp negatives from float noise
+    radii  = n_sigma * sqrt(max(diag(D), 0));
     pts    = V * diag(radii) * circle + center;
 end
