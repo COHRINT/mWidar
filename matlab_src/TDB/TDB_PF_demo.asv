@@ -1,0 +1,26 @@
+%{
+TDB_PF_demo.m:
+Demonstration of TBD using a PF on a toy example.
+%}
+
+function params = init_params()
+    params = struct();
+    
+    %%% General
+    params.t_final = 100;
+
+    %%% Sensor Model parameters
+    params.nx = 128; % # of x pixels
+    params.ny = 128; % # of y pixels
+    params.dx = 2 / params.nx; % Half way point of each cell, in meters
+    params.dy = 2 / params.ny;
+    params.NoiseCov = 3.5; % var in noise
+    params.NoiseMean = 0.5; % mean value of noise
+    params.Sigma = 3; % Blurring parameter
+    params.dt = 0.1; % 10 Hz sampling time
+    params.SNR
+    %%% PF parameters
+    params.N = 5000;
+    params.
+
+end

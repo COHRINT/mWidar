@@ -1,0 +1,30 @@
+function [xk] = sample_new(z,p)
+
+% Find index's of z that surpass the threshold value
+idx = find(z>p.gamma);
+[rx,ry] = ind2sub(size(z),idx);
+
+assert(size(rx) == size(ry))
+
+% Match
+r = [rx ry];
+
+% Generate CDF
+
+n = numel(rx);
+C = zeros(1,n);
+
+% Uniform dist
+p = 1/n;
+
+for i = 2:n
+    C(i) = C(i-1) + p;
+end
+
+% Sample rn
+u = rand();
+
+% Find idx to draw sample from
+
+
+end
