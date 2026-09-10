@@ -190,17 +190,7 @@ classdef simulator < mWidar
             end
         end
 
-        function b = checkbound_x(obj,x)
-            b = x > -2 && x < 2;
-        end
 
-        function b = checkbound_y(obj,y)
-            b = y > 0 && y < 4;
-        end
-
-        function b = checkbound_idx(obj,i)
-            b = i > 0 && i < 128;
-        end
     end
 
 end
