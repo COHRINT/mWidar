@@ -125,7 +125,7 @@ classdef simulator < mWidar
             signal_flat = signal_flat(:);
             signal_flat = obj.M * signal_flat;
             signal_flat = obj.G' * signal_flat;
-            raw_signal = reshape(signal_flat, obj.npx,obj.npx);
+            raw_signal = reshape(signal_flat, obj.npx,obj.npx)';
             blurred = obj.blur_signal(raw_signal);
             signal = obj.normalize_signal(blurred);
 
@@ -156,7 +156,7 @@ classdef simulator < mWidar
             signal_flat = signal_flat(:);
             signal_flat = obj.M * signal_flat;
             signal_flat = obj.G' * signal_flat;
-            raw_signal = reshape(signal_flat, obj.npx,obj.npx);
+            raw_signal = reshape(signal_flat, obj.npx,obj.npx)';
             blurred = obj.blur_signal(raw_signal);
             signal = obj.normalize_signal(blurred);
         end
