@@ -1,0 +1,675 @@
+%% Monte Carlo evaluation for heuristic vs Bayesian target counting
+%
+% Compares:
+%   1) Heuristic sliding-window signal averaging count estimator
+%   2) Recursive Bayesian count estimator using learned P(m_k | N_k)
+%
+% For each Monte Carlo trial this script:
+%   - generates a TI-style dataset with a fair random-walk object count
+%   - runs both estimators on the same data
+%   - evaluates both on the common valid window starting at frame T
+%
+% Deliverables:
+%   - Aggregate MAE bar plot with 2*std error bars
+%   - RMSE summary printed and saved
+%   - +/-1 target accuracy summary printed and saved
+%   - Single-trial time series plot comparing truth and estimates
+%   - Confusion matrix figure for each method
+
+clear; clc; close all;
+
+%% --- Environment configuration -----------------------------------------
+script_dir     = fileparts(mfilename('fullpath'));
+matlab_src_dir = fileparts(script_dir);
+addpath(fullfile(matlab_src_dir, 'DA_Track'));
+addpath(fullfile(matlab_src_dir, 'DA_Track', 'multi'));
+addpath(fullfile(matlab_src_dir, 'supplemental'));
+addpath(fullfile(matlab_src_dir, 'supplemental', 'track_init'));
+addpath(fullfile(matlab_src_dir, 'supplemental', 'Final_Test_Tracks'));
+addpath(fullfile(matlab_src_dir, 'supplemental', 'Final_Test_Tracks', 'MultiObj'));
+
+%% --- User settings ------------------------------------------------------
+rng_seed = 400;
+rng(rng_seed);
+
+cfg = struct();
+
+% Monte Carlo settings
+cfg.n_trials = 100;
+cfg.example_trial = 1;
+if exist('target_count_mc_eval_n_trials', 'var') && ~isempty(target_count_mc_eval_n_trials)
+    cfg.n_trials = target_count_mc_eval_n_trials;
+end
+if exist('target_count_mc_eval_example_trial', 'var') && ~isempty(target_count_mc_eval_example_trial)
+    cfg.example_trial = target_count_mc_eval_example_trial;
+end
+
+% Scene / signal settings
+cfg.npx = 128;
+cfg.Lscene = 4;
+cfg.xgrid = linspace(-2, 2, cfg.npx);
+cfg.ygrid = linspace(0, cfg.Lscene, cfg.npx);
+[cfg.pxgrid, cfg.pygrid] = meshgrid(cfg.xgrid, cfg.ygrid);
+
+cfg.dt = 0.01;
+cfg.duration_s = 1;
+cfg.tvec = 0:cfg.dt:cfg.duration_s;
+cfg.n_t = numel(cfg.tvec);
+
+cfg.Pfa = 0.285;
+cfg.Ng = 15;
+cfg.Nr = 20;
+cfg.blur_sigma = 1.3;
+cfg.crop_rows = 20;
+cfg.cluster_radius = 0.35;
+
+% Heuristic estimator settings
+cfg.T = 25;
+cfg.intensity_thr = 0.7;
+
+% Dataset generation settings
+cfg.min_obj = 1;
+cfg.max_obj = 4;
+cfg.min_dwell = max(12, round(0.12 * cfg.n_t));
+cfg.max_dwell = max(cfg.min_dwell + 8, round(0.24 * cfg.n_t));
+cfg.min_track_y = 1.0;
+cfg.min_start_separation = 0.75;
+cfg.traj_types = ["LINE", "PARABOLA"];
+
+% Fair entry/exit construction.
+cfg.entry_margin_x = 0.6;
+cfg.entry_margin_y = 0.6;
+cfg.min_segment_frames = 120;
+
+% Bayesian settings
+cfg.lambda_arrival = 0.1;
+cfg.lambda_depart = 0.2;
+
+%% --- Load fixed simulation / likelihood resources ----------------------
+load(fullfile(script_dir, 'recovery.mat'), 'G');
+load(fullfile(script_dir, 'sampling.mat'), 'M');
+
+likelihood_file = fullfile(script_dir, 'probObjCt_results.mat');
+if ~exist(likelihood_file, 'file')
+    likelihood_file = fullfile(script_dir, 'probObjCt_results_final.mat');
+end
+load(likelihood_file, 'results');
+
+P_m_given_N = results.P_m_given_N;
+n_states = size(P_m_given_N, 1);
+
+if isfield(results, 'N_vals') && numel(results.N_vals) == n_states
+    N_vals = results.N_vals(:).';
+elseif isfield(results, 'cfg') && isfield(results.cfg, 'max_obj') ...
+        && n_states == (results.cfg.max_obj + 1)
+    N_vals = 0:results.cfg.max_obj;
+else
+    N_vals = 0:(n_states - 1);
+end
+
+if isfield(results, 'det_axis') && numel(results.det_axis) == size(P_m_given_N, 2)
+    m_axis = results.det_axis(:).';
+else
+    m_axis = 0:(size(P_m_given_N, 2) - 1);
+end
+
+cfg.eval_start = cfg.T;
+if cfg.eval_start > cfg.n_t
+    error('Heuristic window T=%d exceeds sequence length n_t=%d.', cfg.T, cfg.n_t);
+end
+cfg.eval_idx = cfg.eval_start:cfg.n_t;
+
+%% --- Preallocate Monte Carlo outputs -----------------------------------
+method_names = {'Heuristic', 'Bayesian'};
+n_methods = numel(method_names);
+n_eval = numel(cfg.eval_idx);
+
+mae_by_trial = zeros(cfg.n_trials, n_methods);
+rmse_by_trial = zeros(cfg.n_trials, n_methods);
+acc_pm1_by_trial = zeros(cfg.n_trials, n_methods);
+
+all_true_eval = [];
+all_heur_eval = [];
+all_bayes_eval = [];
+
+example_result = struct();
+
+%% --- Monte Carlo loop ---------------------------------------------------
+fprintf('Running %d Monte Carlo trials...\n', cfg.n_trials);
+
+for trial = 1:cfg.n_trials
+    trial_seed = rng_seed + trial - 1;
+    Data = generateFairRandomWalkDataset(cfg, G, M, trial_seed);
+
+    heur_seq = runHeuristicCounter(Data.signal, cfg);
+    bayes_seq = runBayesianCounter(Data.y, P_m_given_N, N_vals, m_axis, cfg);
+    true_seq = Data.obj_ct;
+
+    true_eval = true_seq(cfg.eval_idx);
+    heur_eval = heur_seq(cfg.eval_idx);
+    bayes_eval = bayes_seq(cfg.eval_idx);
+
+    mae_by_trial(trial, 1) = mean(abs(heur_eval - true_eval));
+    mae_by_trial(trial, 2) = mean(abs(bayes_eval - true_eval));
+
+    rmse_by_trial(trial, 1) = sqrt(mean((heur_eval - true_eval).^2));
+    rmse_by_trial(trial, 2) = sqrt(mean((bayes_eval - true_eval).^2));
+
+    acc_pm1_by_trial(trial, 1) = mean(abs(heur_eval - true_eval) <= 1);
+    acc_pm1_by_trial(trial, 2) = mean(abs(bayes_eval - true_eval) <= 1);
+
+    all_true_eval = [all_true_eval, true_eval]; %#ok<AGROW>
+    all_heur_eval = [all_heur_eval, heur_eval]; %#ok<AGROW>
+    all_bayes_eval = [all_bayes_eval, bayes_eval]; %#ok<AGROW>
+
+    if trial == cfg.example_trial
+        example_result.Data = Data;
+        example_result.heur_seq = heur_seq;
+        example_result.bayes_seq = bayes_seq;
+        example_result.true_seq = true_seq;
+    end
+
+    fprintf('  Trial %d / %d complete\n', trial, cfg.n_trials);
+end
+
+%% --- Summary statistics -------------------------------------------------
+mean_mae = mean(mae_by_trial, 1);
+std_mae = std(mae_by_trial, 0, 1);
+mean_rmse = mean(rmse_by_trial, 1);
+std_rmse = std(rmse_by_trial, 0, 1);
+mean_acc_pm1 = mean(acc_pm1_by_trial, 1);
+std_acc_pm1 = std(acc_pm1_by_trial, 0, 1);
+
+fprintf('\nSummary over %d trials (frames %d:%d)\n', ...
+    cfg.n_trials, cfg.eval_idx(1), cfg.eval_idx(end));
+for i = 1:n_methods
+    fprintf('%s:\n', method_names{i});
+    fprintf('  MAE mean +/- 2std   : %.4f +/- %.4f\n', ...
+        mean_mae(i), 2 * std_mae(i));
+    fprintf('  RMSE mean +/- 2std  : %.4f +/- %.4f\n', ...
+        mean_rmse(i), 2 * std_rmse(i));
+    fprintf('  Acc(|err|<=1)       : %.2f%% +/- %.2f%%\n', ...
+        100 * mean_acc_pm1(i), 200 * std_acc_pm1(i));
+end
+
+%% --- Output directory ---------------------------------------------------
+out_dir = fullfile(script_dir, sprintf('target_count_mc_eval_MC%d', cfg.n_trials));
+if ~exist(out_dir, 'dir')
+    mkdir(out_dir);
+end
+
+%% --- Figure 1: Aggregate MAE with 2 std --------------------------------
+fig1 = figure('Color', 'w', 'Position', [100 100 800 500]);
+bar(1:n_methods, mean_mae, 0.6, 'FaceColor', 'flat');
+hold on;
+er = errorbar(1:n_methods, mean_mae, 2 * std_mae, 'k.', 'LineWidth', 1.5);
+er.CapSize = 12;
+set(gca, 'XTick', 1:n_methods, 'XTickLabel', method_names);
+ylabel('Mean Absolute Error');
+title(sprintf('MAE Across %d Monte Carlo Trials', cfg.n_trials));
+grid on;
+hold off;
+saveas(fig1, fullfile(out_dir, 'mae_bar_2std.png'));
+
+%% --- Figure 2: Example trial time series -------------------------------
+fig2 = figure('Color', 'w', 'Position', [100 100 1100 500]);
+hold on;
+plot(cfg.tvec(cfg.eval_idx), example_result.true_seq(cfg.eval_idx), 'k--', 'LineWidth', 1.8);
+plot(cfg.tvec(cfg.eval_idx), example_result.heur_seq(cfg.eval_idx), 'LineWidth', 1.5);
+plot(cfg.tvec(cfg.eval_idx), example_result.bayes_seq(cfg.eval_idx), 'LineWidth', 1.5);
+xlabel('Time (s)');
+ylabel('Target Count');
+title(sprintf('Single-Trial Count Estimates (Trial %d)', cfg.example_trial));
+legend('Ground Truth', 'Heuristic', 'Bayesian', 'Location', 'best');
+ylim([cfg.min_obj - 0.2, cfg.max_obj + 0.2]);
+grid on;
+hold off;
+saveas(fig2, fullfile(out_dir, 'single_trial_count_comparison.png'));
+
+%% --- Figure 3: Confusion matrices --------------------------------------
+count_labels = cfg.min_obj:cfg.max_obj;
+heur_cm = buildCountConfusion(all_true_eval, all_heur_eval, count_labels);
+bayes_cm = buildCountConfusion(all_true_eval, all_bayes_eval, count_labels);
+
+fig3 = figure('Color', 'w', 'Position', [100 100 1200 500]);
+tiledlayout(1, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
+
+ax1 = nexttile;
+imagesc(ax1, heur_cm);
+axis(ax1, 'image');
+colorbar(ax1);
+xlabel(ax1, 'Estimated Count');
+ylabel(ax1, 'True Count');
+title(ax1, 'Heuristic Confusion Matrix');
+set(ax1, 'XTick', 1:numel(count_labels), 'XTickLabel', string(count_labels));
+set(ax1, 'YTick', 1:numel(count_labels), 'YTickLabel', string(count_labels));
+addMatrixText(ax1, heur_cm);
+
+ax2 = nexttile;
+imagesc(ax2, bayes_cm);
+axis(ax2, 'image');
+colorbar(ax2);
+xlabel(ax2, 'Estimated Count');
+ylabel(ax2, 'True Count');
+title(ax2, 'Bayesian Confusion Matrix');
+set(ax2, 'XTick', 1:numel(count_labels), 'XTickLabel', string(count_labels));
+set(ax2, 'YTick', 1:numel(count_labels), 'YTickLabel', string(count_labels));
+addMatrixText(ax2, bayes_cm);
+
+saveas(fig3, fullfile(out_dir, 'confusion_matrices.png'));
+
+%% --- Figure 4: +/-1 accuracy -------------------------------------------
+fig4 = figure('Color', 'w', 'Position', [100 100 800 500]);
+bar(1:n_methods, 100 * mean_acc_pm1, 0.6, 'FaceColor', 'flat');
+hold on;
+er = errorbar(1:n_methods, 100 * mean_acc_pm1, 200 * std_acc_pm1, 'k.', 'LineWidth', 1.5);
+er.CapSize = 12;
+set(gca, 'XTick', 1:n_methods, 'XTickLabel', method_names);
+ylabel('Accuracy Within +/-1 Target (%)');
+title(sprintf('Tolerance Accuracy Across %d Monte Carlo Trials', cfg.n_trials));
+ylim([0, 100]);
+grid on;
+hold off;
+saveas(fig4, fullfile(out_dir, 'accuracy_pm1_bar_2std.png'));
+
+%% --- Save numeric results ----------------------------------------------
+summary = struct();
+summary.cfg = cfg;
+summary.method_names = method_names;
+summary.mae_by_trial = mae_by_trial;
+summary.rmse_by_trial = rmse_by_trial;
+summary.acc_pm1_by_trial = acc_pm1_by_trial;
+summary.mean_mae = mean_mae;
+summary.std_mae = std_mae;
+summary.mean_rmse = mean_rmse;
+summary.std_rmse = std_rmse;
+summary.mean_acc_pm1 = mean_acc_pm1;
+summary.std_acc_pm1 = std_acc_pm1;
+summary.eval_idx = cfg.eval_idx;
+summary.example_result = example_result;
+summary.heur_confusion = heur_cm;
+summary.bayes_confusion = bayes_cm;
+summary.count_labels = count_labels;
+
+save(fullfile(out_dir, 'target_count_mc_eval_results.mat'), 'summary', '-mat');
+
+txt_file = fullfile(out_dir, 'target_count_mc_eval_summary.txt');
+fid = fopen(txt_file, 'w');
+fprintf(fid, 'Monte Carlo target count evaluation\n');
+fprintf(fid, 'Generated: %s\n\n', datestr(now));
+fprintf(fid, 'Trials: %d\n', cfg.n_trials);
+fprintf(fid, 'Evaluation frames: %d:%d\n', cfg.eval_idx(1), cfg.eval_idx(end));
+fprintf(fid, 'Lambda arrival: %.4f\n', cfg.lambda_arrival);
+fprintf(fid, 'Lambda depart: %.4f\n\n', cfg.lambda_depart);
+for i = 1:n_methods
+    fprintf(fid, '%s\n', method_names{i});
+    fprintf(fid, '  MAE mean +/- 2std  : %.6f +/- %.6f\n', mean_mae(i), 2 * std_mae(i));
+    fprintf(fid, '  RMSE mean +/- 2std : %.6f +/- %.6f\n', mean_rmse(i), 2 * std_rmse(i));
+    fprintf(fid, '  Acc(|err|<=1)      : %.6f +/- %.6f\n\n', mean_acc_pm1(i), 2 * std_acc_pm1(i));
+end
+fclose(fid);
+
+fprintf('\nSaved outputs to:\n  %s\n', out_dir);
+
+
+%% --- Local functions ----------------------------------------------------
+function Data = generateFairRandomWalkDataset(cfg, G, M, trial_seed)
+    rng(trial_seed);
+
+    obj_ct = generate_obj_count_walk(cfg.n_t, cfg.min_obj, cfg.max_obj, ...
+        cfg.min_dwell, cfg.max_dwell);
+
+    [active_mask, intervals] = assign_contiguous_active_tracks(obj_ct, cfg.max_obj);
+    X_GT = buildTrackBankFromIntervals(intervals, cfg);
+    Signal = simulateSignalSequence(X_GT, active_mask, cfg, G, M);
+    y = detectSequenceFromSignal(Signal, cfg);
+
+    Data = struct();
+    Data.GT = X_GT;
+    Data.y = y;
+    Data.signal = Signal;
+    Data.obj_ct = obj_ct;
+    Data.active_mask = active_mask;
+    Data.intervals = intervals;
+    Data.params = cfg;
+    Data.params.rng_seed = trial_seed;
+end
+
+function obj_ct = generate_obj_count_walk(n_t, min_obj, max_obj, min_dwell, max_dwell)
+    max_attempts = 200;
+
+    for attempt = 1:max_attempts
+        obj_ct = zeros(1, n_t);
+        idx = 1;
+        cur = min_obj;
+        transitions = zeros(1, n_t);
+        trans_idx = 0;
+
+        while idx <= n_t
+            dwell = randi([min_dwell, max_dwell]);
+            j_end = min(n_t, idx + dwell - 1);
+            obj_ct(idx:j_end) = cur;
+            idx = j_end + 1;
+
+            if idx <= n_t
+                if cur <= min_obj
+                    step = 1;
+                elseif cur >= max_obj
+                    step = -1;
+                else
+                    if rand() < 0.5
+                        step = -1;
+                    else
+                        step = 1;
+                    end
+                end
+                cur = cur + step;
+                trans_idx = trans_idx + 1;
+                transitions(trans_idx) = step;
+            end
+        end
+
+        used_steps = transitions(1:trans_idx);
+        if any(used_steps > 0) && any(used_steps < 0)
+            return
+        end
+    end
+
+    warning('generate_obj_count_walk:Fallback', ...
+        'Could not realize both up/down transitions; using last generated walk.');
+end
+
+function [active_mask, intervals] = assign_contiguous_active_tracks(obj_ct, max_obj)
+    n_t = numel(obj_ct);
+    total_tracks = obj_ct(1) + sum(diff(obj_ct) > 0);
+    total_tracks = max(total_tracks, max_obj);
+
+    active_mask = false(total_tracks, n_t);
+    intervals = nan(total_tracks, 2);
+
+    n_initial = obj_ct(1);
+    active_ids = 1:n_initial;
+    next_track_id = n_initial + 1;
+
+    if ~isempty(active_ids)
+        intervals(active_ids, 1) = 1;
+        active_mask(active_ids, 1) = true;
+    end
+
+    prev_count = obj_ct(1);
+    active_list = active_ids(:).';
+
+    for k = 2:n_t
+        curr_count = obj_ct(k);
+
+        if curr_count > prev_count
+            n_add = curr_count - prev_count;
+            add_ids = next_track_id:(next_track_id + n_add - 1);
+            next_track_id = next_track_id + n_add;
+            active_list = [active_list, add_ids]; %#ok<AGROW>
+            for idx = add_ids(:).'
+                intervals(idx, 1) = k;
+            end
+        elseif curr_count < prev_count
+            n_remove = prev_count - curr_count;
+            remove_ids = active_list(end-n_remove+1:end);
+            active_list(end-n_remove+1:end) = [];
+            for idx = remove_ids(:).'
+                intervals(idx, 2) = k - 1;
+            end
+        end
+
+        if ~isempty(active_list)
+            active_mask(active_list, k) = true;
+        end
+        prev_count = curr_count;
+    end
+
+    for idx = 1:total_tracks
+        if ~isnan(intervals(idx, 1)) && isnan(intervals(idx, 2))
+            intervals(idx, 2) = n_t;
+        end
+    end
+end
+
+function X_GT = buildTrackBankFromIntervals(intervals, cfg)
+    n_tracks = size(intervals, 1);
+    X_GT = cell(1, n_tracks);
+
+    for k = 1:n_tracks
+        if isnan(intervals(k, 1))
+            X_GT{k} = nan(6, cfg.n_t);
+            continue
+        end
+
+        start_idx = intervals(k, 1);
+        end_idx = intervals(k, 2);
+        seg_len = end_idx - start_idx + 1;
+        tseg = (0:seg_len-1) * cfg.dt;
+
+        start_xy = sample_boundary_point(cfg);
+        stop_xy = sample_boundary_point(cfg);
+
+        while norm(start_xy - stop_xy) < 1.0
+            stop_xy = sample_boundary_point(cfg);
+        end
+
+        traj_type = cfg.traj_types(mod(k-1, numel(cfg.traj_types)) + 1);
+        switch traj_type
+            case "LINE"
+                X_seg = generate_line_track_segment(tseg, cfg.dt, start_xy, stop_xy);
+            case "PARABOLA"
+                X_seg = generate_parabola_track_segment(tseg, cfg.dt, start_xy, stop_xy);
+            otherwise
+                error('Unsupported trajectory type: %s', traj_type);
+        end
+
+        X_full = nan(6, cfg.n_t);
+        X_full(:, start_idx:end_idx) = X_seg;
+        X_GT{k} = X_full;
+    end
+end
+
+function pt = sample_boundary_point(cfg)
+    side = randi(4);
+    switch side
+        case 1 % left boundary
+            pt = [-2; cfg.min_track_y + (3.6 - cfg.min_track_y) * rand()];
+        case 2 % right boundary
+            pt = [2; cfg.min_track_y + (3.6 - cfg.min_track_y) * rand()];
+        case 3 % bottom entry
+            pt = [-1.8 + 3.6 * rand(); cfg.min_track_y];
+        case 4 % top boundary
+            pt = [-1.8 + 3.6 * rand(); 4];
+        otherwise
+            pt = [0; 2];
+    end
+end
+
+function Signal = simulateSignalSequence(X_GT, active_mask, cfg, G, M)
+    Signal = cell(1, cfg.n_t);
+
+    for i = 1:cfg.n_t
+        S = zeros(cfg.npx, cfg.npx);
+        active_ids = find(active_mask(:, i));
+
+        for idx = 1:numel(active_ids)
+            j = active_ids(idx);
+            true_pos = X_GT{j}(1:2, i);
+            if any(isnan(true_pos))
+                continue
+            end
+
+            px = true_pos(1);
+            py = true_pos(2);
+
+            if px >= -2 && px <= 2 && py >= 0 && py <= 4
+                Gx = find(px <= cfg.xgrid, 1, 'first');
+                Gy = find(py <= cfg.ygrid, 1, 'first');
+                if ~isempty(Gx) && ~isempty(Gy)
+                    S(Gy, Gx) = S(Gy, Gx) + 1;
+                end
+            end
+        end
+
+        signal_flat = S';
+        signal_flat = signal_flat(:);
+        signal_flat = M * signal_flat;
+        signal_flat = G' * signal_flat;
+        Signal{i} = reshape(signal_flat, cfg.npx, cfg.npx)';
+    end
+end
+
+function y = detectSequenceFromSignal(Signal, cfg)
+    y = cell(1, numel(Signal));
+
+    for k = 1:numel(Signal)
+        frameSignal = Signal{k};
+        blurred = imgaussfilt(frameSignal, cfg.blur_sigma);
+        blurred(1:cfg.crop_rows, :) = NaN;
+        signal_scaled = asinh(blurred);
+        signal_normalized = normalizeFrame(signal_scaled);
+
+        [~, peak_x, peak_y] = CA_CFAR(signal_normalized(cfg.crop_rows+1:end, :), ...
+            cfg.Pfa, cfg.Ng, cfg.Nr);
+        peak_x = peak_x + cfg.crop_rows;
+
+        if isempty(peak_x)
+            y{k} = zeros(2, 0);
+            continue
+        end
+
+        pvinds = sub2ind([cfg.npx, cfg.npx], peak_x, peak_y);
+        meas_xy = [cfg.pxgrid(pvinds)'; cfg.pygrid(pvinds)'];
+        valid = meas_xy(2, :) >= 0.5 & signal_normalized(pvinds)' > 0.5;
+        valid_meas_xy = meas_xy(:, valid);
+        y{k} = clusterNearbyDetections(valid_meas_xy, cfg.cluster_radius);
+    end
+end
+
+function track_ct = runHeuristicCounter(signal_seq, cfg)
+    n_k = numel(signal_seq);
+    track_ct = nan(1, n_k);
+    est = HeuristicEstimator(cfg);
+
+    for k = 1:n_k
+        [N_est, ~, ~] = est.update(signal_seq{k}, []);
+        track_ct(k) = N_est;
+    end
+end
+
+function N_map_seq = runBayesianCounter(y_seq, P_m_given_N, N_vals, m_axis, cfg)
+    K = numel(y_seq);
+    N_map_seq = zeros(1, K);
+    est = ProbabilisticEstimator( ...
+        P_m_given_N, ...
+        'NVals', N_vals, ...
+        'MAxis', m_axis, ...
+        'LambdaArrival', cfg.lambda_arrival, ...
+        'LambdaDepart', cfg.lambda_depart);
+
+    for k = 1:K
+        [N_est, ~, ~] = est.update([], y_seq{k});
+        N_map_seq(k) = N_est;
+    end
+end
+
+function cm = buildCountConfusion(true_vals, est_vals, count_labels)
+    cm = zeros(numel(count_labels), numel(count_labels));
+    for i = 1:numel(true_vals)
+        true_idx = find(count_labels == true_vals(i), 1, 'first');
+        est_clamped = min(max(est_vals(i), count_labels(1)), count_labels(end));
+        est_idx = find(count_labels == est_clamped, 1, 'first');
+        if ~isempty(true_idx) && ~isempty(est_idx)
+            cm(true_idx, est_idx) = cm(true_idx, est_idx) + 1;
+        end
+    end
+    row_sums = sum(cm, 2);
+    for r = 1:size(cm, 1)
+        if row_sums(r) > 0
+            cm(r, :) = cm(r, :) / row_sums(r);
+        end
+    end
+end
+
+function addMatrixText(ax, cm)
+    [n_rows, n_cols] = size(cm);
+    for r = 1:n_rows
+        for c = 1:n_cols
+            text(ax, c, r, sprintf('%.2f', cm(r, c)), ...
+                'HorizontalAlignment', 'center', ...
+                'VerticalAlignment', 'middle', ...
+                'Color', 'w', 'FontSize', 9, 'FontWeight', 'bold');
+        end
+    end
+end
+
+function out = normalizeFrame(in)
+    finite_vals = in(isfinite(in));
+    if isempty(finite_vals)
+        out = zeros(size(in));
+        return
+    end
+
+    min_val = min(finite_vals);
+    max_val = max(finite_vals);
+    if max_val <= min_val
+        out = zeros(size(in));
+    else
+        out = (in - min_val) ./ (max_val - min_val);
+    end
+    out(~isfinite(out)) = 0;
+end
+
+function X = generate_line_track_segment(tvec, dt, start_xy, stop_xy)
+    T = max(tvec(end), dt);
+    delta_pos = stop_xy - start_xy;
+    a_progress = -0.01 + 0.02 * rand();
+    v0_progress = (1 - 0.5 * a_progress * T^2) / T;
+
+    progress = v0_progress * tvec + 0.5 * a_progress * tvec.^2;
+    x = start_xy(1) + delta_pos(1) .* progress;
+    y = start_xy(2) + delta_pos(2) .* progress;
+
+    x = clamp(x, -2, 2);
+    y = clamp(y, 0, 4);
+
+    vx = gradient(x, dt);
+    vy = gradient(y, dt);
+    ax = gradient(vx, dt);
+    ay = gradient(vy, dt);
+    X = [x; y; vx; vy; ax; ay];
+end
+
+function X = generate_parabola_track_segment(tvec, dt, start_xy, stop_xy)
+    n_t = numel(tvec);
+    T = max(tvec(end), dt);
+    tau = tvec ./ T;
+
+    x = start_xy(1) + (stop_xy(1) - start_xy(1)) .* tau;
+
+    mid = 0.5 * (start_xy + stop_xy);
+    y_peak = min(3.8, max(0.6, mid(2) + 0.4 * randn()));
+
+    c = start_xy(2);
+    a = 2 * (start_xy(2) + stop_xy(2) - 2 * y_peak);
+    b = stop_xy(2) - c - a;
+    y = a .* tau.^2 + b .* tau + c;
+
+    x = clamp(x, -2, 2);
+    y = clamp(y, 0, 4);
+
+    vx = gradient(x, dt);
+    vy = gradient(y, dt);
+    ax = gradient(vx, dt);
+    ay = gradient(vy, dt);
+
+    X = [x; y; vx; vy; ax; ay];
+    if size(X, 2) ~= n_t
+        error('Parabola track length mismatch.');
+    end
+end
+
+function out = clamp(in, lo, hi)
+    out = min(hi, max(lo, in));
+end

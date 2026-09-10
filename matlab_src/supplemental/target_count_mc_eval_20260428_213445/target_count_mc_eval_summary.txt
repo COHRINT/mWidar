@@ -1,0 +1,18 @@
+Monte Carlo target count evaluation
+Generated: 28-Apr-2026 21:34:59
+
+Trials: 10
+Evaluation frames: 25:101
+Lambda arrival: 0.1000
+Lambda depart: 0.2000
+
+Heuristic
+  MAE mean +/- 2std  : 1.212987 +/- 0.851941
+  RMSE mean +/- 2std : 1.459935 +/- 0.862274
+  Acc(|err|<=1)      : 0.674026 +/- 0.357912
+
+Bayesian
+  MAE mean +/- 2std  : 0.576623 +/- 0.791552
+  RMSE mean +/- 2std : 0.835946 +/- 0.810889
+  Acc(|err|<=1)      : 0.898701 +/- 0.296857
+

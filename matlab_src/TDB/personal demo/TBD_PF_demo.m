@@ -1,0 +1,195 @@
+%
+% TBD_PF_demo.m:
+% Demonstration of TBD using a PF on a toy example.
+%
+%close all
+
+function out = main()
+
+%%% Get parameters
+p = init_params();
+
+
+%%% Simulate GT + Measurments
+[xt,Et,im] = sim(p);
+
+%%% Initialize particles
+
+X = nan(4,p.N);
+%%% Assume E = false for all particles
+E = false(1,p.N);
+
+y_minus = [X;E]; % Initial particle set
+
+%%% PF
+Y_hist = nan(5,p.N,p.kSteps);
+for k = 1:p.kSteps
+    [y] = TDP_PF(y_minus, im(:,:,k), p);
+    Y_hist(:,:,k) = y;
+    y_minus = y; % Carry posterior forward as next step's prior
+end
+
+%%% PLOT + visualization
+plot_TBD_PF(xt, Et, Y_hist, p, im);
+
+out = Y_hist;
+
+end
+
+function [y] = TDP_PF(y_minus, z, p)
+
+    % Target existence transition (Table 3.9 Ristic)
+
+    x_minus = y_minus(1:4,:); % For every particle
+    E_minus = y_minus(5,:); % Prior Existence flag
+
+    E_plus = RT(E_minus,p); % Post Existence flag
+    x_plus = nan(4,p.N); % Prediction particle states
+    w_tilde = zeros(1,p.N); % Weights
+    Y = nan(5,p.N);
+
+    for n = 1:p.N        
+        % New born particle
+        if E_plus(n) && ~E_minus(n)
+            % Draw x(n) ~ qb(xk | zk)
+            x_plus(:,n) = sample_new(z,p);
+        else % Persistent particle
+            % Draw x(n) ~ q(x|xk-1, zk)
+            % Push particle through dynamics.
+            x_plus(:,n) = p.F * x_minus(:,n) +  mvnrnd(zeros(4,1), p.Q)';
+        end
+
+        % Evaluate importance weight (11.20)
+        Y(:,n) = [x_plus(:,n);E_plus(:,n)];
+        w_tilde(n) = importance_weights(p,Y(:,n),z);
+    end
+    
+    % Calculate total weights
+    t = sum(w_tilde);
+    % Normalize weights
+    w = w_tilde./t;
+
+    % Resample using algo 3.2
+    
+    y = nan(5,p.N);
+
+    cdf = cumsum(w);
+    % Systematic: one uniform draw, N evenly spaced strata. Lower variance
+    % than drawing N independent uniforms, so the cloud degenerates slower.
+    u = rand()/p.N + (0:p.N-1)/p.N;
+    for n = 1:p.N
+        idx = find(u(n) <= cdf, 1, 'first');
+        if isempty(idx) % all-zero weights, or cdf(end) short of 1 by roundoff
+            idx = p.N;
+        end
+        y(:,n) = Y(:,idx);
+    end
+
+end
+
+function w = importance_weights(p,Y,z)
+
+    X = Y(1:4);
+    E = Y(5);
+    
+    w = 1;
+
+    if(E) %% E = 1
+
+       px = X(1);
+       py = X(3);
+
+       if px > p.nx || px < 1
+           w = 0;
+           return
+       end
+
+       if py > p.ny || py < 1
+           w = 0;
+           return
+       end
+
+       % Bound check (clamp neighborhood window to valid pixel indices;
+       % the previous branch logic missed the px-p.p==0 / py-p.p==0 case
+       xvec = max(1, round(px)-p.p):min(p.nx, round(px)+p.p);
+       yvec = max(1, round(py)-p.p):min(p.ny, round(py)+p.p);
+
+        for i = 1:numel(xvec)
+            for j = 1:numel(yvec)
+                pix = [xvec(i),yvec(j)];
+                w = w*likelihood(p,[px py],pix,z);
+            end
+        end
+
+    else %% E = 0
+        w = 1;
+    end
+
+end
+
+
+
+function l = likelihood(p,pos,pix, z)
+    
+    px = pos(1);
+    py = pos(2);
+
+    ii = pix(1);
+    jj = pix(2);
+    
+    hh = p.Ip * exp( - ((ii -px)^2 + ((jj -py)^2))/ (2 * p.Sigma^2));
+    zz = z(ii,jj);
+    l = exp(-(hh*(hh - 2*zz))/(2 * p.NoiseSTD^2));
+
+end
+
+function [xt, Et, im] = sim(p)
+
+    im = zeros(p.nx,p.ny,p.kSteps);
+    % init
+    xt = nan(4,p.kSteps);
+    Et = false(1,p.kSteps); % True particle existence
+
+    for k = 1:p.kSteps
+        
+        % Start with noise
+        im(:,:,k) = p.NoiseSTD*randn(p.nx,p.ny) + p.NoiseMean;
+
+        % Skip GT gen if target not present
+        if k < p.kBirth || k > p.kDeath
+            continue
+        elseif k == p.kBirth
+            xt(:,k) = p.x0;
+            im(:,:,k) = im(:,:,k) + psf(p, [xt(1,k), xt(3,k)]);
+            Et(k) = true;
+            continue
+        else
+            % Gen GT
+            xt(:,k) = p.F * xt(:,k-1) + mvnrnd([0;0;0;0], p.Qtrue)';
+            Et(k) = true;
+            % Set existence in true
+            im(:,:,k) = im(:,:,k) + psf(p, [xt(1,k), xt(3,k)]);
+        end
+
+        % Normalize im
+        %im(:,:,k) = im(:,:,k)./max(max(im(:,:,k)));
+        
+    end
+
+end
+
+
+%%% PSF, only used for generating measurments
+function psf_im = psf(p,pos)
+   
+   x = pos(1);
+   y = pos(2);
+
+   
+   [Ig, Jg] = ndgrid(1:p.nx, 1:p.ny);
+    psf_im = p.Ip * exp( -((Ig - x).^2 + (Jg - y).^2) / (2*p.Sigma^2) );
+
+end
+
+
+main();
