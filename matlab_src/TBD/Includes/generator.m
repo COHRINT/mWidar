@@ -4,6 +4,7 @@
 %%% Different options for target paths: constant accel line, parabola, analytic s-curve
 %%% Option to enable rw to all target paths, will make traj non-analytic/stochastic
 
+%% TODO: kBirth, kEnd
 
 classdef generator < mWidar
 

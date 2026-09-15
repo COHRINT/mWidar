@@ -16,12 +16,14 @@ classdef simulator < mWidar
         
 
         %%% Forward model matrices
-        S
         M
         G
 
         %%% blurring parameter
         sigma
+
+        %%% Object count
+        ct
 
     end
 
@@ -35,6 +37,7 @@ classdef simulator < mWidar
             addParameter(p, 'Normalize', true, @islogical);
             addParameter(p, 'Blur', true, @islogical);
             addParameter(p, 'Sigma', 2);
+            addParameter(p,'Objects', 1)
 
             parse(p, varargin{:})
 
@@ -42,13 +45,12 @@ classdef simulator < mWidar
             obj.normalize = p.Results.Normalize;
             obj.blur = p.Results.Blur;
             obj.sigma = p.Results.Sigma;
+            obj.ct = p.Results.Objects;
 
 
             %%% Filepaths
             obj.RECOVERY_FILEPATH = "supplemental/recovery.mat";
             obj.SAMPLING_FILEPATH = "supplemental/sampling.mat";
-
-            obj.S = zeros(obj.npx);
             
             ds = load(obj.RECOVERY_FILEPATH);
             obj.G = ds.G;
@@ -65,7 +67,7 @@ classdef simulator < mWidar
             
             % parse
 
-            %%5 TODO: Add functionality here to generate image for multiple objects in scene
+            %% TODO: Add functionality here to generate image for multiple objects in scene
 
             p = inputParser;
             addParameter(p,'meters', false, @islogical)
@@ -98,30 +100,36 @@ classdef simulator < mWidar
     methods(Hidden)
         %%% Generate image when pos is in meters
         function signal = generate_mWidar_image_meters(obj, pos)
+            
+            S = zeros(obj.npx);
+            
+            
+            for i = 1:obj.ct
+                if isempty(pos{i}), continue; end
+                px = pos{i}(1);
+                py = pos{i}(2);
 
-            px = pos(1);
-            py = pos(2);
+                %%5 Get grid cell corresponding to m pos 
+                if obj.checkbound_x(px) && obj.checkbound_y(py)
+                    Gx = find(px <= obj.xgrid,1,'first');
+                    Gy = find(py <= obj.ygrid,1,'first');
 
-            %%5 Get grid cell corresponding to m pos 
-            if obj.checkbound_x(px) && obj.checkbound_y(py)
-                Gx = find(px <= obj.xgrid,1,'first');
-                Gy = find(py <= obj.ygrid,1,'first');
-
-                %%% Check it exists within obj bounds
-                if obj.checkbound_idx(Gx) && obj.checkbound_idx(Gy)
-                    obj.S(Gy,Gx) = 1;
+                    %%% Check it exists within obj bounds
+                    if obj.checkbound_idx(Gx) && obj.checkbound_idx(Gy)
+                        S(Gy,Gx) = 1;
+                    end
                 end
-            end
 
+            end
             % TODO: Gracefully handle the case where the obj is out of scene
-            if all(obj.S == 0)
+            if all(S == 0)
                 obj.debug_print("OBJECT IS OUT OF SCENE, RETURNING EMPTY SIGNAL")
-                signal = [];
+                signal = zeros(obj.npx);
                 return;
             end
 
             % mWidar forward model
-            signal_flat = obj.S';
+            signal_flat = S';
             signal_flat = signal_flat(:);
             signal_flat = obj.M * signal_flat;
             signal_flat = obj.G' * signal_flat;
@@ -134,25 +142,29 @@ classdef simulator < mWidar
 
 
         function signal = generate_mWidar_image_pixels(obj, pos)
-            
-            Gx = pos(1);
-            Gy = pos(2);
 
-                %%% Check it exists within scene bounds
-            if obj.checkbound_idx(Gx) && obj.checkbound_idx(Gy)
-                obj.S(Gy,Gx) = 1;
-            end
+            S = zeros(obj.npx);
             
+            for i = 1:obj.ct
+
+                Gx = pos{i}(1);
+                Gy = pos{i}(2);
+
+                    %%% Check it exists within scene bounds
+                if obj.checkbound_idx(Gx) && obj.checkbound_idx(Gy)
+                    S(Gy,Gx) = 1;
+                end
+            end
 
             % TODO: Gracefully handle the case where the obj is out of scene
-            if all(obj.S == 0)
-                obj.debug_print("OBJECT IS OUT OF SCENE, RETURNING EMPTY SIGNAL")
-                signal = [];
+            if all(S == 0)
+                obj.debug_print("ALL OBJECT IS OUT OF SCENE, RETURNING EMPTY SIGNAL")
+                signal = zeros(obj.npx);
                 return;
             end
 
             % mWidar forward model
-            signal_flat = obj.S';
+            signal_flat = S';
             signal_flat = signal_flat(:);
             signal_flat = obj.M * signal_flat;
             signal_flat = obj.G' * signal_flat;
@@ -176,6 +188,10 @@ classdef simulator < mWidar
         %%% Normalize signal if enabled, ow just return raw signal
         function normalized = normalize_signal(obj,raw)
             if obj.normalize
+                if max(raw(:)) == min(raw(:))
+                    obj.debug_print("MIN AND MAX OF UNNORMALIZED SIGNAL ==")
+                    return
+                end
                 normalized = (raw - min(raw(:))) / (max(raw(:)) - min(raw(:)));
             else
                 normalized = raw;

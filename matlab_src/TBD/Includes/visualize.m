@@ -59,7 +59,7 @@ classdef visualize < mWidar
             addParameter(p, 'Debug', false, @islogical);
             addParameter(p, 'Units', 'meters');
             addParameter(p, 'StateIdx', [1 3]);
-            addParameter(p, 'Colormap', 'gray');
+            addParameter(p, 'Colormap', 'turbo');
             addParameter(p, 'FontSize', 11);
             addParameter(p, 'LineWidth', 1.5);
             addParameter(p, 'MarkerSize', 6);
