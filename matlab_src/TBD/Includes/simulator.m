@@ -66,9 +66,6 @@ classdef simulator < mWidar
         function signal = generate_mWidar_image(obj, pos, varargin)
             
             % parse
-
-            %% TODO: Add functionality here to generate image for multiple objects in scene
-
             p = inputParser;
             addParameter(p,'meters', false, @islogical)
             addParameter(p,'pixels', false, @islogical)
@@ -108,6 +105,10 @@ classdef simulator < mWidar
                 if isempty(pos{i}), continue; end
                 px = pos{i}(1);
                 py = pos{i}(2);
+                
+                if isnan(px) || isnan(py)
+                    continue;
+                end
 
                 %%5 Get grid cell corresponding to m pos 
                 if obj.checkbound_x(px) && obj.checkbound_y(py)
@@ -149,6 +150,10 @@ classdef simulator < mWidar
 
                 Gx = pos{i}(1);
                 Gy = pos{i}(2);
+
+                if isnan(Gx) || isnan(Gy)
+                    continue;
+                end
 
                     %%% Check it exists within scene bounds
                 if obj.checkbound_idx(Gx) && obj.checkbound_idx(Gy)

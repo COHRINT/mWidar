@@ -52,7 +52,7 @@ classdef TBD < mWidar
 
             % sensor params
             addParameter(p, 'STD', 0.5, @(x) isscalar(x) && x > 0);
-            addParameter(p, 'Sigma', 0.75, @(x) isscalar(x) && x > 0);
+            addParameter(p, 'Sigma', 0.5, @(x) isscalar(x) && x > 0);
             addParameter(p, 'dt', 0.1, @(x) isscalar(x) && x > 0);
             addParameter(p, 'Ip', 0.75, @(x) isscalar(x) && x > 0);
 

@@ -4,8 +4,6 @@
 %%% Different options for target paths: constant accel line, parabola, analytic s-curve
 %%% Option to enable rw to all target paths, will make traj non-analytic/stochastic
 
-%% TODO: kBirth, kEnd
-
 classdef generator < mWidar
 
     properties
@@ -26,6 +24,10 @@ classdef generator < mWidar
 
         %%% Final time step, defaults to 100
         kEnd
+        %%% Existence, 1 x numel(trajectories) indices into tvec.
+        %%% Defaults to alive for the whole scenario.
+        kBirth
+        kDeath
   
         %%% delta time in seconds, defaults to 0.1
         dt
@@ -52,7 +54,8 @@ classdef generator < mWidar
             addParameter(p,'objs',1, @(x) isscalar(x) && mod(x,1) == 0 );
             addParameter(p,'trajectories',{'line'}, @(x) iscellstr(x) && all(ismember(x, {'line', 'parabola', 'scurve'})));
             addParameter(p,'rw', false, @(x) isvector(x) && (islogical(x) || isnumeric(x))); %%% Should be a vector of logicals
-
+            addParameter(p,'kBirth', [], @(x) isempty(x) || (isvector(x) && all(mod(x,1) == 0)));
+            addParameter(p,'kDeath', [], @(x) isempty(x) || (isvector(x) && all(mod(x,1) == 0)));
 
             parse(p, varargin{:});
 
@@ -64,6 +67,31 @@ classdef generator < mWidar
             obj.trajectories = p.Results.trajectories;
             obj.rw = p.Results.rw;
             obj.tvec = 0:obj.dt:(obj.kEnd * obj.dt);
+            %%% kBirth/kDeath are indices into tvec, so 1 is the first sample
+            %%% and numel(tvec) the last. They default to alive for the whole
+            %%% scenario, and a scalar is broadcast so every target shares one
+            %%% lifetime. The defaults cannot go on addParameter above because
+            %%% kDeath depends on kEnd.
+            n_traj = numel(obj.trajectories);
+            kb = p.Results.kBirth;
+            kd = p.Results.kDeath;
+            if isempty(kb), kb = 1;               end
+            if isempty(kd), kd = numel(obj.tvec); end
+            obj.kBirth = obj.spread(kb, n_traj, 'kBirth');
+            obj.kDeath = obj.spread(kd, n_traj, 'kDeath');
+
+            %%% Checked here rather than in the validators above because
+            %%% inputParser cannot cross-reference parameters, and a bad pair
+            %%% silently produces a backwards or out-of-range track instead of
+            %%% an error. kBirth == kDeath is rejected too: a one-sample life
+            %%% gives T = 0, and every generator divides by T.
+            if any(obj.kBirth < 1) || any(obj.kDeath > numel(obj.tvec)) ...
+                    || any(obj.kBirth >= obj.kDeath)
+                error('generator:invalidLifetime', ...
+                      ['ABORTING GENERATOR: need 1 <= kBirth < kDeath <= %d, ' ...
+                       'got kBirth = [%s], kDeath = [%s]'], ...
+                      numel(obj.tvec), num2str(obj.kBirth), num2str(obj.kDeath));
+            end
             %%% C.A model
             
             obj.A = [0 1 0 0 0 0;
@@ -83,7 +111,6 @@ classdef generator < mWidar
             n_traj = numel(obj.trajectories);
 
             %%% Check, ensure length of start, final, and obj.rw == n_traj
-            %%% TODO: make this better
             X = {};
 
             if numel(obj.rw) ~= n_traj
@@ -130,21 +157,21 @@ classdef generator < mWidar
                 switch traj
                     case 'line'
                         if rw_enabled
-                            X{i} = obj.generate_line_rw(traj_start, traj_end);
+                            X{i} = obj.generate_line_rw(traj_start, traj_end, i);
                         else
-                            X{i} = obj.generate_line(traj_start, traj_end);
+                            X{i} = obj.generate_line(traj_start, traj_end, i);
                         end
                     case 'parabola'
                         if rw_enabled
-                            X{i} = obj.generate_parabola_rw(traj_start, traj_end);
+                            X{i} = obj.generate_parabola_rw(traj_start, traj_end, i);
                         else
-                            X{i} = obj.generate_parabola(traj_start, traj_end);
+                            X{i} = obj.generate_parabola(traj_start, traj_end, i);
                         end
                     case 'scurve'
                         if rw_enabled
-                            X{i} = obj.generate_scurve_rw(traj_start, traj_end);
+                            X{i} = obj.generate_scurve_rw(traj_start, traj_end, i);
                         else
-                            X{i} = obj.generate_scurve(traj_start, traj_end);
+                            X{i} = obj.generate_scurve(traj_start, traj_end, i);
                         end
                 end
             
@@ -159,15 +186,30 @@ classdef generator < mWidar
 
     methods(Hidden)
 
+        %%% Alive-window duration and local time vector for trajectory i.
+        function [T, t] = birth_death(obj, i)
+            kb = obj.kBirth(i);
+            kd = obj.kDeath(i);
+            T = obj.tvec(kd) - obj.tvec(kb);
+            t = obj.tvec(kb:kd) - obj.tvec(kb); % 0... T
+        end
+
+        %%% Pad a path built on trajectory i's alive window back out to the
+        %%% full time base, NaN before birth and after death, so every
+        %%% generator returns the same 4 x numel(tvec) shape.
+        function [X] = pad_lifetime(obj, X, i)
+            X = [nan(4, obj.kBirth(i) - 1), X, nan(4, numel(obj.tvec) - obj.kDeath(i))];
+        end
+
         %%% All path generating functions take in start and end pos, and construct path between those.
 
         %%% Generate_Line
-        function [X] = generate_line(obj, start, final)
+        function [X] = generate_line(obj, start, final, i)
 
             %%% Check bounds, if out of bounds generate random start/end pos
             [x_start, x_end, y_start, y_end] = obj.validate(start, final);
 
-            T = obj.tvec(end);
+            [T, t] = obj.birth_death(i);
 
             delta_pos = [x_end - x_start; y_end - y_start];
 
@@ -176,29 +218,25 @@ classdef generator < mWidar
             a_progress = -0.01 + 0.02 .* rand();
             v0_progress = (1 - 0.5 * a_progress * T^2) / T;
 
-            progress      = v0_progress .* obj.tvec + 0.5 .* a_progress .* obj.tvec.^2;
-            progress_dot  = v0_progress + a_progress .* obj.tvec;
+            progress      = v0_progress .* t + 0.5 .* a_progress .* t.^2;
+            progress_dot  = v0_progress + a_progress .* t;
 
             x_traj = x_start + delta_pos(1) .* progress;
             y_traj = y_start + delta_pos(2) .* progress;
 
             vx_traj = delta_pos(1) .* progress_dot;
             vy_traj = delta_pos(2) .* progress_dot;
-
-            x_traj = max(-2, min(2, x_traj));
-            y_traj = max( 0, min(4, y_traj));
-
-            X = [x_traj; vx_traj; y_traj; vy_traj];
-
+            
+            X = obj.pad_lifetime([x_traj; vx_traj; y_traj; vy_traj], i);
 
         end
 
         %%% Generate_Parabola
-        function [X] = generate_parabola(obj, start, final)
+        function [X] = generate_parabola(obj, start, final, i)
             %%% Check bounds, if out of bounds generate random start/end pos
             [x_start, x_end, y_start, y_end] = obj.validate(start, final);
 
-            T = obj.tvec(end);
+            [T, t] = obj.birth_death(i);
 
             delta_pos = [x_end - x_start; y_end - y_start];
             chord = norm(delta_pos);
@@ -206,7 +244,7 @@ classdef generator < mWidar
             % Progress advances at a constant rate along the chord, and the
             % parabolic bulge is applied along the chord normal. That keeps the
             % acceleration constant, so the path matches the C.A. model exactly.
-            s = obj.tvec ./ T;
+            s = t ./ T;
 
             if chord < eps
                 % Degenerate segment, bulge straight up so the path is still a curve
@@ -225,7 +263,7 @@ classdef generator < mWidar
 
             % Shrink the apex until the whole arc sits inside the scene. h -> 0
             % is the straight chord, which is in bounds, so this terminates.
-            for i = 1:25
+            for attempt = 1:25
                 bulge = 4 .* h .* s .* (1 - s);
                 x_traj = x_start + delta_pos(1) .* s + n(1) .* bulge;
                 y_traj = y_start + delta_pos(2) .* s + n(2) .* bulge;
@@ -242,18 +280,18 @@ classdef generator < mWidar
             vx_traj = delta_pos(1) ./ T + n(1) .* bulge_dot;
             vy_traj = delta_pos(2) ./ T + n(2) .* bulge_dot;
 
-            X = [x_traj; vx_traj; y_traj; vy_traj];
+            X = obj.pad_lifetime([x_traj; vx_traj; y_traj; vy_traj], i);
 
         end
 
         %%% Generate_SCurve
-        function [X] = generate_scurve(obj, start, final)
+        function [X] = generate_scurve(obj, start, final, i)
 
             %%% Check bounds, if out of bounds generate random start/end pos
             [x_start, x_end, y_start, y_end] = obj.validate(start, final);
 
-            T   = obj.tvec(end);
-            tau = obj.tvec / T;  % [0, 1]
+            [T, t] = obj.birth_death(i);
+            tau = t / T;  % [0, 1]
 
             % Straight chord, always inside the scene for in-bounds endpoints
             x_line = x_start + (x_end - x_start)*tau;
@@ -283,17 +321,17 @@ classdef generator < mWidar
             vx_traj = ((x_end-x_start) + sw.*dwx_dtau) .* dtau_dt;
             vy_traj = ((y_end-y_start) + sw.*dwy_dtau) .* dtau_dt;
 
-            X = [x_traj;  vx_traj; y_traj; vy_traj];  % 4 x n_t
+            X = obj.pad_lifetime([x_traj;  vx_traj; y_traj; vy_traj], i);
 
         end
 
         %%% Generate_Line_rw
-        function [X] = generate_line_rw(obj,start,final)
+        function [X] = generate_line_rw(obj,start,final, i)
 
             %%% Check bounds, if out of bounds generate random start/end pos
             [x_start, x_end, y_start, y_end] = obj.validate(start, final);
 
-            T = obj.tvec(end);
+            [T, t] = obj.birth_death(i);
 
             % Nominal path is the one generate_line builds: a scalar progress
             % variable with constant acceleration along the chord.
@@ -301,22 +339,23 @@ classdef generator < mWidar
 
             a_progress  = -0.01 + 0.02 .* rand();
             v0_progress = (1 - 0.5 * a_progress * T^2) / T;
-            progress    = v0_progress .* obj.tvec + 0.5 .* a_progress .* obj.tvec.^2;
+            progress    = v0_progress .* t + 0.5 .* a_progress .* t.^2;
 
             x_base = x_start + delta_pos(1) .* progress;
             y_base = y_start + delta_pos(2) .* progress;
 
-            X = obj.apply_random_walk(x_base, y_base);
+            X = obj.pad_lifetime(obj.apply_random_walk(x_base, y_base, i), i);
 
         end
 
         %%% Generate_Parabola_rw
-        function [X] = generate_parabola_rw(obj,start,final)
+        function [X] = generate_parabola_rw(obj,start,final, i)
 
             %%% Check bounds, if out of bounds generate random start/end pos
             [x_start, x_end, y_start, y_end] = obj.validate(start, final);
 
-            tau = obj.tvec ./ obj.tvec(end);
+            [~, t] = obj.birth_death(i);
+            tau = t ./ t(end);
 
             % Nominal path is the one generate_parabola builds: constant-rate
             % progress along the chord plus a bulge along its normal.
@@ -340,7 +379,7 @@ classdef generator < mWidar
 
             % Shrink the apex until the whole arc sits inside the scene. h -> 0
             % is the straight chord, which is in bounds, so this terminates.
-            for i = 1:25
+            for attempt = 1:25
                 bulge = 4 .* h .* tau .* (1 - tau);
                 x_base = x_start + delta_pos(1) .* tau + n(1) .* bulge;
                 y_base = y_start + delta_pos(2) .* tau + n(2) .* bulge;
@@ -351,17 +390,18 @@ classdef generator < mWidar
                 h = 0.7 * h;
             end
 
-            X = obj.apply_random_walk(x_base, y_base);
+            X = obj.pad_lifetime(obj.apply_random_walk(x_base, y_base, i), i);
 
         end
 
         %%% Generate_SCurve_rw
-        function [X] = generate_scurve_rw(obj,start,final)
+        function [X] = generate_scurve_rw(obj,start,final, i)
 
             %%% Check bounds, if out of bounds generate random start/end pos
             [x_start, x_end, y_start, y_end] = obj.validate(start, final);
 
-            tau = obj.tvec ./ obj.tvec(end);
+            [~, t] = obj.birth_death(i);
+            tau = t ./ t(end);
 
             % Nominal path is the one generate_scurve builds, wiggle fitted to
             % the scene so the base handed to the random walk is already inside.
@@ -377,7 +417,7 @@ classdef generator < mWidar
             x_base = x_line + sw.*wx;
             y_base = y_line + sw.*wy;
 
-            X = obj.apply_random_walk(x_base, y_base);
+            X = obj.pad_lifetime(obj.apply_random_walk(x_base, y_base, i), i);
 
         end
 
@@ -388,10 +428,11 @@ classdef generator < mWidar
         %%% for long stretches, which flattened the reported velocity to zero
         %%% and then stepped it discontinuously on release. No motion model can
         %%% follow that, so the deviation is shrunk to fit instead.
-        function [X] = apply_random_walk(obj, x_base, y_base)
+        function [X] = apply_random_walk(obj, x_base, y_base, i)
 
-            n_t = numel(obj.tvec);
-            tau = obj.tvec ./ obj.tvec(end);
+            [T, t] = obj.birth_death(i);
+            n_t = numel(t);
+            tau = t ./ T;
 
             % Every ~5 timesteps, let the acceleration bias take a random walk.
             change_interval = 5;
@@ -400,20 +441,20 @@ classdef generator < mWidar
 
             accel_bias = zeros(2, n_t);
             current_bias = [0; 0];
-            for i = 2:n_t
-                if mod(i-1, change_interval) == 0
+            for k = 2:n_t
+                if mod(k-1, change_interval) == 0
                     current_bias = current_bias + accel_step_sigma .* randn(2,1);
                     current_bias = max(-accel_bias_limit, min(accel_bias_limit, current_bias));
                 end
-                accel_bias(:, i) = current_bias;
+                accel_bias(:, k) = current_bias;
             end
 
             % Integrate the bias to get a smooth deviation from the nominal path.
             vel_offset = zeros(2, n_t);
             pos_offset = zeros(2, n_t);
-            for i = 2:n_t
-                pos_offset(:, i) = pos_offset(:, i-1) + vel_offset(:, i-1).*obj.dt + 0.5.*accel_bias(:, i-1).*obj.dt.^2;
-                vel_offset(:, i) = vel_offset(:, i-1) + accel_bias(:, i-1).*obj.dt;
+            for k = 2:n_t
+                pos_offset(:, k) = pos_offset(:, k-1) + vel_offset(:, k-1).*obj.dt + 0.5.*accel_bias(:, k-1).*obj.dt.^2;
+                vel_offset(:, k) = vel_offset(:, k-1) + accel_bias(:, k-1).*obj.dt;
             end
 
             % Keep the perturbation small near the start/end so the result still
@@ -475,6 +516,18 @@ classdef generator < mWidar
                 y_start = 0.5 + (1.5-(0.5)).*rand(); y_end = 3 + (3.9-(3)).*rand();
             end
         end        
+
+        %%% Broadcast a scalar to n entries, or pass an n-vector through.
+        function v = spread(~, v, n, name)
+            if numel(v) == 1
+                v = repmat(v, 1, n);
+            elseif numel(v) ~= n
+                error('generator:length', ...
+                      'ABORTING GENERATOR: "%s" has %d entries but there are %d trajectories', ...
+                      name, numel(v), n);
+            end
+            v = reshape(double(v), 1, []);
+        end
 
         function [] = debug_print(obj, str)
             if obj.debug
