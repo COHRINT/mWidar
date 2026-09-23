@@ -54,10 +54,10 @@ classdef TBD < mWidar
             addParameter(p, 'STD', 0.5, @(x) isscalar(x) && x > 0);
             addParameter(p, 'Sigma', 0.5, @(x) isscalar(x) && x > 0);
             addParameter(p, 'dt', 0.1, @(x) isscalar(x) && x > 0);
-            addParameter(p, 'Ip', 0.75, @(x) isscalar(x) && x > 0);
+            addParameter(p, 'Ip', 1, @(x) isscalar(x) && x > 0);
 
             % PF Params
-            addParameter(p, 'N', 5000, @(x) isscalar(x) && x >= 1 && mod(x,1) == 0);
+            addParameter(p, 'N', 500, @(x) isscalar(x) && x >= 1 && mod(x,1) == 0);
             addParameter(p, 'Pb', 0.03, @(x) x >= 0 && x <= 1);
             addParameter(p, 'Ps', 0.98, @(x) x >= 0 && x <= 1);
             addParameter(p, 'pEthresh', 0.5, @(x) x >= 0 && x <= 1);
