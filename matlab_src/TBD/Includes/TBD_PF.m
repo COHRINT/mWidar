@@ -7,8 +7,19 @@
 %%%   - Particle state is [px; vx; py; vy] in METERS, matching the scenario truth.
 %%%   - Signals are indexed z(row, col) = z(y, x), matching simulator / visualize.
 %%%   - Sigma and pDist are in pixels; Sigma is scaled by dx inside the likelihood.
+%%%   - Weights are always normalized to sum to 1, and R.particles(:,:,k) is
+%%%     always paired with R.weights(:,k). After a resample that pairing is a
+%%%     uniform 1/N; between resamples it is not, so anything read off the
+%%%     cloud has to be weighted (see visualize.particle_estimate).
 
 classdef TBD_PF < TBD
+
+    properties
+        %%% Resampling policy, set by run()
+        bootstrap          % true  -> resample every step (classic bootstrap PF)
+                           % false -> SIS, resample only when ESS/N drops
+        RESAMPLE_THRESHOLD % ESS/N at or below which the adaptive filter resamples
+    end
 
     methods
         %%% RUN TBD_PF
@@ -17,15 +28,51 @@ classdef TBD_PF < TBD
         %%% PF over every frame.
         %%%
         %%%   R = pf.run(scenario)
+        %%%   R = pf.run(scenario, 'Bootstrap', false, 'ESS', 0.5)
+        %%%
+        %%% Options
+        %%%   'Bootstrap' true resamples every step (the classic bootstrap PF,
+        %%%               weights uniform by construction). false runs SIS with
+        %%%               adaptive resampling: weights are carried forward and
+        %%%               only flattened once the cloud degenerates.
+        %%%               Default false.
+        %%%   'ESS'       resampling threshold as a FRACTION of N, in (0, 1].
+        %%%               Resample when ESS/N <= this. Default 0.5, the usual
+        %%%               N/2 rule. Ignored when 'Bootstrap' is true.
         %%%
         %%%   R.particles   5 x N x K, posterior particle set [px; vx; py; vy; E] at each k
-        %%%   R.pE          1 x K, existence probability = fraction of alive particles
+        %%%   R.weights     N x K, normalized posterior weight of each particle
+        %%%   R.ess         1 x K, ESS of the weights BEFORE the resample decision
+        %%%   R.resampled   1 x K logical, frames where the filter resampled
+        %%%   R.pE          1 x K, existence probability = weight mass on E = 1
         %%%   R.exist       1 x K logical, track declared where pE > pEthresh
         %%%   R.N, R.K      # of particles and # of timesteps run
         %%%
         %%% Metrics can be appended to R later, everything here is just the
         %%% raw filter output.
-        function R = run(obj, scenario)
+        function R = run(obj, scenario, varargin)
+
+            %%% Resampling policy. Resampling every step throws information
+            %%% away whenever the frame was uninformative, so the default is to
+            %%% only do it once the weights have actually degenerated.
+            p = inputParser;
+            addParameter(p, 'Bootstrap', false, @islogical);
+            addParameter(p, 'ESS', 0.5, @(x) isscalar(x) && isnumeric(x) && x > 0 && x <= 1);
+            parse(p, varargin{:});
+
+            %%% TBD_PF is a value class, so these land on run()'s own copy of
+            %%% obj and never reach the caller's filter object. timestep() sees
+            %%% them (it is called on that copy), but show() has to read the
+            %%% policy back off R, which is why run() records it there.
+            obj.bootstrap = p.Results.Bootstrap;
+            obj.RESAMPLE_THRESHOLD = p.Results.ESS;
+
+            if obj.bootstrap && ~ismember('ESS', p.UsingDefaults)
+                warning('TBD_PF:essIgnored', ...
+                    ['''Bootstrap'' is true, so ''ESS'' = %.3g is ignored and every ', ...
+                     'step resamples. Pass ''Bootstrap'', false to use the threshold.'], ...
+                    obj.RESAMPLE_THRESHOLD);
+            end
 
             %%% Measurements
             if isstruct(scenario)
@@ -44,31 +91,51 @@ classdef TBD_PF < TBD
                 rng(obj.seed);
             end
 
-            obj.debug_print(sprintf("run: K=%d frames, N=%d particles, frame size %s", ...
-                K, obj.N, mat2str(size(z{1}))));
+            if obj.bootstrap
+                mode = "bootstrap (resample every step)";
+            else
+                mode = sprintf("adaptive (resample when ESS <= %.2f * N = %.0f)", ...
+                    obj.RESAMPLE_THRESHOLD, obj.RESAMPLE_THRESHOLD * obj.N);
+            end
+            obj.debug_print(sprintf("run: K=%d frames, N=%d particles, frame size %s, %s", ...
+                K, obj.N, mat2str(size(z{1})), mode));
             tStart = tic;
 
-            %%% Initialize, every particle dead with undefined state
-            prior = [nan(4, obj.N); false(1, obj.N)];
+            %%% Initialize, every particle dead with undefined state and an
+            %%% equal share of the weight
+            prior   = [nan(4, obj.N); false(1, obj.N)];
+            w_prior = ones(1, obj.N) / obj.N;
 
             R = struct();
             R.N         = obj.N;
             R.K         = K;
             R.particles = nan(5, obj.N, K);
+            R.weights   = nan(obj.N, K);
+            R.ess       = nan(1, K);
+            R.resampled = false(1, K);
             R.pE        = nan(1, K);
             R.exist     = false(1, K);
+            R.bootstrap = obj.bootstrap;
+            R.essThresh = obj.RESAMPLE_THRESHOLD;
 
             %%% Filter
             for k = 1:K
-                post = obj.timestep(prior, z{k});
+                [post, w, ess, didResample] = obj.timestep(prior, w_prior, z{k});
 
                 R.particles(:,:,k) = post;
-                R.pE(k)    = mean(post(5,:));
+                R.weights(:,k)     = w(:);
+                R.ess(k)           = ess;
+                R.resampled(k)     = didResample;
+                %%% Existence is the weight mass sitting on E = 1, not the
+                %%% particle count: between resamples the two disagree.
+                R.pE(k)    = sum(w(post(5,:) ~= 0));
                 R.exist(k) = R.pE(k) > obj.pEthresh;
 
-                obj.debug_print(sprintf("k=%d/%d  pE=%.3f  exist=%d", k, K, R.pE(k), R.exist(k)));
+                obj.debug_print(sprintf("k=%d/%d  pE=%.3f  exist=%d  ESS/N=%.3f  resampled=%d", ...
+                    k, K, R.pE(k), R.exist(k), ess / obj.N, didResample));
 
-                prior = post; % Carry posterior forward as next step's prior
+                prior   = post; % Carry posterior forward as next step's prior
+                w_prior = w;    % ... and its weights, that is the whole point
             end
 
             %%% Summary
@@ -80,12 +147,15 @@ classdef TBD_PF < TBD
                 obj.debug_print(sprintf("run: done in %.2fs, track declared %d/%d steps, first k=%d last k=%d", ...
                     toc(tStart), numel(kDecl), K, kDecl(1), kDecl(end)));
             end
+            obj.debug_print(sprintf("run: resampled %d/%d frames, median ESS/N = %.3f", ...
+                nnz(R.resampled), K, median(R.ess, 'omitnan') / obj.N));
 
         end
 
         %%% Quick look at a run. Draws the vis.plot_TBD dashboard (track over
         %%% the energy map, existence, per-axis position, error, particle
-        %%% count) and optionally plays the frame-by-frame history with the
+        %%% count, and measurement SNR vs time when the scenario recorded it)
+        %%% and optionally plays the frame-by-frame history with the
         %%% particle cloud. Everything is delegated to vis, same as
         %%% environment.show.
         %%%
@@ -102,6 +172,13 @@ classdef TBD_PF < TBD
         %%%   'FPS'       animation frame rate (default vis.fps)
         %%%   'Trail'     # of past samples drawn in the animation (default 15)
         %%%   'Title'     override the auto title
+        %%%   'WeightColormap' colormap shading the particles by weight in the
+        %%%               animation (default 'gray'); '' draws them in the flat
+        %%%               particle color instead
+        %%%   'WeightScale'    'log' (default) or 'linear' scale for that shading.
+        %%%               The likelihood ratio is a product over a pixel window,
+        %%%               so on a linear scale one particle is white and the
+        %%%               other N-1 are black.
         function [fig, figAnim] = show(obj, R, scenario, varargin)
 
             if nargin < 3
@@ -114,6 +191,8 @@ classdef TBD_PF < TBD
             addParameter(p, 'FPS', obj.vis.fps);
             addParameter(p, 'Trail', 15);
             addParameter(p, 'Title', '');
+            addParameter(p, 'WeightColormap', 'gray');
+            addParameter(p, 'WeightScale', 'log');
             parse(p, varargin{:});
             opt = p.Results;
 
@@ -123,8 +202,8 @@ classdef TBD_PF < TBD
 
             ttl = opt.Title;
             if isempty(ttl)
-                ttl = sprintf('TBD-PF: N = %d, K = %d, Pb = %.3g, Ps = %.3g, pEthresh = %.2f', ...
-                              R.N, R.K, obj.Pb, obj.Ps, obj.pEthresh);
+                ttl = sprintf('TBD-PF: N = %d, K = %d, Pb = %.3g, Ps = %.3g, pEthresh = %.2f, %s', ...
+                              R.N, R.K, obj.Pb, obj.Ps, obj.pEthresh, obj.resample_tag(R));
             end
 
             savePath = '';
@@ -140,6 +219,7 @@ classdef TBD_PF < TBD
             fig = obj.vis.plot_TBD(res, ...
                 'DataUnits', 'meters', ...
                 'pEthresh',  obj.pEthresh, ...
+                'ESSThresh', obj.essThresh_of(R), ...
                 'Title',     ttl, ...
                 'Save',      savePath);
 
@@ -156,10 +236,14 @@ classdef TBD_PF < TBD
                 figAnim = obj.vis.animate_time_history(res.signals, ...
                     'Truth',     res.truth, ...
                     'Particles', R.particles, ...
+                    'Weights',   res.weights, ...
                     'pE',        R.pE, ...
+                    'SNR',       res.snr, ...
                     'DataUnits', 'meters', ...
                     'Trail',     opt.Trail, ...
                     'FPS',       opt.FPS, ...
+                    'WeightColormap', opt.WeightColormap, ...
+                    'WeightScale',    opt.WeightScale, ...
                     'Title',     ttl, ...
                     'Save',      animPath);
             end
@@ -236,16 +320,28 @@ classdef TBD_PF < TBD
             l = exp(-(hh*(hh - 2*zz))/(2 * obj.NoiseSTD^2));
         end
 
-        %%% Run through one timestep of TBD_PF, return posterior set of particles
-        %%% Uniform weights (bootstrap PF)
-        function post = timestep(obj, prior, z)
+        %%% Run through one timestep of TBD_PF.
+        %%%
+        %%%   [post, w, ESS, didResample] = obj.timestep(prior, w_prior, z)
+        %%%
+        %%% prior / post are 5 x N particle sets, w_prior / w the matching
+        %%% normalized weights. ESS is measured on w BEFORE the resample
+        %%% decision, so it is the number that drove it; didResample says what
+        %%% the filter decided.
+        function [post, w, ESS, didResample] = timestep(obj, prior, w_prior, z)
             x_minus = prior(1:4,:);
             E_minus = prior(5,:);
+
+            if nargin < 4
+                error('TBD_PF:timestep', ...
+                    'timestep now takes the prior weights: timestep(prior, w_prior, z)');
+            end
+            w_prior = reshape(w_prior, 1, []);
 
             % Regime transition
             E_plus = obj.RT(E_minus);
             x_plus = nan(4,obj.N);
-            w_tilde = zeros(1,obj.N);
+            L = zeros(1,obj.N);   % this frame's likelihood ratio, per particle
             Y = nan(5,obj.N);
 
             for n = 1:obj.N
@@ -259,7 +355,25 @@ classdef TBD_PF < TBD
 
                 % Evaluate importance weights
                 Y(:, n) = [x_plus(:,n); E_plus(n)];
-                w_tilde(n) = obj.importance_weights(Y(:,n),z);
+                L(n) = obj.importance_weights(Y(:,n),z);
+            end
+
+            %%% Sequential importance sampling: the new weight is the old
+            %%% weight times this frame's likelihood ratio. A resample flattens
+            %%% w_prior back to 1/N, so whenever the previous step resampled
+            %%% this collapses to the bootstrap weights and the two filters
+            %%% agree. Skipping the multiply is what breaks the non-bootstrap
+            %%% path, the evidence from every un-resampled frame is lost.
+            w_tilde = w_prior .* L;
+
+            w   = obj.normalize(w_tilde);
+            ESS = obj.get_ESS(w);
+
+            didResample = obj.bootstrap || (ESS <= obj.RESAMPLE_THRESHOLD * obj.N);
+            if didResample
+                [post, w] = obj.resample(Y, w);
+            else
+                post = Y;
             end
 
             if obj.debug
@@ -267,17 +381,26 @@ classdef TBD_PF < TBD
                 kept  = nnz(E_plus &  E_minus);
                 died  = nnz(~E_plus & E_minus);
                 w0    = nnz(E_plus & w_tilde == 0); % alive but zero weight (OOB or likelihood underflow)
-                ess   = sum(w_tilde)^2 / max(sum(w_tilde.^2), eps);
                 birthMode = "signal";
                 if ~any(z(:) > obj.gamma)
                     birthMode = "uniform (no pixels above gamma)";
                 end
-                obj.debug_print(sprintf("timestep: born=%d kept=%d died=%d alive=%d w0=%d | w max=%.3g ESS=%.1f | birth=%s", ...
-                    born, kept, died, nnz(E_plus), w0, max(w_tilde), ess, birthMode));
+                obj.debug_print(sprintf("timestep: born=%d kept=%d died=%d alive=%d w0=%d | L max=%.3g ESS/N=%.3f resampled=%d | birth=%s", ...
+                    born, kept, died, nnz(E_plus), w0, max(L), ESS / obj.N, didResample, birthMode));
             end
 
-            w = obj.normalize(w_tilde);
-            post = obj.resample(Y,w);
+        end
+
+        %%% Effective sample size, Kong's 1/sum(w^2) written scale-free so it
+        %%% works on normalized or unnormalized weights. Ranges over [1, N].
+        function ESS = get_ESS(~, w)
+            s1 = sum(w);
+            s2 = sum(w.^2);
+            if ~(s2 > 0) || ~isfinite(s1)
+                ESS = NaN; % every weight zero, caller treats this as "no info"
+                return
+            end
+            ESS = s1^2 / s2;
         end
 
         %%% Per particle
@@ -310,24 +433,44 @@ classdef TBD_PF < TBD
             X_plus = obj.F * X_minus + mvnrnd(zeros(4,1), obj.Q)';
         end
 
-        function post = resample(obj,pre, w)
+        %%% Systematic resampling. w must already be normalized. The
+        %%% returned weights are flat 1/N, which is what lets the SIS recursion
+        %%% in timestep() reduce to the bootstrap weights on the next frame.
+        function [post, w] = resample(obj, pre, w)
             post = nan(5,obj.N);
 
             C = cumsum(w);
-            u = rand()/obj.N + (0:obj.N-1)/obj.N;
+            C(end) = 1; % cumsum round-off can leave C(end) just under u(N)
+            u = (rand() + (0:obj.N-1)) / obj.N;
 
+            %%% u is sorted, so one pass over the cdf is enough. A find() per
+            %%% particle is O(N^2) and shows up badly at N = 5000.
+            i = 1;
             for n = 1:obj.N
-                idx = find(u(n) < C, 1, 'first');
-
-                if isempty(idx)
-                    idx = obj.N;
+                while u(n) > C(i) && i < obj.N
+                    i = i + 1;
                 end
-                post(:,n) = pre(:,idx);
+                post(:,n) = pre(:,i);
             end
 
+            w = ones(1,obj.N) / obj.N;
         end
 
         function w_n = normalize(obj, w)
+            w = reshape(double(w), 1, []);
+
+            %%% The likelihood ratio is a product over a (2*pDist+1)^2 window of
+            %%% exponentials, so it can overflow on a strong frame. Clamp the
+            %%% infinities, drop the NaNs, then divide by the max before the sum
+            %%% so a large-but-finite set cannot overflow on the way to 1.
+            w(isinf(w) & w > 0) = realmax;
+            w(~isfinite(w)) = 0;
+
+            m = max(w);
+            if m > 0
+                w = w / m;
+            end
+
             t = sum(w);
             if t == 0
                 % Fall back to uniform so resample keeps the whole set instead
@@ -341,6 +484,30 @@ classdef TBD_PF < TBD
 
         end
 
+        %%% Which resampling policy produced R, for figure titles. Reads it
+        %%% off R rather than obj so a reloaded result still labels correctly.
+        function tag = resample_tag(obj, R)
+            boot = obj.bootstrap;
+            if isfield(R, 'bootstrap')
+                boot = R.bootstrap;
+            end
+            if boot
+                tag = 'bootstrap';
+            else
+                tag = sprintf('resample at ESS/N <= %.2f', obj.essThresh_of(R));
+            end
+        end
+
+        function thr = essThresh_of(obj, R)
+            thr = obj.RESAMPLE_THRESHOLD;
+            if isfield(R, 'essThresh')
+                thr = R.essThresh;
+            end
+            if isempty(thr)
+                thr = 0.5;
+            end
+        end
+
         %%% Pack a run's output plus the scenario it ran on into the results
         %%% struct visualize.plot_TBD understands. Anything missing (no
         %%% scenario, or a bare cell of signals) is simply left empty.
@@ -351,10 +518,27 @@ classdef TBD_PF < TBD
             res.pEthresh  = obj.pEthresh;
             res.t         = (0:R.K-1) * obj.dt;
 
+            %%% Runs produced before the adaptive resampler existed have none
+            %%% of these; vis drops the panels that need them.
+            if isfield(R, 'weights')
+                res.weights = R.weights;
+            end
+            if isfield(R, 'ess')
+                res.ess = R.ess;
+            end
+            if isfield(R, 'resampled')
+                res.resampled = R.resampled;
+            end
+
             if isstruct(scenario)
                 res.signals = cat(3, scenario.signal{:});
                 res.truth   = scenario.truth;
                 res.Etruth  = scenario.exist;
+                % Scenarios built before SNR was recorded have no field; vis
+                % drops the SNR panel and labels when res.snr is empty.
+                if isfield(scenario, 'snr')
+                    res.snr = scenario.snr;
+                end
                 if isfield(scenario, 'tvec') && numel(scenario.tvec) == R.K
                     res.t = scenario.tvec;
                 end

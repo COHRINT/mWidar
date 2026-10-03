@@ -39,4 +39,5 @@ for i = 1:128 % rows
     end
 end
 
+save('TBD/supp/TargetContribution.mat', "L")
 var(L(:))

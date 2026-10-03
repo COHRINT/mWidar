@@ -23,7 +23,11 @@ fig = v.signal_frame(sig, 'Truth', [x; 0; y; 0]);
 | State vector | `[px; vx; py; vy]` — position rows set by the `StateIdx` property (default `[1 3]`). A 2-row state is read directly as `[px; py]`. |
 | Track | `4 x K`, `4 x K x T` (T targets), or `1 x T` cell of `4 x K`. `NaN` means "not present at this k". |
 | Particle history | `5 x N x K` (`[px;vx;py;vy;E]`), `5 x N x K x T`, or a cell of `5 x N x K` |
-| Weights | `N x K`, normalized, pre-resample |
+| Weights | `N x K`, normalized, and paired with the particle set they
+  were stored beside. With an ESS-triggered resampler that column is flat
+  `1/N` on the frames that resampled and non-uniform on the ones that
+  didn't, so anything read off the cloud has to be weighted. |
+| ESS | `1 x K`, absolute (`1..N`), measured **before** each resample decision |
 | Existence prob | `T x K` (a `1 x K` vector is fine for one target) |
 
 
@@ -122,7 +126,10 @@ Signal behind, targets moving through it.
 | Option | Meaning |
 |---|---|
 | `'Truth'`, `'Est'` | Tracks |
-| `'Particles'`, `'Weights'` | Particle cloud per frame |
+| `'Particles'`, `'Weights'` | Particle cloud per frame. `'Weights'` shades and sizes the particles and adds a weight colorbar beside the scene |
+| `'WeightColormap'` | Colormap for that shading, default `'gray'`. `''` draws the flat particle color instead |
+| `'WeightScale'` | `'log'` (default) or `'linear'`. The likelihood ratio is a product over a pixel window, so on a linear scale one particle is white and the other `N-1` are black |
+| `'WeightCLim'` | Fix the weight color limits, in the scaled domain (`log10` units under `'log'`). Default: computed once over the whole run, floored at the 2nd percentile and at most 6 decades wide |
 | `'pE'` | `T x K`, shown in the title |
 | `'Trail'` | Past samples kept drawn, default `15`, `Inf` for the full track |
 | `'FPS'` | Playback / export rate |
@@ -140,12 +147,14 @@ v.animate_time_history(signals, 'Truth', truth, 'Particles', Y, 'pE', pE, ...
 ## TBD plots
 
 ### `plot_TBD(res, ...)`
-The results dashboard, 3×2:
+The results dashboard:
 
 ```
 [ track over energy map | existence P(E) ]
 [         p_x           |      p_y       ]
-[    position error     | particle health]
+[    position error     | existing parts ]
+[         ESS / N       (full width)     ]   <- when res.ess or res.weights is set
+[      measurement SNR  (full width)     ]   <- when res.snr is set
 ```
 
 `res` is a struct — see `visualize.results_template()`. **Every field is optional**;
@@ -162,6 +171,8 @@ res.est       = est;        % 4 x K x T      (optional)
 res.pE        = pE;         % T x K          (optional)
 res.particles = Y;          % 5 x N x K      (optional)
 res.weights   = W;          % N x K          (optional)
+res.ess       = ess;        % 1 x K, absolute (optional)
+res.resampled = didResample;% 1 x K logical   (optional)
 res.t         = [];         % 1 x K seconds; [] -> x axis is k
 res.pEthresh  = 0.5;
 
@@ -169,6 +180,7 @@ v.plot_TBD(res, 'Title', 'Run 3', 'Save', 'figs/tbd.png')
 ```
 
 `'pEthresh'` overrides `res.pEthresh`; the track panel shows declared frames only.
+`'ESSThresh'` is the `ESS/N` the filter resamples at, drawn as a line on the ESS row.
 
 ### `existence(pE, ...)`
 `P(E_k)` vs truth with the declaration threshold. Split out of `plot_TBD` for
@@ -179,6 +191,25 @@ tuning `Pb` / `Ps` / the threshold.
 | `'Etruth'` | `T x K` or `1 x K` true existence flags |
 | `'pEthresh'` | Default `0.5` |
 | `'Time'` | `1 x K`, defaults to `1:K` |
+
+### `ess_vs_time(ess, ...)`
+Effective sample size vs time, with the resampling threshold and the frames that
+actually resampled. The plot that says whether an ESS-triggered resampler is
+earning its keep: a curve that never approaches the threshold means the weights
+are healthy and resampling every step was throwing information away; a curve
+pinned to the floor means the likelihood is too peaked for `N` particles.
+
+| Option | Meaning |
+|---|---|
+| `'N'` | Particle count, used to turn an absolute ESS into a ratio. Required unless `ess` is already in `[0, 1]` |
+| `'Threshold'` | `ESS/N` the filter resamples at |
+| `'Resampled'` | `1 x K` logical, marks the frames that resampled |
+| `'Time'` | `1 x K`, defaults to `1:K` |
+
+```matlab
+R = pf.run(scenario);                      % adaptive resampling
+v.ess_vs_time(R.ess, 'N', R.N, 'Threshold', R.essThresh, 'Resampled', R.resampled)
+```
 
 ### `cardinality(estCard, ...)`
 Estimated vs true target count. `estCard` may be a `1 x K` count, or a `T x K`
@@ -268,6 +299,7 @@ collapsed and the track output is luck.
 |---|---|
 | `'Particles'` | `5 x N x K`; adds a unique-particle count to the debug log |
 | `'Frames'` | Frames to histogram, default 3 evenly spaced |
+| `'ESS'` | `1 x K` pre-resample ESS. `W` is the *posterior* weight, so on a resampled frame its ESS reads `N`; pass `R.ess` to plot what actually drove the decision |
 | `'Time'` | |
 
 ---

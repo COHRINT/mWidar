@@ -131,7 +131,7 @@ classdef TBD < mWidar
         w = importance_weights(obj, Y, z)
         l = guass_likelihood(obj, pos, pix, z)
         X = sample_new(obj, z)
-        post = timestep(obj, prior, z)
+        [post, w, ESS, didResample] = timestep(obj, prior, w_prior, z)
         X_plus = dynamics(obj, X_minus)
         w_n = normalize(obj, w)
 

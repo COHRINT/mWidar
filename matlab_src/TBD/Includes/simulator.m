@@ -25,6 +25,9 @@ classdef simulator < mWidar
         %%% Object count
         ct
 
+        %%% Noise varaince. Noise is enabled if var > 0
+        var   % is noise is enabled, we will use this variance
+
     end
 
     methods
@@ -38,6 +41,7 @@ classdef simulator < mWidar
             addParameter(p, 'Blur', true, @islogical);
             addParameter(p, 'Sigma', 2);
             addParameter(p,'Objects', 1)
+            addParameter(p,'Var', 0);
 
             parse(p, varargin{:})
 
@@ -46,6 +50,7 @@ classdef simulator < mWidar
             obj.blur = p.Results.Blur;
             obj.sigma = p.Results.Sigma;
             obj.ct = p.Results.Objects;
+            obj.var = p.Results.Var;
 
 
             %%% Filepaths
@@ -63,7 +68,11 @@ classdef simulator < mWidar
         %% Signal Generation
 
         %%% Generate single image
-        function signal = generate_mWidar_image(obj, pos, varargin)
+        %%% [signal, SNR] = sim.generate_mWidar_image(pos, 'meters', true)
+        %%% SNR is the peak SNR of this frame in dB (see get_SNR); it is
+        %%% measured on the noiseless signal, so callers can label a frame with
+        %%% the SNR it was actually generated at.
+        function [signal, SNR] = generate_mWidar_image(obj, pos, varargin)
             
             % parse
             p = inputParser;
@@ -81,22 +90,23 @@ classdef simulator < mWidar
             assert(meters || pixels)
 
             signal = zeros(obj.npx);
+            SNR = NaN;
 
             if meters
                 obj.debug_print("SELECTED METERS")
-                signal = obj.generate_mWidar_image_meters(pos);
+                [signal, SNR] = obj.generate_mWidar_image_meters(pos);
             end
 
             if pixels
                 obj.debug_print("SELECTED PIXELS")
-                signal = obj.generate_mWidar_image_pixels(pos);
+                [signal, SNR] = obj.generate_mWidar_image_pixels(pos);
             end
 
         end
     end
     methods(Hidden)
         %%% Generate image when pos is in meters
-        function signal = generate_mWidar_image_meters(obj, pos)
+        function [signal, SNR] = generate_mWidar_image_meters(obj, pos)
             
             S = zeros(obj.npx);
             
@@ -122,31 +132,50 @@ classdef simulator < mWidar
                 end
 
             end
-            % TODO: Gracefully handle the case where the obj is out of scene
+
+            % No object contributed to this frame (none present, or out of
+            % scene): start from a blank canvas rather than bailing out, so
+            % noise still gets added below.
             if all(S == 0)
-                obj.debug_print("OBJECT IS OUT OF SCENE, RETURNING EMPTY SIGNAL")
-                signal = zeros(obj.npx);
-                return;
+                obj.debug_print("NO OBJECT IN SCENE, USING BLANK SIGNAL")
+                blurred = zeros(obj.npx);
+            else
+                % mWidar forward model
+                signal_flat = S';
+                signal_flat = signal_flat(:);
+                signal_flat = obj.M * signal_flat;
+                signal_flat = obj.G' * signal_flat;
+                raw_signal = reshape(signal_flat, obj.npx,obj.npx)';
+                blurred = obj.blur_signal(raw_signal);
             end
 
-            % mWidar forward model
-            signal_flat = S';
-            signal_flat = signal_flat(:);
-            signal_flat = obj.M * signal_flat;
-            signal_flat = obj.G' * signal_flat;
-            raw_signal = reshape(signal_flat, obj.npx,obj.npx)';
-            blurred = obj.blur_signal(raw_signal);
+            % get signal SNR
+            SNR = obj.get_SNR(blurred);
+
+            %%% Add noise if var > 0, even when no object is present
+            if obj.var > 0
+                obj.debug_print('Adding Noise')
+                for i = 1:obj.npx
+                    for j = 1:obj.npx
+                        % add noise. Half gaussian with varaince of var
+                        n = abs(sqrt(obj.var)*randn());
+                        blurred(i,j) = blurred(i,j) + n;
+                    end
+                end
+            end
+
             signal = obj.normalize_signal(blurred);
 
         end
 
 
 
-        function signal = generate_mWidar_image_pixels(obj, pos)
+        function [signal, SNR] = generate_mWidar_image_pixels(obj, pos)
 
             S = zeros(obj.npx);
-            
+
             for i = 1:obj.ct
+                if isempty(pos{i}), continue; end
 
                 Gx = pos{i}(1);
                 Gy = pos{i}(2);
@@ -161,20 +190,37 @@ classdef simulator < mWidar
                 end
             end
 
-            % TODO: Gracefully handle the case where the obj is out of scene
+            % No object contributed to this frame (none present, or out of
+            % scene): start from a blank canvas rather than bailing out, so
+            % noise still gets added below.
             if all(S == 0)
-                obj.debug_print("ALL OBJECT IS OUT OF SCENE, RETURNING EMPTY SIGNAL")
-                signal = zeros(obj.npx);
-                return;
+                obj.debug_print("NO OBJECT IN SCENE, USING BLANK SIGNAL")
+                blurred = zeros(obj.npx);
+            else
+                % mWidar forward model
+                signal_flat = S';
+                signal_flat = signal_flat(:);
+                signal_flat = obj.M * signal_flat;
+                signal_flat = obj.G' * signal_flat;
+                raw_signal = reshape(signal_flat, obj.npx,obj.npx)';
+                blurred = obj.blur_signal(raw_signal);
             end
 
-            % mWidar forward model
-            signal_flat = S';
-            signal_flat = signal_flat(:);
-            signal_flat = obj.M * signal_flat;
-            signal_flat = obj.G' * signal_flat;
-            raw_signal = reshape(signal_flat, obj.npx,obj.npx)';
-            blurred = obj.blur_signal(raw_signal);
+            % get signal SNR
+            SNR = obj.get_SNR(blurred);
+
+            %%% Add noise if var > 0, even when no object is present
+            if obj.var > 0
+                obj.debug_print('Adding Noise')
+                for i = 1:obj.npx
+                    for j = 1:obj.npx
+                        % add noise. Half gaussian with varaince of var
+                        n = abs(sqrt(obj.var)*randn());
+                        blurred(i,j) = blurred(i,j) + n;
+                    end
+                end
+            end
+
             signal = obj.normalize_signal(blurred);
         end
 
@@ -195,6 +241,7 @@ classdef simulator < mWidar
             if obj.normalize
                 if max(raw(:)) == min(raw(:))
                     obj.debug_print("MIN AND MAX OF UNNORMALIZED SIGNAL ==")
+                    normalized = raw;
                     return
                 end
                 normalized = (raw - min(raw(:))) / (max(raw(:)) - min(raw(:)));
@@ -209,6 +256,29 @@ classdef simulator < mWidar
                 str = "[DEBUG][SIMULATOR]" + str + "\n";
                 fprintf(str)
             end
+        end
+        
+        %%% Peak SNR of a frame in dB.
+        %%% NOTE: Signal here is before any noise is added
+        %%% The noise is a half gaussian, so its power is var*(1 - 2/pi).
+        %%% The degenerate cases are reported rather than hidden, so a plot can
+        %%% leave them as gaps instead of drawing a bogus number:
+        %%%   var == 0 (noise off)   -> +Inf with signal, NaN on a blank frame
+        %%%   no target in the scene -> -Inf (peak is zero)
+        function SNR = get_SNR(obj, signal)
+            peak = max(signal(:));
+
+            if obj.var <= 0
+                if peak > 0
+                    SNR = Inf; % noiseless
+                else
+                    SNR = NaN; % no signal and no noise, nothing to report
+                end
+                return
+            end
+
+            SNR_peak = peak^2 / (obj.var * (1 - 2/pi));
+            SNR = 10 * log10(SNR_peak); % -Inf when peak == 0
         end
 
 

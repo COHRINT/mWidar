@@ -80,7 +80,10 @@ classdef visualize < mWidar
 
             obj.truthColor = [0 0 0];
             obj.estColor = [0.85 0.10 0.10];
-            obj.particleColor = [0.20 0.55 0.95];
+            % Magenta: turbo (the default signal colormap) runs blue -> cyan
+            % -> green -> yellow -> red and never produces magenta/pink, so
+            % particles stay visible against the signal at any intensity.
+            obj.particleColor = [1.00 0.00 0.90];
 
         end
 
@@ -104,6 +107,8 @@ classdef visualize < mWidar
               'Mask'        1 x K (or T x K) logical, only plot where true
                             (e.g. declared = pE > thresh)
               'Labels'      cellstr of per-target names for the legend
+              'SNR'         scalar or 1 x K signal SNR [dB]; appended to the
+                            title, but only when a background is actually drawn
               'Units'/'DataUnits'/'Axes'/'Title'/'Save'
         %}
         function fig = trajectories(obj, tracks, varargin)
@@ -114,6 +119,7 @@ classdef visualize < mWidar
             addParameter(p, 'ColorByTime', false, @islogical);
             addParameter(p, 'Mask', []);
             addParameter(p, 'Labels', {});
+            addParameter(p, 'SNR', []);
             parse(p, varargin{:})
             R = p.Results;
 
@@ -121,6 +127,7 @@ classdef visualize < mWidar
             du = obj.resolve_data_units(R);
 
             %%% Optional energy background
+            snr = [];
             if ~isempty(R.Background)
                 bg = R.Background;
                 if ndims(bg) == 3
@@ -128,6 +135,8 @@ classdef visualize < mWidar
                 end
                 obj.draw_image(ax, bg, R.Units, R.Colormap, []);
                 hold(ax, 'on');
+                %%% Only label SNR when there is a signal on the axes to label
+                snr = R.SNR;
             end
 
             est = obj.to_cell(tracks);
@@ -189,7 +198,8 @@ classdef visualize < mWidar
             if ~isempty(h)
                 legend(ax, h, lbl, 'Location', 'best');
             end
-            obj.set_title(ax, R.Title, 'Target Trajectories');
+            obj.set_title(ax, obj.signal_title(R.Title, '', snr), ...
+                obj.signal_title('', 'Target Trajectories', snr));
             obj.save_figure(fig, R.Save);
 
         end
@@ -205,6 +215,7 @@ classdef visualize < mWidar
               'Weights'       1 x N weights, used to size/shade the particles
               'CLim'          color limits, [] for auto
               'Colorbar'      logical, default true
+              'SNR'           frame SNR [dB], appended to the title
               'Units'/'DataUnits'/'Axes'/'Title'/'Save'
         %}
         function fig = signal_frame(obj, signal, varargin)
@@ -216,6 +227,7 @@ classdef visualize < mWidar
             addParameter(p, 'Weights', []);
             addParameter(p, 'CLim', []);
             addParameter(p, 'Colorbar', true, @islogical);
+            addParameter(p, 'SNR', []);
             parse(p, varargin{:})
             R = p.Results;
 
@@ -240,7 +252,8 @@ classdef visualize < mWidar
 
             obj.style_scene(ax, R.Units);
             obj.maybe_legend(ax);
-            obj.set_title(ax, R.Title, 'mWidar Signal Frame');
+            obj.set_title(ax, obj.signal_title(R.Title, '', R.SNR), ...
+                obj.signal_title('', 'mWidar Signal Frame', R.SNR));
             obj.save_figure(fig, R.Save);
 
         end
@@ -257,6 +270,8 @@ classdef visualize < mWidar
               'Truth'   truth tracks, marked on the frame they belong to
               'Est'     estimated tracks, same
               'CLim'    shared color limits ('auto' per-frame if [])
+              'SNR'     1 x K signal SNR [dB]; each tile is labelled with the
+                        SNR of the frame it shows
         %}
         function fig = signal_montage(obj, signals, varargin)
 
@@ -266,6 +281,7 @@ classdef visualize < mWidar
             addParameter(p, 'Truth', []);
             addParameter(p, 'Est', []);
             addParameter(p, 'CLim', []);
+            addParameter(p, 'SNR', []);
             parse(p, varargin{:})
             R = p.Results;
 
@@ -294,7 +310,14 @@ classdef visualize < mWidar
                 obj.mark_tracks_at_k(ax, tru, k, du, R.Units, obj.truthColor, 'o');
                 obj.mark_tracks_at_k(ax, est, k, du, R.Units, obj.estColor, 'x');
                 obj.style_scene(ax, R.Units);
-                title(ax, sprintf('k = %d', k), 'FontSize', obj.fs);
+                %%% Second line rather than a separator: the tiles are small,
+                %%% and a one-line title with the SNR on it gets clipped.
+                tag = obj.snr_tag(obj.snr_at(R.SNR, k));
+                if isempty(tag)
+                    title(ax, sprintf('k = %d', k), 'FontSize', obj.fs);
+                else
+                    title(ax, {sprintf('k = %d', k), tag}, 'FontSize', obj.fs);
+                end
                 if ii ~= 1
                     xlabel(ax, ''); ylabel(ax, '');
                 end
@@ -316,11 +339,14 @@ classdef visualize < mWidar
 
             Options
               'Names'  1 x 2 cellstr of panel titles
+              'SNR'    1 x 2 SNR [dB] for A and B, appended to their titles
+                       (a scalar is taken to apply to both)
         %}
         function fig = compare_signals(obj, A, B, varargin)
 
             p = obj.common_parser();
             addParameter(p, 'Names', {'A', 'B'});
+            addParameter(p, 'SNR', []);
             parse(p, varargin{:})
             R = p.Results;
 
@@ -350,12 +376,14 @@ classdef visualize < mWidar
             ax = nexttile(tl);
             obj.draw_image(ax, A, R.Units, R.Colormap, shared);
             obj.style_scene(ax, R.Units);
-            title(ax, R.Names{1}, 'FontSize', obj.fs);
+            title(ax, obj.signal_title('', R.Names{1}, obj.snr_at(R.SNR, 1)), ...
+                'FontSize', obj.fs);
 
             ax = nexttile(tl);
             obj.draw_image(ax, B, R.Units, R.Colormap, shared);
             obj.style_scene(ax, R.Units);
-            title(ax, R.Names{2}, 'FontSize', obj.fs);
+            title(ax, obj.signal_title('', R.Names{2}, obj.snr_at(R.SNR, 2)), ...
+                'FontSize', obj.fs);
             colorbar(ax);
 
             ax = nexttile(tl);
@@ -382,8 +410,16 @@ classdef visualize < mWidar
               'Truth'      truth tracks (4 x K x T or cell)
               'Est'        estimated tracks, same formats
               'Particles'  5 x N x K particle history (or cell / 5 x N x K x T)
-              'Weights'    N x K weights
+              'Weights'    N x K weights. Shades and sizes the particles, and
+                           adds a weight colorbar next to the scene.
+              'WeightColormap'  colormap for that shading (default 'gray');
+                           '' falls back to the flat particle color
+              'WeightScale'     'log' (default) or 'linear'
+              'WeightCLim'      fix the weight color limits, in the scaled
+                           domain (so log10 units when 'WeightScale' is 'log')
               'pE'         T x K existence probability, shown in the title
+              'SNR'        1 x K signal SNR [dB]; the title is relabelled with
+                           the current frame's SNR on every frame
               'Trail'      # of past estimate samples to keep drawn (default 15,
                            Inf for the full track)
               'FPS'        playback / export frame rate
@@ -400,11 +436,15 @@ classdef visualize < mWidar
             addParameter(p, 'Particles', []);
             addParameter(p, 'Weights', []);
             addParameter(p, 'pE', []);
+            addParameter(p, 'SNR', []);
             addParameter(p, 'Trail', 15);
             addParameter(p, 'FPS', obj.fps);
             addParameter(p, 'Format', '');
             addParameter(p, 'CLim', []);
             addParameter(p, 'Pause', 0);
+            addParameter(p, 'WeightColormap', 'gray');
+            addParameter(p, 'WeightScale', 'log');
+            addParameter(p, 'WeightCLim', []);
             parse(p, varargin{:})
             R = p.Results;
 
@@ -426,6 +466,20 @@ classdef visualize < mWidar
             end
 
             [fig, ax] = obj.get_axes(R, 'Time History');
+
+            %%% Weight shading. The scene axes already owns a colormap (the
+            %%% signal image) and an axes only gets one, so the particles are
+            %%% given explicit RGB and the weight colorbar hangs off a hidden
+            %%% axes of its own. Limits are computed once over the whole run:
+            %%% per-frame limits would make every frame look identical and hide
+            %%% exactly the collapse the shading is there to show.
+            wopt = [];
+            if ~isempty(R.Weights) && ~isempty(R.WeightColormap)
+                wopt = obj.weight_opts(R.Weights, R.WeightColormap, ...
+                                       R.WeightScale, R.WeightCLim);
+                obj.weight_colorbar(fig, ax, wopt);
+            end
+
             [fmt, outFile] = obj.resolve_format(R.Save, R.Format);
             vw = [];
             if fmt == "mp4"
@@ -444,10 +498,10 @@ classdef visualize < mWidar
                 for t = 1:numel(Yc)
                     Yk = Yc{t}(:,:,k);
                     wk = [];
-                    if ~isempty(R.Weights)
+                    if ~isempty(R.Weights) && k <= size(R.Weights, 2)
                         wk = R.Weights(:,k);
                     end
-                    obj.overlay_particles(ax, Yk, wk, du, R.Units);
+                    obj.overlay_particles(ax, Yk, wk, du, R.Units, wopt);
                 end
 
                 %%% Trails + current markers
@@ -459,6 +513,12 @@ classdef visualize < mWidar
                 obj.style_scene(ax, R.Units);
 
                 ttl = sprintf('k = %d / %d', k, K);
+                %%% Per frame, not the whole run: SNR changes with the target's
+                %%% position, so the number has to track the frame on screen.
+                tag = obj.snr_tag(obj.snr_at(R.SNR, k));
+                if ~isempty(tag)
+                    ttl = [ttl, '   ', tag]; %#ok<AGROW>
+                end
                 if ~isempty(pE)
                     ttl = [ttl, sprintf('   P(E) = %s', ...
                         strjoin(compose('%.2f', pE(:,k)'), ', '))]; %#ok<AGROW>
@@ -507,7 +567,8 @@ classdef visualize < mWidar
 
         %{
             The one-stop TBD results dashboard: existence, track in the plane,
-            per-axis position vs time, position error, and particle health.
+            per-axis position vs time, position error, particle health, and
+            measurement SNR vs time when res.snr is filled in.
 
             fig = v.plot_TBD(res, ...)
 
@@ -515,13 +576,15 @@ classdef visualize < mWidar
             Anything absent is simply skipped, so partial results still plot.
 
             Options
-              'pEthresh'  declaration threshold (default 0.5 or res.pEthresh)
+              'pEthresh'   declaration threshold (default 0.5 or res.pEthresh)
+              'ESSThresh'  ESS/N the filter resamples at, drawn on the ESS row
               'Units'/'DataUnits'/'Title'/'Save'
         %}
         function fig = plot_TBD(obj, res, varargin)
 
             p = obj.common_parser();
             addParameter(p, 'pEthresh', []);
+            addParameter(p, 'ESSThresh', []);
             parse(p, varargin{:})
             R = p.Results;
 
@@ -543,10 +606,19 @@ classdef visualize < mWidar
             %%%   [ track | existence ]
             %%%   [  p_x  |    p_y    ]
             %%%   [ error | particles ]
+            %%%   [       ESS        ]   <- only when the weights were recorded
+            %%%   [       SNR        ]   <- only when res.snr is given
             %%% Wide on purpose: the scene panel is axis-equal, so it leaves
             %%% horizontal room in its tile that the legend drops into.
-            fig = obj.new_figure('TBD Results', [1400 950]);
-            tl = tiledlayout(fig, 3, 2, 'TileSpacing', 'compact', 'Padding', 'compact');
+            %%% ESS and SNR span the full width: they share the x axis with the
+            %%% rows above them and read as the run's timeline.
+            hasSNR = obj.has_snr(res.snr);
+            essR = obj.ess_ratio(res);
+            hasESS = ~isempty(essR);
+            nRows = 3 + hasESS + hasSNR;
+            figH = 950 + 220 * hasESS + 220 * hasSNR;
+            fig = obj.new_figure('TBD Results', [1400 figH]);
+            tl = tiledlayout(fig, nRows, 2, 'TileSpacing', 'compact', 'Padding', 'compact');
 
             %%% Track in the plane over the energy map -------------------------
             ax = nexttile(tl);
@@ -587,7 +659,14 @@ classdef visualize < mWidar
             %%% Legend goes outside: the scene is square and a 'best' legend
             %%% lands on top of the image every time.
             obj.maybe_legend(ax, 'eastoutside');
-            title(ax, 'Track (declared only)', 'FontSize', obj.fs);
+            %%% The background is a projection over every frame, so snr_tag
+            %%% summarises the run rather than quoting one frame.
+            snrBG = [];
+            if ~isempty(bg)
+                snrBG = res.snr;
+            end
+            title(ax, obj.signal_title('', 'Track (declared only)', snrBG), ...
+                'FontSize', obj.fs);
 
             %%% Existence -----------------------------------------------------
             ax = nexttile(tl);
@@ -641,16 +720,12 @@ classdef visualize < mWidar
             title(ax, 'Position Error', 'FontSize', obj.fs);
 
             %%% Particle health ---------------------------------------------------
+            %%% Head count, not ESS: ESS gets its own full-width row below when
+            %%% the weights were recorded, and the two answer different
+            %%% questions (how many particles think the target exists, vs how
+            %%% many of them are still carrying weight).
             ax = nexttile(tl);
-            if ~isempty(res.weights)
-                ess = obj.ess(res.weights);
-                plot(ax, kvec(1:min(end,numel(ess))), ...
-                    ess(1:min(end,numel(kvec))) ./ size(res.weights,1), ...
-                    '-', 'Color', obj.particleColor, 'LineWidth', obj.lw);
-                ylabel(ax, 'ESS / N', 'FontSize', obj.fs);
-                ylim(ax, [0 1]);
-                title(ax, 'Particle Health', 'FontSize', obj.fs);
-            elseif ~isempty(res.particles)
+            if ~isempty(res.particles)
                 Yc = obj.to_particle_cell(res.particles);
                 nAlive = squeeze(sum(Yc{1}(5,:,:) ~= 0, 2))';
                 plot(ax, kvec(1:min(end,numel(nAlive))), ...
@@ -658,12 +733,26 @@ classdef visualize < mWidar
                     'Color', obj.particleColor, 'LineWidth', obj.lw);
                 ylabel(ax, '# particles with E = 1', 'FontSize', obj.fs);
                 title(ax, 'Existing Particles', 'FontSize', obj.fs);
+            elseif hasESS
+                obj.ess_axes(ax, kvec, essR, R.ESSThresh, res.resampled, tlab);
             else
                 text(ax, 0.5, 0.5, 'no particle data', ...
                     'Units', 'normalized', 'HorizontalAlignment', 'center');
             end
             grid(ax, 'on');
             xlabel(ax, tlab, 'FontSize', obj.fs);
+
+            %%% Effective sample size ---------------------------------------------
+            if hasESS && ~isempty(res.particles)
+                ax = nexttile(tl, [1 2]);
+                obj.ess_axes(ax, kvec, essR, R.ESSThresh, res.resampled, tlab);
+            end
+
+            %%% Measurement SNR ---------------------------------------------------
+            if hasSNR
+                ax = nexttile(tl, [1 2]);
+                obj.snr_axes(ax, kvec, res.snr, tlab);
+            end
 
             if ~isempty(R.Title)
                 title(tl, R.Title, 'FontSize', obj.fs + 2);
@@ -701,6 +790,86 @@ classdef visualize < mWidar
             [fig, ax] = obj.get_axes(R, 'Target Existence');
             obj.existence_axes(ax, kvec, pE, obj.to_rowmat(R.Etruth), R.pEthresh, 'k');
             obj.set_title(ax, R.Title, 'Target Existence');
+            obj.save_figure(fig, R.Save);
+
+        end
+
+        %{
+            Effective sample size vs time, with the resampling threshold and the
+            frames the filter actually resampled on. This is the plot that says
+            whether the ESS-triggered resampler is earning its keep: a curve
+            that never approaches the threshold means the weights are healthy
+            and the resamples were being wasted, a curve pinned to the floor
+            means the likelihood is too peaked for N particles.
+
+            fig = v.ess_vs_time(ess, ...)
+              ess  1 x K effective sample size, absolute (1..N) or already a
+                   ratio in [0, 1]
+
+            Options
+              'N'          particle count, used to turn an absolute ESS into a
+                           ratio; required unless ess is already a ratio
+              'Threshold'  ESS/N the filter resamples at, drawn as a line
+              'Resampled'  1 x K logical, marks the frames that resampled
+              'Time'       1 x K time vector, defaults to 1:K
+              'Title'/'Save'/'Axes'
+        %}
+        function fig = ess_vs_time(obj, ess, varargin)
+
+            p = obj.common_parser();
+            addParameter(p, 'N', []);
+            addParameter(p, 'Threshold', []);
+            addParameter(p, 'Resampled', []);
+            addParameter(p, 'Time', []);
+            parse(p, varargin{:})
+            R = p.Results;
+
+            essR = reshape(double(ess), 1, []);
+            if ~isempty(R.N)
+                essR = essR ./ R.N;
+            elseif max(essR, [], 'omitnan') > 1
+                error('visualize:ess_vs_time', ...
+                    'ess looks absolute (max %.3g > 1); pass ''N'' so it can be normalized', ...
+                    max(essR, [], 'omitnan'));
+            end
+
+            kvec = R.Time;
+            if isempty(kvec)
+                kvec = 1:numel(essR);
+            end
+
+            [fig, ax] = obj.get_axes(R, 'Effective Sample Size');
+            obj.ess_axes(ax, kvec, essR, R.Threshold, R.Resampled, 'k');
+            if ~isempty(R.Title)
+                title(ax, R.Title, 'FontSize', obj.fs);
+            end
+            obj.save_figure(fig, R.Save);
+
+        end
+
+        %{
+            Measurement SNR vs time. The companion to existence(): when a track
+            drops out, this says whether the signal was there to be found.
+
+            fig = v.snr_vs_time(snr, ...)
+              snr  1 x K peak SNR in dB, as simulator.get_SNR reports it
+                   (scenario.snr carries it downstream)
+            Options
+              'Time'    1 x K time vector, defaults to 1:K
+              'XLabel'  axis label for 'Time' (default 'k')
+              'Axes'/'Title'/'Save'
+        %}
+        function fig = snr_vs_time(obj, snr, varargin)
+
+            p = obj.common_parser();
+            addParameter(p, 'Time', []);
+            addParameter(p, 'XLabel', 'k');
+            parse(p, varargin{:})
+            R = p.Results;
+
+            [fig, ax] = obj.get_axes(R, 'Measurement SNR');
+            obj.snr_axes(ax, R.Time, snr, R.XLabel);
+            obj.set_title(ax, R.Title, 'Measurement SNR');
             obj.save_figure(fig, R.Save);
 
         end
@@ -781,6 +950,7 @@ classdef visualize < mWidar
               'Truth'    4 x 1 (or 4 x T) truth state for that frame
               'Est'      4 x 1 point estimate
               'ShowDead' also draw the E = 0 particles, in grey
+              'SNR'      SNR [dB] of 'Signal', appended to the positions title
         %}
         function fig = particle_cloud(obj, Yk, varargin)
 
@@ -790,6 +960,7 @@ classdef visualize < mWidar
             addParameter(p, 'Truth', []);
             addParameter(p, 'Est', []);
             addParameter(p, 'ShowDead', false, @islogical);
+            addParameter(p, 'SNR', []);
             parse(p, varargin{:})
             R = p.Results;
 
@@ -838,7 +1009,13 @@ classdef visualize < mWidar
             obj.overlay_states(ax, R.Est, du, R.Units, obj.estColor, 'x', 'Estimate');
             obj.style_scene(ax, R.Units);
             obj.maybe_legend(ax);
-            title(ax, sprintf('Positions (%d / %d existing)', nnz(alive), N), ...
+            %%% Only label SNR when the signal is actually drawn underneath
+            snr = [];
+            if ~isempty(R.Signal)
+                snr = R.SNR;
+            end
+            title(ax, obj.signal_title('', ...
+                sprintf('Positions (%d / %d existing)', nnz(alive), N), snr), ...
                 'FontSize', obj.fs);
 
             %%% Velocities -----------------------------------------------------
@@ -894,6 +1071,7 @@ classdef visualize < mWidar
               'Signal'   npx x npx frame to compare against
               'Bins'     grid coarsening factor (default 2 -> 64 x 64 bins)
               'Truth'
+              'SNR'      SNR [dB] of 'Signal', appended to its panel title
         %}
         function fig = particle_density(obj, Yk, varargin)
 
@@ -902,6 +1080,7 @@ classdef visualize < mWidar
             addParameter(p, 'Signal', []);
             addParameter(p, 'Bins', 2);
             addParameter(p, 'Truth', []);
+            addParameter(p, 'SNR', []);
             parse(p, varargin{:})
             R = p.Results;
 
@@ -947,7 +1126,8 @@ classdef visualize < mWidar
                 obj.overlay_states(ax, R.Truth, du, R.Units, obj.truthColor, 'o', 'Truth');
                 obj.style_scene(ax, R.Units);
                 colorbar(ax);
-                title(ax, 'Measurement', 'FontSize', obj.fs);
+                title(ax, obj.signal_title('', 'Measurement', R.SNR), ...
+                    'FontSize', obj.fs);
             end
 
             ax = nexttile(tl);
@@ -1247,6 +1427,7 @@ classdef visualize < mWidar
             addParameter(p, 'Particles', []);
             addParameter(p, 'Frames', []);
             addParameter(p, 'Time', []);
+            addParameter(p, 'ESS', []);
             parse(p, varargin{:})
             R = p.Results;
 
@@ -1256,7 +1437,15 @@ classdef visualize < mWidar
                 kvec = 1:K;
             end
 
-            essK = obj.ess(W) ./ N;
+            %%% W is the posterior weight, so on a frame that resampled it is
+            %%% flat and its ESS reads N. Pass the filter's own pre-resample
+            %%% series ('ESS', R.ess) to see what actually drove the decision.
+            if isempty(R.ESS)
+                essK = obj.ess(W) ./ N;
+            else
+                essK = reshape(double(R.ESS), 1, []) ./ N;
+                essK = essK(1:min(numel(essK), K));
+            end
             maxW = max(W, [], 1);
 
             frames = R.Frames;
@@ -1334,6 +1523,9 @@ classdef visualize < mWidar
                 'pE',        [], ... % T x K estimated existence probability
                 'particles', [], ... % 5 x N x K (or cell / 5 x N x K x T)
                 'weights',   [], ... % N x K normalized weights
+                'ess',       [], ... % 1 x K effective sample size (absolute, 1..N)
+                'resampled', [], ... % 1 x K logical, frames the filter resampled on
+                'snr',       [], ... % 1 x K measurement peak SNR [dB]
                 't',         [], ... % 1 x K time stamps (seconds); [] -> use k
                 'pEthresh',  0.5);
         end
@@ -1451,6 +1643,90 @@ classdef visualize < mWidar
                 title(ax, fallback, 'FontSize', obj.fs);
             else
                 title(ax, given, 'FontSize', obj.fs);
+            end
+        end
+
+        %% ------------------------------------------------------------------
+        %% SNR labelling
+        %% ------------------------------------------------------------------
+
+        %%% Text for the SNR of a frame, as simulator.get_SNR reports it.
+        %%% A vector is summarised by the mean of its finite entries, which is
+        %%% what the montage / MIP style plots want. Returns '' when there is
+        %%% nothing meaningful to say, so a caller can append it blindly.
+        function tag = snr_tag(~, snr)
+            tag = '';
+            if isempty(snr)
+                return
+            end
+            v = double(snr(:))';
+
+            if ~isscalar(v)
+                g = v(isfinite(v));
+                if isempty(g)
+                    return
+                end
+                tag = sprintf('SNR = %.1f dB (mean)', mean(g));
+                return
+            end
+
+            one = v(1);
+            if isnan(one)
+                return
+            elseif isinf(one)
+                if one > 0
+                    tag = 'SNR = Inf (noiseless)';
+                else
+                    tag = 'SNR = -Inf (no target)';
+                end
+            else
+                tag = sprintf('SNR = %.1f dB', one);
+            end
+        end
+
+        %%% Is there an SNR worth drawing a panel for? A noiseless run records
+        %%% Inf for every frame, which is true but not a plot.
+        function tf = has_snr(~, snr)
+            tf = ~isempty(snr) && any(isfinite(double(snr(:))));
+        end
+
+        %%% SNR for frame k out of a 1 x K vector. A scalar is taken to apply to
+        %%% every frame; anything short of k reports NaN rather than erroring,
+        %%% matching how the rest of the class clamps to the shorter series.
+        function v = snr_at(~, snr, k)
+            v = NaN;
+            if isempty(snr)
+                return
+            end
+            s = double(snr(:))';
+            if isscalar(s)
+                v = s;
+            elseif k >= 1 && k <= numel(s)
+                v = s(k);
+            end
+        end
+
+        %%% Title for a panel that draws a signal: the caller's title, or the
+        %%% fallback, with the SNR appended. Every signal plot labels SNR the
+        %%% same way because they all come through here.
+        %%%
+        %%% An empty base stays empty, tag or no tag. Callers pair this with
+        %%% set_title as
+        %%%   set_title(ax, signal_title(R.Title, '', snr), ...
+        %%%                 signal_title('', fallback, snr))
+        %%% and that only picks the fallback if the first argument is empty, so
+        %%% returning a bare tag here would lose the fallback text.
+        function t = signal_title(obj, given, fallback, snr)
+            t = char(string(given));
+            if isempty(t)
+                t = char(string(fallback));
+            end
+            if isempty(t)
+                return
+            end
+            tag = obj.snr_tag(snr);
+            if ~isempty(tag)
+                t = [t '   |   ' tag];
             end
         end
 
@@ -1679,7 +1955,13 @@ classdef visualize < mWidar
         %% ------------------------------------------------------------------
 
         %%% Scatter the existing particles onto ax, shaded by weight if given
-        function overlay_particles(obj, ax, Yk, w, du, units)
+        %%% Draw one frame's particle cloud. wopt (optional) is the struct
+        %%% weight_opts() builds; with it the particles are shaded by weight
+        %%% using explicit RGB, without it they are only sized by weight.
+        function overlay_particles(obj, ax, Yk, w, du, units, wopt)
+            if nargin < 7
+                wopt = [];
+            end
             if isempty(Yk)
                 return
             end
@@ -1696,14 +1978,128 @@ classdef visualize < mWidar
             [x, y] = obj.convert_xy(Yk(ix,alive), Yk(iy,alive), du, units);
             if isempty(w)
                 plot(ax, x, y, '.', 'Color', obj.particleColor, ...
-                    'MarkerSize', 4, 'DisplayName', 'Particles');
-            else
-                wa = reshape(w, 1, []);
-                wa = wa(alive);
-                sz = 6 + 50 * obj.unit_scale(wa);
-                scatter(ax, x, y, sz, wa, 'filled', 'MarkerFaceAlpha', 0.5, ...
-                    'DisplayName', 'Particles');
+                    'MarkerSize', 8, 'DisplayName', 'Particles');
+                return
             end
+
+            wa = reshape(w, 1, []);
+            wa = wa(alive);
+
+            if isempty(wopt)
+                sz = 10 + 35 * obj.unit_scale(wa);
+                scatter(ax, x, y, sz, obj.particleColor, 'filled', ...
+                    'MarkerFaceAlpha', 0.6, 'DisplayName', 'Particles');
+                return
+            end
+
+            %%% One colormap per axes, and the signal image already claimed it,
+            %%% so hand scatter an n x 3 of RGB instead of scalar CData.
+            u = obj.weight_unit(wa, wopt);
+            C = obj.weight_rgb(u, wopt);
+            sz = 6 + 40 * u;
+            scatter(ax, x, y, sz, C, 'filled', 'MarkerFaceAlpha', 0.85, ...
+                'DisplayName', 'Particles');
+        end
+
+        %%% Settle the weight color scale once for a whole run.
+        %%%   W      N x K (or 1 x N) weights
+        %%%   cmap   colormap name, or an m x 3 table
+        %%%   scale  'log' | 'linear'
+        %%%   lim    caller-supplied limits in the scaled domain, or []
+        function wopt = weight_opts(obj, W, cmap, scale, lim)
+            scale = lower(char(string(scale)));
+            assert(any(strcmp(scale, {'log', 'linear'})), ...
+                'WeightScale must be ''log'' or ''linear''');
+
+            wopt = struct('cmap', cmap, 'scale', scale, 'clim', [], ...
+                          'range', [0.18 1.0]);
+
+            if ~isempty(lim)
+                wopt.clim = reshape(double(lim), 1, 2);
+                return
+            end
+
+            v = double(W(:));
+            v = v(isfinite(v) & v > 0);
+            if isempty(v)
+                wopt.clim = [0 1];
+                return
+            end
+            if strcmp(scale, 'log')
+                v = log10(v);
+            end
+
+            hi = max(v);
+            %%% 2nd percentile, not the min: a handful of particles sitting on
+            %%% a numerically-zero likelihood would otherwise stretch the scale
+            %%% over a hundred decades and flatten everything else to one shade.
+            lo = obj.row_pctile(reshape(v, 1, []), 0.02);
+            if strcmp(scale, 'log')
+                lo = max(lo, hi - 6); % six decades is plenty of dynamic range
+            end
+            if ~(hi > lo)
+                lo = hi - 1;
+            end
+            wopt.clim = [lo hi];
+        end
+
+        %%% Weights -> [0, 1] against the run-wide limits in wopt
+        function u = weight_unit(~, w, wopt)
+            v = reshape(double(w), 1, []);
+            if strcmp(wopt.scale, 'log')
+                v(v <= 0) = NaN;
+                v = log10(v);
+            end
+            u = (v - wopt.clim(1)) / max(wopt.clim(2) - wopt.clim(1), eps);
+            u(~isfinite(u)) = 0; % zero / NaN weight reads as "lightest"
+            u = min(max(u, 0), 1);
+        end
+
+        %%% n x 3 RGB for unit-scaled weights. wopt.range trims the dark end of
+        %%% the colormap off: pure black particles vanish into the low end of
+        %%% turbo, which is exactly where an un-weighted particle tends to sit.
+        function C = weight_rgb(obj, u, wopt)
+            M = obj.colormap_table(wopt.cmap);
+            m = size(M, 1);
+            r = wopt.range;
+            lo = max(1, round(r(1) * m));
+            hi = max(lo, round(r(2) * m));
+            M = M(lo:hi, :);
+            idx = 1 + round(reshape(u, [], 1) * (size(M,1) - 1));
+            idx = min(max(idx, 1), size(M,1));
+            C = M(idx, :);
+        end
+
+        function M = colormap_table(~, cmap)
+            if isnumeric(cmap)
+                M = cmap;
+            else
+                M = feval(char(string(cmap)), 256);
+            end
+        end
+
+        %%% Colorbar for the particle weights. The scene axes' colormap belongs
+        %%% to the signal image, so the bar is driven by an invisible axes
+        %%% parked on top of it and positioned by hand.
+        function cb = weight_colorbar(obj, fig, ax, wopt)
+            pos = get(ax, 'Position');
+            set(ax, 'Position', [pos(1), pos(2), pos(3) * 0.86, pos(4)]);
+
+            axc = axes(fig, 'Position', get(ax, 'Position'), ...
+                'Visible', 'off', 'Color', 'none', 'HandleVisibility', 'off'); %#ok<LAXES>
+            colormap(axc, obj.weight_rgb(linspace(0,1,256), wopt));
+            caxis(axc, wopt.clim); %#ok<CAXIS>
+
+            cb = colorbar(axc);
+            cb.Position = [pos(1) + pos(3) * 0.90, pos(2) + 0.10 * pos(4), ...
+                           0.022, 0.78 * pos(4)];
+            if strcmp(wopt.scale, 'log')
+                cb.Label.String = 'log_{10} particle weight';
+            else
+                cb.Label.String = 'particle weight';
+            end
+            cb.Label.FontSize = obj.fs;
+            cb.FontSize = obj.fs - 1;
         end
 
         function overlay_states(obj, ax, S, du, units, color, marker, name)
@@ -2012,6 +2408,139 @@ classdef visualize < mWidar
             title(ax, 'Target Existence', 'FontSize', obj.fs);
         end
 
+        %%% Shared SNR vs time panel, used by plot_TBD and snr_vs_time.
+        %%% Frames whose SNR is not finite (noise off, or no target in the
+        %%% scene) are drawn as gaps: plotting them would drag the y limits out
+        %%% to +-Inf and hide the range that matters.
+        %%% ESS/N for a results struct, or [] when the run recorded neither an
+        %%% ESS series nor the weights it would be computed from.
+        function essR = ess_ratio(obj, res)
+            essR = [];
+
+            N = 0;
+            if ~isempty(res.particles)
+                Yc = obj.to_particle_cell(res.particles);
+                N = size(Yc{1}, 2);
+            elseif ~isempty(res.weights)
+                N = size(res.weights, 1);
+            end
+
+            if ~isempty(res.ess)
+                essR = reshape(double(res.ess), 1, []);
+                if N > 0
+                    essR = essR / N;
+                end
+            elseif ~isempty(res.weights)
+                %%% Fall back to the stored weights. Note this is the ESS of
+                %%% the posterior: on a frame that resampled the weights are
+                %%% flat again and it reads 1, which is why run() records the
+                %%% pre-resample value separately.
+                essR = obj.ess(res.weights) ./ size(res.weights, 1);
+            end
+        end
+
+        %%% Shared ESS panel, used by plot_TBD and ess_vs_time.
+        %%%   essR       1 x K ESS/N
+        %%%   thresh     ESS/N the filter resamples at, or [] to omit the line
+        %%%   resampled  1 x K logical, or [] to omit the markers
+        function ess_axes(obj, ax, kvec, essR, thresh, resampled, tlab)
+
+            essR = reshape(double(essR), 1, []);
+            if isempty(kvec)
+                kvec = 1:numel(essR);
+            end
+            n = min(numel(kvec), numel(essR));
+            kvec = kvec(1:n);
+            essR = essR(1:n);
+
+            plot(ax, kvec, essR, '-', 'Color', obj.particleColor, ...
+                'LineWidth', obj.lw, 'DisplayName', 'ESS / N');
+            hold(ax, 'on');
+
+            if ~isempty(thresh)
+                yline(ax, thresh, 'k--', 'LineWidth', 1, ...
+                    'Label', sprintf('resample at %.2f', thresh), ...
+                    'LabelHorizontalAlignment', 'left', ...
+                    'LabelVerticalAlignment', 'bottom', ...
+                    'HandleVisibility', 'off');
+            end
+
+            %%% Marked on the curve rather than as vertical lines: on a run that
+            %%% resamples most frames a rug of xlines is solid black.
+            nres = 0;
+            if ~isempty(resampled)
+                m = logical(reshape(resampled, 1, []));
+                m = m(1:min(numel(m), n));
+                nres = nnz(m);
+                if nres > 0
+                    plot(ax, kvec(m), essR(m), 'o', 'Color', obj.estColor, ...
+                        'MarkerSize', obj.ms - 1, 'LineStyle', 'none', ...
+                        'DisplayName', 'resampled');
+                end
+            end
+
+            grid(ax, 'on');
+            ylim(ax, [0 1]);
+            xlabel(ax, tlab, 'FontSize', obj.fs);
+            ylabel(ax, 'ESS / N', 'FontSize', obj.fs);
+
+            good = isfinite(essR);
+            ttl = 'Effective Sample Size';
+            if any(good)
+                ttl = sprintf('%s  (median %.3f', ttl, median(essR(good)));
+                if ~isempty(resampled)
+                    ttl = sprintf('%s, resampled %d/%d frames', ttl, nres, n);
+                end
+                ttl = [ttl ')'];
+            end
+            title(ax, ttl, 'FontSize', obj.fs);
+            obj.maybe_legend(ax);
+        end
+
+        function snr_axes(obj, ax, kvec, snr, tlab)
+
+            v = obj.to_rowmat(snr);
+            if isempty(v)
+                text(ax, 0.5, 0.5, 'no SNR data', 'Units', 'normalized', ...
+                    'HorizontalAlignment', 'center');
+                axis(ax, 'off');
+                return
+            end
+            v = v(1,:);
+
+            if isempty(kvec)
+                kvec = 1:numel(v);
+            end
+            n = min(numel(kvec), numel(v));
+            kvec = kvec(1:n);
+            v = v(1:n);
+
+            bad = ~isfinite(v);
+            if any(bad)
+                obj.debug_print(sprintf("SNR: %d / %d frames not finite, drawn as gaps", ...
+                    nnz(bad), n));
+                v(bad) = NaN;
+            end
+
+            plot(ax, kvec, v, '-', 'Color', obj.estColor, 'LineWidth', obj.lw, ...
+                'DisplayName', 'SNR_k');
+            hold(ax, 'on');
+
+            good = ~isnan(v);
+            if any(good)
+                yline(ax, mean(v(good)), 'k:', 'LineWidth', 1, ...
+                    'Label', sprintf('mean %.1f dB', mean(v(good))));
+            else
+                text(ax, 0.5, 0.5, 'no finite SNR', 'Units', 'normalized', ...
+                    'HorizontalAlignment', 'center');
+            end
+
+            grid(ax, 'on');
+            xlabel(ax, tlab, 'FontSize', obj.fs);
+            ylabel(ax, 'peak SNR [dB]', 'FontSize', obj.fs);
+            title(ax, 'Measurement SNR', 'FontSize', obj.fs);
+        end
+
         function K = n_steps(~, res, est, tru)
             K = 0;
             if ~isempty(res.signals)
@@ -2025,6 +2554,9 @@ classdef visualize < mWidar
             end
             if ~isempty(res.weights)
                 K = max(K, size(res.weights,2));
+            end
+            if ~isempty(res.ess)
+                K = max(K, numel(res.ess));
             end
         end
 
@@ -2073,6 +2605,7 @@ classdef visualize < mWidar
                 fprintf('%s\n', "[DEBUG][VISUALIZE]" + string(str))
             end
         end
+
 
     end
 
