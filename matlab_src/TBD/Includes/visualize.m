@@ -11,8 +11,9 @@
 %%%     A 2-row state is interpreted directly as [px; py].
 %%%   - Ground truth / estimated tracks are 4 x K, 4 x K x T (T targets) or a
 %%%     1 x T cell of 4 x K. Everything is normalized internally to a cell.
-%%%   - Particle histories are 5 x N x K ([px;vx;py;vy;E]), 5 x N x K x T, or a
-%%%     cell of 5 x N x K.
+%%%   - Particle histories are S x N x K with existence E in the LAST row
+%%%     ([px;vx;py;vy;I;E], or the older [px;vx;py;vy;E]), S x N x K x T, or a
+%%%     cell of S x N x K.
 %%%   - 'Units' controls the axes (default 'meters'); 'DataUnits' declares what
 %%%     the passed data is already in and defaults to 'Units' (no conversion).
 %%%     Pass 'DataUnits','pixels' when handing over raw filter state.
@@ -211,7 +212,7 @@ classdef visualize < mWidar
 
             Options
               'Truth'/'Est'   4 x 1 states (or 4 x T) to mark on the frame
-              'Particles'     5 x N particle set for frame k, overlaid as dots
+              'Particles'     S x N particle set for frame k, overlaid as dots
               'Weights'       1 x N weights, used to size/shade the particles
               'CLim'          color limits, [] for auto
               'Colorbar'      logical, default true
@@ -409,7 +410,7 @@ classdef visualize < mWidar
             Options
               'Truth'      truth tracks (4 x K x T or cell)
               'Est'        estimated tracks, same formats
-              'Particles'  5 x N x K particle history (or cell / 5 x N x K x T)
+              'Particles'  S x N x K particle history (or cell / S x N x K x T)
               'Weights'    N x K weights. Shades and sizes the particles, and
                            adds a weight colorbar next to the scene.
               'WeightColormap'  colormap for that shading (default 'gray');
@@ -727,11 +728,11 @@ classdef visualize < mWidar
             ax = nexttile(tl);
             if ~isempty(res.particles)
                 Yc = obj.to_particle_cell(res.particles);
-                nAlive = squeeze(sum(Yc{1}(5,:,:) ~= 0, 2))';
+                nAlive = squeeze(sum(Yc{1}(end,:,:) ~= 0, 2))';
                 plot(ax, kvec(1:min(end,numel(nAlive))), ...
                     nAlive(1:min(end,numel(kvec))), '-', ...
                     'Color', obj.particleColor, 'LineWidth', obj.lw);
-                ylabel(ax, '# particles with E = 1', 'FontSize', obj.fs);
+                ylabel(ax, '\# particles with E = 1', 'FontSize', obj.fs);
                 title(ax, 'Existing Particles', 'FontSize', obj.fs);
             elseif hasESS
                 obj.ess_axes(ax, kvec, essR, R.ESSThresh, res.resampled, tlab);
@@ -943,7 +944,7 @@ classdef visualize < mWidar
             the plot to reach for when the filter "loses" a target.
 
             fig = v.particle_cloud(Yk, ...)
-              Yk  5 x N particle set for a single frame
+              Yk  S x N particle set for a single frame
             Options
               'Weights'  1 x N weights
               'Signal'   npx x npx frame to draw underneath
@@ -969,7 +970,7 @@ classdef visualize < mWidar
             N = size(Yk, 2);
 
             if size(Yk,1) >= 5
-                alive = Yk(5,:) ~= 0;
+                alive = Yk(end,:) ~= 0;
             else
                 alive = true(1, N);
             end
@@ -1088,7 +1089,7 @@ classdef visualize < mWidar
             [ix, iy] = obj.pos_rows(Yk);
             N = size(Yk, 2);
             if size(Yk,1) >= 5
-                alive = Yk(5,:) ~= 0;
+                alive = Yk(end,:) ~= 0;
             else
                 alive = true(1, N);
             end
@@ -1417,7 +1418,7 @@ classdef visualize < mWidar
             fig = v.pf_diagnostics(W, ...)
               W  N x K weight history (post-normalization, pre-resample)
             Options
-              'Particles'  5 x N x K history, adds unique-particle count
+              'Particles'  S x N x K history, adds unique-particle count
               'Frames'     frames to histogram (default 3 evenly spaced)
               'Time'
         %}
@@ -1521,7 +1522,7 @@ classdef visualize < mWidar
                 'Etruth',    [], ... % T x K true existence flags
                 'est',       [], ... % 4 x K x T (or cell) point estimates
                 'pE',        [], ... % T x K estimated existence probability
-                'particles', [], ... % 5 x N x K (or cell / 5 x N x K x T)
+                'particles', [], ... % S x N x K (or cell / S x N x K x T)
                 'weights',   [], ... % N x K normalized weights
                 'ess',       [], ... % 1 x K effective sample size (absolute, 1..N)
                 'resampled', [], ... % 1 x K logical, frames the filter resampled on
@@ -1835,7 +1836,7 @@ classdef visualize < mWidar
             end
         end
 
-        %%% Normalize particle histories to a 1 x T cell of 5 x N x K
+        %%% Normalize particle histories to a 1 x T cell of S x N x K
         function C = to_particle_cell(~, D)
             if isempty(D)
                 C = {};
@@ -1968,7 +1969,7 @@ classdef visualize < mWidar
             [ix, iy] = obj.pos_rows(Yk);
             N = size(Yk,2);
             if size(Yk,1) >= 5
-                alive = Yk(5,:) ~= 0;
+                alive = Yk(end,:) ~= 0;
             else
                 alive = true(1, N);
             end
@@ -2337,7 +2338,7 @@ classdef visualize < mWidar
 
             for k = 1:K
                 if hasE
-                    alive = Y(5,:,k) ~= 0;
+                    alive = Y(end,:,k) ~= 0;
                 else
                     alive = true(1,N);
                 end

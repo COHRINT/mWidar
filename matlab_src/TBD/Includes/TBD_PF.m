@@ -4,7 +4,9 @@
 %%% TBD_PF.run(scenario) will output a results struct, TBD_PF.show(R, scenario) plots it
 %%%
 %%% Conventions
-%%%   - Particle state is [px; vx; py; vy] in METERS, matching the scenario truth.
+%%%   - Particle state is [px; vx; py; vy; I] in METERS, matching the scenario
+%%%     truth, plus the target intensity I. Particle sets carry existence E as
+%%%     a 6th row: [px; vx; py; vy; I; E].
 %%%   - Signals are indexed z(row, col) = z(y, x), matching simulator / visualize.
 %%%   - Sigma and pDist are in pixels; Sigma is scaled by dx inside the likelihood.
 %%%   - Weights are always normalized to sum to 1, and R.particles(:,:,k) is
@@ -40,7 +42,7 @@ classdef TBD_PF < TBD
         %%%               Resample when ESS/N <= this. Default 0.5, the usual
         %%%               N/2 rule. Ignored when 'Bootstrap' is true.
         %%%
-        %%%   R.particles   5 x N x K, posterior particle set [px; vx; py; vy; E] at each k
+        %%%   R.particles   6 x N x K, posterior particle set [px; vx; py; vy; I; E] at each k
         %%%   R.weights     N x K, normalized posterior weight of each particle
         %%%   R.ess         1 x K, ESS of the weights BEFORE the resample decision
         %%%   R.resampled   1 x K logical, frames where the filter resampled
@@ -103,13 +105,13 @@ classdef TBD_PF < TBD
 
             %%% Initialize, every particle dead with undefined state and an
             %%% equal share of the weight
-            prior   = [nan(4, obj.N); false(1, obj.N)];
+            prior   = [nan(5, obj.N); false(1, obj.N)];
             w_prior = ones(1, obj.N) / obj.N;
 
             R = struct();
             R.N         = obj.N;
             R.K         = K;
-            R.particles = nan(5, obj.N, K);
+            R.particles = nan(6, obj.N, K);
             R.weights   = nan(obj.N, K);
             R.ess       = nan(1, K);
             R.resampled = false(1, K);
@@ -128,7 +130,7 @@ classdef TBD_PF < TBD
                 R.resampled(k)     = didResample;
                 %%% Existence is the weight mass sitting on E = 1, not the
                 %%% particle count: between resamples the two disagree.
-                R.pE(k)    = sum(w(post(5,:) ~= 0));
+                R.pE(k)    = sum(w(post(6,:) ~= 0));
                 R.exist(k) = R.pE(k) > obj.pEthresh;
 
                 obj.debug_print(sprintf("k=%d/%d  pE=%.3f  exist=%d  ESS/N=%.3f  resampled=%d", ...
@@ -255,8 +257,8 @@ classdef TBD_PF < TBD
 
         function w = importance_weights(obj, Y, z)
 
-            X = Y(1:4);
-            E = Y(5);
+            X = Y(1:5);
+            E = Y(6);
 
             w = 1;
 
@@ -294,7 +296,7 @@ classdef TBD_PF < TBD
                         pix = [xm(i), ym(j)];     % meters
                         %% TODO: Add functionality here to choose likelihood function
                         % Gaussian for now
-                        w = w*obj.guass_likelihood([px py], pix, idx, z);
+                        w = w*obj.guass_likelihood([px py], pix, idx, z, X(5));
                     end
                 end
 
@@ -307,7 +309,7 @@ classdef TBD_PF < TBD
         %%%   pos  [px py] particle position in meters
         %%%   pix  [x y]   pixel center in meters
         %%%   idx  [col row] pixel index into z
-        function l = guass_likelihood(obj, pos, pix, idx, z)
+        function l = guass_likelihood(obj, pos, pix, idx, z, I)
             px = pos(1);
             py = pos(2);
 
@@ -315,7 +317,7 @@ classdef TBD_PF < TBD
             jj = pix(2);
 
             sig = obj.Sigma * obj.dx; % Sigma is given in pixels
-            hh = obj.Ip * exp( - ((ii -px)^2 + ((jj -py)^2))/ (2 * sig^2));
+            hh = I * exp( - ((ii -px)^2 + ((jj -py)^2))/ (2 * sig^2));
             zz = z(idx(2), idx(1)); % rows = y, cols = x
             l = exp(-(hh*(hh - 2*zz))/(2 * obj.NoiseSTD^2));
         end
@@ -324,13 +326,13 @@ classdef TBD_PF < TBD
         %%%
         %%%   [post, w, ESS, didResample] = obj.timestep(prior, w_prior, z)
         %%%
-        %%% prior / post are 5 x N particle sets, w_prior / w the matching
+        %%% prior / post are 6 x N particle sets, w_prior / w the matching
         %%% normalized weights. ESS is measured on w BEFORE the resample
         %%% decision, so it is the number that drove it; didResample says what
         %%% the filter decided.
         function [post, w, ESS, didResample] = timestep(obj, prior, w_prior, z)
-            x_minus = prior(1:4,:);
-            E_minus = prior(5,:);
+            x_minus = prior(1:5,:);
+            E_minus = prior(6,:);
 
             if nargin < 4
                 error('TBD_PF:timestep', ...
@@ -338,11 +340,13 @@ classdef TBD_PF < TBD
             end
             w_prior = reshape(w_prior, 1, []);
 
+            z = obj.preprocess(z);
+
             % Regime transition
             E_plus = obj.RT(E_minus);
-            x_plus = nan(4,obj.N);
+            x_plus = nan(5,obj.N);
             L = zeros(1,obj.N);   % this frame's likelihood ratio, per particle
-            Y = nan(5,obj.N);
+            Y = nan(6,obj.N);
 
             for n = 1:obj.N
 
@@ -424,20 +428,41 @@ classdef TBD_PF < TBD
 
             vx = obj.v_min + (obj.v_max - obj.v_min) * rand();
             vy = obj.v_min + (obj.v_max - obj.v_min) * rand();
-
-            X = [px; vx; py; vy]; % Random new alive particle
+            I = obj.I_min + (obj.I_max - obj.I_min) * rand();
+            X = [px; vx; py; vy; I]; % Random new alive particle
         end
 
 
         function X_plus = dynamics(obj, X_minus)
-            X_plus = obj.F * X_minus + mvnrnd(zeros(4,1), obj.Q)';
+            X_plus = obj.F * X_minus + mvnrnd(zeros(5,1), obj.Q)';
+            % I is a random walk, keep it in the range births are drawn from
+            X_plus(5) = min(max(X_plus(5), obj.I_min), obj.I_max);
+        end
+
+        %%% Measurement preprocessing, applied once per frame before births
+        %%% and the likelihood. The likelihood assumes z = h + zero-mean
+        %%% noise, but the simulator min-max normalizes each frame, so with a
+        %%% target present the background sits near 0.8 and nearly every
+        %%% pixel clears gamma. Subtracting the frame median and rescaling the
+        %%% peak back to 1 puts the background at ~0 and keeps I on [0, 1].
+        %%% A blank frame (no target, no noise) is all zeros and passes
+        %%% through unchanged.
+        function z = preprocess(obj, z)
+            if strcmp(obj.Background, 'none')
+                return
+            end
+            b  = median(z(:));
+            pk = max(z(:)) - b;
+            if pk > 0
+                z = (z - b) / pk;
+            end
         end
 
         %%% Systematic resampling. w must already be normalized. The
         %%% returned weights are flat 1/N, which is what lets the SIS recursion
         %%% in timestep() reduce to the bootstrap weights on the next frame.
         function [post, w] = resample(obj, pre, w)
-            post = nan(5,obj.N);
+            post = nan(6,obj.N);
 
             C = cumsum(w);
             C(end) = 1; % cumsum round-off can leave C(end) just under u(N)
