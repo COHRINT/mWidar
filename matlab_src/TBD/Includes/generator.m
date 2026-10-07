@@ -52,7 +52,7 @@ classdef generator < mWidar
             addParameter(p,'kEnd', 100, @(x) isscalar(x) && mod(x,1) == 0 ); % ensure its whole #
             addParameter(p,'dt', 0.1);
             addParameter(p,'objs',1, @(x) isscalar(x) && mod(x,1) == 0 );
-            addParameter(p,'trajectories',{'line'}, @(x) iscellstr(x) && all(ismember(x, {'line', 'parabola', 'scurve'})));
+            addParameter(p,'trajectories',{'line'}, @(x) iscellstr(x) && all(ismember(x, {'line', 'parabola', 'scurve', 'static'})));
             addParameter(p,'rw', false, @(x) isvector(x) && (islogical(x) || isnumeric(x))); %%% Should be a vector of logicals
             addParameter(p,'kBirth', [], @(x) isempty(x) || (isvector(x) && all(mod(x,1) == 0)));
             addParameter(p,'kDeath', [], @(x) isempty(x) || (isvector(x) && all(mod(x,1) == 0)));
@@ -173,6 +173,9 @@ classdef generator < mWidar
                         else
                             X{i} = obj.generate_scurve(traj_start, traj_end, i);
                         end
+                    case 'static'
+                        %%% No RW functionality for static case
+                        X{i} = obj.generate_static(i);
                 end
             
             end
@@ -228,6 +231,21 @@ classdef generator < mWidar
             vy_traj = delta_pos(2) .* progress_dot;
             
             X = obj.pad_lifetime([x_traj; vx_traj; y_traj; vy_traj], i);
+
+        end
+
+        %%% Keep traget static in the center of the frame
+        function [X] = generate_static(obj, i)
+            [T, t] = obj.birth_death(i);
+            
+            % center frame
+            x = 0 .* t;
+            y = 2 .* ones(1,length(t));
+            vx = 0 .* t;
+            vy = 0 .* t;
+
+            X = obj.pad_lifetime([x;vx;y;vy], i);
+
 
         end
 

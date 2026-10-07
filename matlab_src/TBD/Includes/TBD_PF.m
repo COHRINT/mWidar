@@ -181,6 +181,14 @@ classdef TBD_PF < TBD
         %%%               The likelihood ratio is a product over a pixel window,
         %%%               so on a linear scale one particle is white and the
         %%%               other N-1 are black.
+        %%%   'Intensity' with Animate, put the weighted distribution of the
+        %%%               particles' target intensity I in a second panel next
+        %%%               to the scene, so <base>_history.gif carries both.
+        %%%               Bars are posterior weight, not particle count, and
+        %%%               the E = 0 mass gets a grey bar of its own on the
+        %%%               left, so everything on screen sums to 1 and the live
+        %%%               bars sum to pE. Default true.
+        %%%   'IntensityBins'  # of bins over [I_min, I_max] (default 24)
         function [fig, figAnim] = show(obj, R, scenario, varargin)
 
             if nargin < 3
@@ -195,6 +203,8 @@ classdef TBD_PF < TBD
             addParameter(p, 'Title', '');
             addParameter(p, 'WeightColormap', 'gray');
             addParameter(p, 'WeightScale', 'log');
+            addParameter(p, 'Intensity', true, @islogical);
+            addParameter(p, 'IntensityBins', 24, @(x) isscalar(x) && isnumeric(x) && x >= 2);
             parse(p, varargin{:});
             opt = p.Results;
 
@@ -234,7 +244,8 @@ classdef TBD_PF < TBD
                 if ~isempty(opt.Save)
                     animPath = char(opt.Save) + "_history.gif";
                 end
-                obj.debug_print(sprintf("show: animating %d frames at %g fps", R.K, opt.FPS));
+                obj.debug_print(sprintf("show: animating %d frames at %g fps, intensity panel=%d", ...
+                    R.K, opt.FPS, opt.Intensity));
                 figAnim = obj.vis.animate_time_history(res.signals, ...
                     'Truth',     res.truth, ...
                     'Particles', R.particles, ...
@@ -246,6 +257,10 @@ classdef TBD_PF < TBD
                     'FPS',       opt.FPS, ...
                     'WeightColormap', opt.WeightColormap, ...
                     'WeightScale',    opt.WeightScale, ...
+                    'Intensity',     opt.Intensity, ...
+                    'IntensityRow',  5, ...
+                    'IntensityLim',  [obj.I_min, obj.I_max], ...
+                    'IntensityBins', opt.IntensityBins, ...
                     'Title',     ttl, ...
                     'Save',      animPath);
             end

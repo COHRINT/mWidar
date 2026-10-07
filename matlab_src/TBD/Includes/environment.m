@@ -69,7 +69,7 @@ classdef environment < mWidar
             addParameter(p, 'objs', 1, @(x) isscalar(x) && x >= 1 && mod(x,1) == 0);
             addParameter(p, 'kEnd', 100, @(x) isscalar(x) && x >= 1 && mod(x,1) == 0);
             addParameter(p, 'dt', 0.1, @(x) isscalar(x) && x > 0);
-            addParameter(p, 'trajectories', {'line'}, @(x) iscellstr(x) && all(ismember(x, {'line', 'parabola', 'scurve'})));
+            addParameter(p, 'trajectories', {'line'}, @(x) iscellstr(x) && all(ismember(x, {'line', 'parabola', 'scurve', 'static'})));
             addParameter(p, 'rw', false, @(x) isvector(x) && (islogical(x) || isnumeric(x)));
             addParameter(p, 'start', [], @(x) isempty(x) || isnumeric(x) || iscell(x));
             addParameter(p, 'final', [], @(x) isempty(x) || isnumeric(x) || iscell(x));
