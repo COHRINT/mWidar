@@ -618,7 +618,8 @@ classdef visualize < mWidar
 
         %{
             The one-stop TBD results dashboard: existence, track in the plane,
-            per-axis position vs time, position error, particle health, and
+            per-axis position vs time, position error, particle health,
+            target intensity vs time (when the particle cloud carries I), and
             measurement SNR vs time when res.snr is filled in.
 
             fig = v.plot_TBD(res, ...)
@@ -649,7 +650,7 @@ classdef visualize < mWidar
 
             %%% Derive estimates from the particle history when the caller did
             %%% not hand over a point estimate.
-            [est, pE] = obj.resolve_estimates(res);
+            [est, pE, Ihat] = obj.resolve_estimates(res);
             tru = obj.to_cell(res.truth);
             kvec = obj.time_vector(res, obj.n_steps(res, est, tru));
             [tlab, ~] = obj.time_label(res);
@@ -657,17 +658,19 @@ classdef visualize < mWidar
             %%%   [ track | existence ]
             %%%   [  p_x  |    p_y    ]
             %%%   [ error | particles ]
+            %%%   [    Intensity      ]   <- only when the particle cloud carries I (row 5)
             %%%   [       ESS        ]   <- only when the weights were recorded
             %%%   [       SNR        ]   <- only when res.snr is given
             %%% Wide on purpose: the scene panel is axis-equal, so it leaves
             %%% horizontal room in its tile that the legend drops into.
-            %%% ESS and SNR span the full width: they share the x axis with the
-            %%% rows above them and read as the run's timeline.
+            %%% Intensity, ESS and SNR span the full width: they share the x
+            %%% axis with the rows above them and read as the run's timeline.
             hasSNR = obj.has_snr(res.snr);
             essR = obj.ess_ratio(res);
             hasESS = ~isempty(essR);
-            nRows = 3 + hasESS + hasSNR;
-            figH = 950 + 220 * hasESS + 220 * hasSNR;
+            hasIntensity = ~isempty(Ihat) && any(isfinite(Ihat(:)));
+            nRows = 3 + hasIntensity + hasESS + hasSNR;
+            figH = 950 + 220 * hasIntensity + 220 * hasESS + 220 * hasSNR;
             fig = obj.new_figure('TBD Results', [1400 figH]);
             tl = tiledlayout(fig, nRows, 2, 'TileSpacing', 'compact', 'Padding', 'compact');
 
@@ -792,6 +795,12 @@ classdef visualize < mWidar
             end
             grid(ax, 'on');
             xlabel(ax, tlab, 'FontSize', obj.fs);
+
+            %%% Target intensity ----------------------------------------------
+            if hasIntensity
+                ax = nexttile(tl, [1 2]);
+                obj.intensity_axes(ax, kvec, Ihat, tlab);
+            end
 
             %%% Effective sample size ---------------------------------------------
             if hasESS && ~isempty(res.particles)
@@ -2535,14 +2544,14 @@ classdef visualize < mWidar
         end
 
         %%% Use the supplied point estimate if there is one, otherwise take the
-        %%% MMSE over the existing particles
-        function [est, pE] = resolve_estimates(obj, res)
+        %%% MMSE over the existing particles. Ihat (T x K, weighted mean
+        %%% intensity over the E = 1 particles) only ever comes from the
+        %%% particle cloud - there is no 'res.I' for a caller to override it
+        %%% with, since the point estimate (res.est) carries position only.
+        function [est, pE, Ihat] = resolve_estimates(obj, res)
             est = obj.to_cell(res.est);
             pE = obj.to_rowmat(res.pE);
-
-            if ~isempty(est) && ~isempty(pE)
-                return
-            end
+            Ihat = [];
 
             Yc = obj.to_particle_cell(res.particles);
             if isempty(Yc)
@@ -2561,21 +2570,26 @@ classdef visualize < mWidar
                 if isempty(res.pE)
                     pE(t,:) = e.pE; %#ok<AGROW>
                 end
+                Ihat(t,:) = e.I; %#ok<AGROW>
             end
         end
 
         %%% MMSE position estimate + existence probability from a particle set
+        %%% Row 5, when present, is target intensity I (TBD_PF convention); its
+        %%% weighted mean over the E = 1 particles comes back as e.I.
         function e = particle_estimate(obj, Y, W)
             K = size(Y,3);
             N = size(Y,2);
             [ix, iy] = obj.pos_rows(Y);
             hasE = size(Y,1) >= 5;
+            hasI = size(Y,1) >= 5;
 
             e.pE = nan(1,K);
             e.x = nan(1,K);
             e.y = nan(1,K);
             e.varx = nan(1,K);
             e.vary = nan(1,K);
+            e.I = nan(1,K);
 
             for k = 1:K
                 if hasE
@@ -2616,6 +2630,10 @@ classdef visualize < mWidar
                 e.y(k) = sum(wa .* ys);
                 e.varx(k) = sum(wa .* (xs - e.x(k)).^2);
                 e.vary(k) = sum(wa .* (ys - e.y(k)).^2);
+
+                if hasI
+                    e.I(k) = sum(wa .* Y(5,alive,k));
+                end
             end
         end
 
@@ -2737,6 +2755,38 @@ classdef visualize < mWidar
             end
             title(ax, ttl, 'FontSize', obj.fs);
             obj.maybe_legend(ax);
+        end
+
+        %%% Shared target-intensity panel, used by plot_TBD. Ihat is T x K,
+        %%% the posterior-weighted mean of particle intensity I over the
+        %%% E = 1 particles (see particle_estimate); frames with pE = 0 come
+        %%% back NaN and are drawn as gaps rather than dropping to zero.
+        %%% There is no ground-truth intensity to compare against - the
+        %%% simulator places a unit-amplitude target, I is purely a filter
+        %%% state - so this plots the estimate on its own.
+        function intensity_axes(obj, ax, kvec, Ihat, tlab)
+
+            Ihat = obj.to_rowmat(Ihat);
+            if isempty(kvec)
+                kvec = 1:size(Ihat,2);
+            end
+            n = min(numel(kvec), size(Ihat,2));
+            kvec = kvec(1:n);
+
+            cols = obj.palette(max(size(Ihat,1), 1));
+            for t = 1:size(Ihat,1)
+                v = Ihat(t,1:n);
+                plot(ax, kvec, v, '-', 'Color', cols(t,:), 'LineWidth', obj.lw, ...
+                    'DisplayName', obj.name_for('I_k', t, size(Ihat,1)));
+                hold(ax, 'on');
+            end
+
+            grid(ax, 'on');
+            xlabel(ax, tlab, 'FontSize', obj.fs);
+            ylabel(ax, 'intensity I', 'FontSize', obj.fs);
+            obj.maybe_legend(ax);
+            title(ax, 'Target Intensity (weighted mean, E = 1 particles)', ...
+                'FontSize', obj.fs);
         end
 
         function snr_axes(obj, ax, kvec, snr, tlab)

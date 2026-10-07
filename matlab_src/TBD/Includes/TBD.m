@@ -14,6 +14,7 @@ classdef TBD < mWidar
         %%% Sensor Params
         
         NoiseSTD
+        % Assumed shape of the PSF blob. TODO: make sigmax and sigmay
         Sigma % For Gaussian PSF, blurring parameter in PIXELS (converted to meters in the likelihood)
         dt % dt
         Ip % Do more reasearch on this term
@@ -75,10 +76,10 @@ classdef TBD < mWidar
             addParameter(p, 'Q', 1e-1 * diag([0.01 0.5 0.01 0.5 1e-3]), @(x) isequal(size(x), [5 5]));
             % Birth velocity range. Scenario targets move < 1 m/s; at
             % +-10 m/s newborns cross ~30 px per frame and leave the scene.
-            addParameter(p, 'v_max', 1, @(x) isscalar(x));
-            addParameter(p, 'v_min', -1, @(x) isscalar(x));
+            addParameter(p, 'v_max', 0.05, @(x) isscalar(x));
+            addParameter(p, 'v_min', -0.05, @(x) isscalar(x));
             % Intensity range for births, and the bounds I is clamped to
-            addParameter(p, 'I_max', 1, @(x) isscalar(x) && x > 0);
+            addParameter(p, 'I_max', 3, @(x) isscalar(x) && x > 0);
             addParameter(p, 'I_min', 0.1, @(x) isscalar(x) && x > 0);
 
             % general

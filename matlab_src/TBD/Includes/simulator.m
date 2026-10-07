@@ -157,8 +157,8 @@ classdef simulator < mWidar
                 obj.debug_print('Adding Noise')
                 for i = 1:obj.npx
                     for j = 1:obj.npx
-                        % add noise. Half gaussian with varaince of var
-                        n = abs(sqrt(obj.var)*randn());
+                        % add noise. gaussian with varaince of var
+                        n = sqrt(obj.var)*randn();
                         blurred(i,j) = blurred(i,j) + n;
                     end
                 end
@@ -214,8 +214,8 @@ classdef simulator < mWidar
                 obj.debug_print('Adding Noise')
                 for i = 1:obj.npx
                     for j = 1:obj.npx
-                        % add noise. Half gaussian with varaince of var
-                        n = abs(sqrt(obj.var)*randn());
+                        % add noise. gaussian with varaince of var
+                        n = sqrt(obj.var)*randn();
                         blurred(i,j) = blurred(i,j) + n;
                     end
                 end
@@ -260,13 +260,17 @@ classdef simulator < mWidar
         
         %%% Peak SNR of a frame in dB.
         %%% NOTE: Signal here is before any noise is added
-        %%% The noise is a half gaussian, so its power is var*(1 - 2/pi).
+        %%% The noise is a zero-mean gaussian, so its power is var.
+        %%% Peak is measured above the frame median, not above zero: the
+        %%% reconstruction carries a large background offset, and counting it
+        %%% as signal overstated the SNR by ~18 dB against the contrast the
+        %%% filter actually sees after TBD_PF.preprocess.
         %%% The degenerate cases are reported rather than hidden, so a plot can
         %%% leave them as gaps instead of drawing a bogus number:
         %%%   var == 0 (noise off)   -> +Inf with signal, NaN on a blank frame
         %%%   no target in the scene -> -Inf (peak is zero)
         function SNR = get_SNR(obj, signal)
-            peak = max(signal(:));
+            peak = max(signal(:)) - median(signal(:));
 
             if obj.var <= 0
                 if peak > 0
@@ -277,7 +281,7 @@ classdef simulator < mWidar
                 return
             end
 
-            SNR_peak = peak^2 / (obj.var * (1 - 2/pi));
+            SNR_peak = peak^2 / obj.var;
             SNR = 10 * log10(SNR_peak); % -Inf when peak == 0
         end
 

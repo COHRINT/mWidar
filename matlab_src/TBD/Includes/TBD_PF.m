@@ -156,9 +156,9 @@ classdef TBD_PF < TBD
 
         %%% Quick look at a run. Draws the vis.plot_TBD dashboard (track over
         %%% the energy map, existence, per-axis position, error, particle
-        %%% count, and measurement SNR vs time when the scenario recorded it)
-        %%% and optionally plays the frame-by-frame history with the
-        %%% particle cloud. Everything is delegated to vis, same as
+        %%% count, target intensity vs time, and measurement SNR vs time when
+        %%% the scenario recorded it) and optionally plays the frame-by-frame
+        %%% history with the particle cloud. Everything is delegated to vis, same as
         %%% environment.show.
         %%%
         %%%   fig = pf.show(R, scenario)
@@ -354,7 +354,8 @@ classdef TBD_PF < TBD
                     'timestep now takes the prior weights: timestep(prior, w_prior, z)');
             end
             w_prior = reshape(w_prior, 1, []);
-
+            
+            %%% Look into this?
             z = obj.preprocess(z);
 
             % Regime transition
