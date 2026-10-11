@@ -45,7 +45,7 @@ classdef mWidar
         end
 
         function b = checkbound_idx(obj,i)
-            b = i > 0 && i < 128;
+            b = i > 0 && i <= 128;
         end
 
         function b = checkbound(obj, pos)

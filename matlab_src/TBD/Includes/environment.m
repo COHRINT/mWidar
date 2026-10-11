@@ -79,8 +79,8 @@ classdef environment < mWidar
             addParameter(p, 'kDeath', [], @(x) isempty(x) || (isvector(x) && all(mod(x,1) == 0)));
 
             % Signal
-            addParameter(p, 'Normalize', true, @islogical);
-            addParameter(p, 'Blur', true, @islogical);
+            addParameter(p, 'Normalize', false, @islogical);
+            addParameter(p, 'Blur', false, @islogical);
             addParameter(p, 'Sigma', 2, @(x) isscalar(x) && x > 0);
             addParameter(p, 'Noise', true, @islogical);
             addParameter(p,'Var',0);
@@ -169,7 +169,7 @@ classdef environment < mWidar
         end
 
         %%% [signals, snr] = env.simulate(tracks)
-        %%% snr is 1 x K peak SNR in dB for each frame, straight off the
+        %%% snr is 1 x K matched-filter SNR in dB for each frame, straight off the
         %%% simulator, so every downstream plot can label the frame it draws.
         function [signals, snr] = simulate(obj, tracks)
 
@@ -353,7 +353,7 @@ classdef environment < mWidar
         %%%   scenario.dt, .tvec      time base, tvec is 1 x K
         %%%   scenario.units          units of truth ('meters' or 'pixels')
         %%%   scenario.signal         1 x K cell, each npx x npx
-        %%%   scenario.snr            1 x K peak SNR [dB] of each frame
+        %%%   scenario.snr            1 x K matched-filter SNR [dB] of each frame (simulator.get_SNR)
         %%%   scenario.truth          1 x ct cell, each 4 x K  [px; vx; py; vy]
         %%%   scenario.exist          ct x K logical, true where object i is alive
         %%%   scenario.cardinality    1 x K, # objects alive at each k

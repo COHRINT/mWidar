@@ -126,21 +126,44 @@ Signal behind, targets moving through it.
 | Option | Meaning |
 |---|---|
 | `'Truth'`, `'Est'` | Tracks |
-| `'Particles'`, `'Weights'` | Particle cloud per frame. `'Weights'` shades and sizes the particles and adds a weight colorbar beside the scene |
-| `'WeightColormap'` | Colormap for that shading, default `'gray'`. `''` draws the flat particle color instead |
+| `'Particles'`, `'Weights'` | Particle cloud per frame, drawn on top of the truth/estimate markers. `'Weights'` sizes the particles; with a `'WeightColormap'` it also shades them and adds a weight colorbar beside the scene. Particles with exactly zero weight are not drawn |
+| `'WeightColormap'` | Colormap for that shading, default `'gray'`. `''` draws the flat particle color instead (`TBD_PF.show` passes `''` by default) |
 | `'WeightScale'` | `'log'` (default) or `'linear'`. The likelihood ratio is a product over a pixel window, so on a linear scale one particle is white and the other `N-1` are black |
 | `'WeightCLim'` | Fix the weight color limits, in the scaled domain (`log10` units under `'log'`). Default: computed once over the whole run, floored at the 2nd percentile and at most 6 decades wide |
 | `'pE'` | `T x K`, shown in the title |
 | `'Trail'` | Past samples kept drawn, default `15`, `Inf` for the full track |
 | `'FPS'` | Playback / export rate |
 | `'Format'` | `'gif'`, `'mp4'`, `'png'` (frame dump). Inferred from the `'Save'` extension |
-| `'CLim'` | Fixed color limits so brightness doesn't flicker (defaults to the stack min/max) |
+| `'CLim'` | `[lo hi]` fixed color limits; `[]` (default) uses the stack min/max so brightness doesn't flicker; `'frame'` uses each frame's own min/max (raw, unnormalized frames whose level drifts over the run) |
+| `'ImageLabel'` | Colorbar label for the background image (LaTeX interpreter). `''` (default) draws none. Skipped when the weight colorbar is drawn |
+| `'Intensity'` | Second panel with the weighted distribution of particle intensity `I` (default `false`) |
+| `'Signals2'` | `npx x npx x K` second image stack, drawn in a second scene panel to the right with the same truth / estimate / particle overlays. Takes the place of the intensity panel; needs its own figure (no `'Axes'`) |
+| `'CLim2'`, `'Colormap2'`, `'ImageLabel2'` | Same three settings for that panel (`'Colormap2'` default `'parula'`) |
+| `'PanelTitles'` | `{left, right}` static panel titles with `'Signals2'`; the per-frame line (k, SNR, P(E)) moves to the figure title |
+| `'ShowZeroWeight'` | Also draw E = 1 particles with exactly zero weight, as small grey dots under the weighted cloud (default `false`) |
+| `'Births'` | `1 x K` cell, `Births{k}` = `2 x n` `[x; y]` of the particles born at frame k; drawn as white diamonds on top. Positions, not a mask on `'Particles'`, so a newborn the resample dropped still shows |
 | `'Pause'` | Extra pause per frame during live playback |
+
+With its own figure, the run-level `'Title'` goes above the figure (wrapped onto
+two lines when long) and the scene axes keeps the per-frame line. When particles
+are drawn, a one-line key under the panels says what each mark means.
 
 ```matlab
 v.animate_time_history(signals, 'Truth', truth, 'Particles', Y, 'pE', pE, ...
                        'Save', 'figs/run.gif', 'FPS', 20)
 ```
+
+`TBD_PF.show(R, scenario, 'Animate', true, 'Save', base)` writes one animation,
+`<base>_history.gif`, with two panels side by side:
+- left: the raw frame, per-frame color limits;
+- right (`'model'` runs): the per-frame profile log-LR map `R.llr`, drawn as
+  `-log10(1 + max LL - LL)` (0 at the best cell, one color step per factor of 10
+  in log-LR deficit), rows below y = 0.25 m at the bottom of the scale.
+  `'LikelihoodMap', false` leaves the raw panel only.
+
+With `'ShowBirths'` (default `true`) both panels also show the zero-weight E = 1
+particles (grey) and every particle born that frame (`R.births`, white diamonds,
+taken before the resample).
 
 ---
 
@@ -151,16 +174,27 @@ The results dashboard:
 
 ```
 [ track over energy map | existence P(E) ]
-[         p_x           |      p_y       ]
-[    position error     | existing parts ]
+[         p_x           |      p_y       ]   <- declared frames only
+[    position error     | occupied cells ]
+[   target intensity    (full width)     ]   <- when particles carry I; declared frames only
 [         ESS / N       (full width)     ]   <- when res.ess or res.weights is set
-[      measurement SNR  (full width)     ]   <- when res.snr is set
+[  matched-filter SNR   (full width)     ]   <- when res.snr is set
 ```
 
 `res` is a struct — see `visualize.results_template()`. **Every field is optional**;
 anything missing is skipped, so partial results still plot. If `est` / `pE` are
 absent but `particles` are present, the MMSE estimate and existence probability
-are derived from the particles (weighted by `weights` if given).
+are derived from the particles (weighted by `weights` if given). When the E = 1
+particles carry no weight at all, the estimate for that frame is NaN, not an
+unweighted mean of them.
+
+**Occupied cells** counts distinct pixel cells (nearest-cell mapping, same as the
+filter) holding E = 1 particles with nonzero weight: how many distinct hypotheses
+survive and how wide the cloud is.
+
+**SNR** is the matched-filter SNR `10*log10(sum(h.^2)/Var)` of the noiseless frame
+(`simulator.get_SNR`), i.e. `I^2*E(x)/sigma^2` for one unit target. It counts the
+whole template, pedestal included, so it is far above the per-pixel contrast.
 
 ```matlab
 res = visualize.results_template();
@@ -316,9 +350,10 @@ produced, leave the rest empty.
 
 - Requires no toolboxes beyond base MATLAB — percentiles and the OSPA assignment
   fall back to hand-rolled implementations if the usual functions aren't there.
-- Running headless (`matlab -batch`) prints
-  `String scalar or character vector must have valid interpreter syntax` warnings
-  for any TeX subscript in a label (`p_x`). That's the batch renderer missing the
-  math font; the labels render fine on screen. Suppress with `warning('off','all')`
-  if you're batch-generating figures.
+- `matlab_src/startup.m` sets the default text, tick-label and legend interpreters
+  to LaTeX. A label written in TeX syntax (a bare `p_x`, `log_{10}`, `\Sigma`)
+  then fails with `String scalar or character vector must have valid interpreter
+  syntax` and falls back to plain text in another font. Write math in `$...$` and
+  pass `'Interpreter', 'latex'` explicitly so the label renders the same with or
+  without `startup.m`.
 - `'Save'` creates the parent directory if it doesn't exist.

@@ -411,8 +411,12 @@ classdef visualize < mWidar
               'Truth'      truth tracks (4 x K x T or cell)
               'Est'        estimated tracks, same formats
               'Particles'  S x N x K particle history (or cell / S x N x K x T)
-              'Weights'    N x K weights. Shades and sizes the particles, and
-                           adds a weight colorbar next to the scene.
+              'Weights'    N x K weights. Sizes the particles, and with a
+                           'WeightColormap' also shades them and adds a weight
+                           colorbar next to the scene. Particles with exactly
+                           zero weight are not drawn: they carry no posterior
+                           mass, and before a target appears they are scattered
+                           over the whole scene.
               'WeightColormap'  colormap for that shading (default 'gray');
                            '' falls back to the flat particle color
               'WeightScale'     'log' (default) or 'linear'
@@ -436,7 +440,30 @@ classdef visualize < mWidar
               'FPS'        playback / export frame rate
               'Save'       output path; extension picks the format
               'Format'     'gif' | 'mp4' | 'png' (frame dump), inferred from Save
-              'CLim'       fixed color limits so brightness does not flicker
+              'CLim'       [lo hi] fixed color limits; [] (default) uses the
+                           run-wide [min max] so brightness does not flicker;
+                           'frame' uses each frame's own [min max] (for raw,
+                           unnormalized frames whose level drifts over the run)
+              'ImageLabel' colorbar label for the background image; '' (default)
+                           draws no image colorbar. Skipped when the weight
+                           colorbar is drawn, since both would sit in one spot.
+              'Signals2'   npx x npx x K second image stack. Drawn in a second
+                           scene panel to the right with the same truth,
+                           estimate and particle overlays. Replaces the
+                           intensity panel, and needs its own figure (no 'Axes').
+              'CLim2', 'Colormap2', 'ImageLabel2'
+                           the same three settings for that panel ('Colormap2'
+                           default 'parula')
+              'PanelTitles' {left, right} static panel titles when 'Signals2'
+                           is given. The per-frame line (k, SNR, P(E)) then
+                           moves to the figure title above both panels.
+              'ShowZeroWeight'  also draw E = 1 particles that carry exactly
+                           zero weight, as small grey dots under the weighted
+                           cloud (default false)
+              'Births'     1 x K cell; Births{k} is 2 x n [x; y] (in 'DataUnits')
+                           of the particles born at frame k, drawn as white
+                           diamonds on top. Independent of 'Particles', so a
+                           newborn shows even if the resample dropped it.
               'Pause'      extra pause per frame during live playback
         %}
         function fig = animate_time_history(obj, signals, varargin)
@@ -457,6 +484,14 @@ classdef visualize < mWidar
             addParameter(p, 'FPS', obj.fps);
             addParameter(p, 'Format', '');
             addParameter(p, 'CLim', []);
+            addParameter(p, 'ImageLabel', '');
+            addParameter(p, 'Signals2', []);
+            addParameter(p, 'CLim2', []);
+            addParameter(p, 'Colormap2', 'parula');
+            addParameter(p, 'ImageLabel2', '');
+            addParameter(p, 'PanelTitles', {'', ''});
+            addParameter(p, 'ShowZeroWeight', false, @islogical);
+            addParameter(p, 'Births', {});
             addParameter(p, 'Pause', 0);
             addParameter(p, 'WeightColormap', 'gray');
             addParameter(p, 'WeightScale', 'log');
@@ -471,14 +506,14 @@ classdef visualize < mWidar
             Yc = obj.to_particle_cell(R.Particles);
             pE = obj.to_rowmat(R.pE);
 
-            %%% Lock the color scale across the run unless told otherwise, so
-            %%% frame-to-frame brightness changes mean something.
-            clim_ = R.CLim;
-            if isempty(clim_)
-                clim_ = [min(signals(:)), max(signals(:))];
-                if diff(clim_) == 0
-                    clim_ = clim_ + [0 1];
-                end
+            two = ~isempty(R.Signals2);
+            if two && ~isempty(R.Axes)
+                obj.debug_print("animate: 'Axes' was given, so there is no room for 'Signals2', drawing the first panel only");
+                two = false;
+            end
+            if two && size(R.Signals2, 3) ~= K
+                error('visualize:animate', ...
+                    "'Signals2' has %d frames but signals has %d", size(R.Signals2, 3), K);
             end
 
             %%% Intensity panel. Bins and y scale are settled once over the
@@ -495,7 +530,16 @@ classdef visualize < mWidar
             %%% weight_colorbar places itself off the scene axes' Position,
             %%% and a tiledlayout owns that property.
             axI = [];
-            if ~isempty(iopt) && isempty(R.Axes)
+            ax2 = [];
+            if two
+                if ~isempty(iopt)
+                    obj.debug_print("intensity: 'Signals2' takes the second panel, skipping the intensity panel");
+                    iopt = [];
+                end
+                fig = obj.new_figure('Time History', [1500 720]);
+                ax  = axes(fig, 'Position', [0.040 0.10 0.405 0.74]);
+                ax2 = axes(fig, 'Position', [0.530 0.10 0.405 0.74]);
+            elseif ~isempty(iopt) && isempty(R.Axes)
                 fig = obj.new_figure('Time History', [1180 540]);
                 ax  = axes(fig, 'Position', [0.055 0.12 0.400 0.70]); %#ok<LAXES>
                 axI = axes(fig, 'Position', [0.575 0.12 0.395 0.70]); %#ok<LAXES>
@@ -504,7 +548,14 @@ classdef visualize < mWidar
                     obj.debug_print("intensity: 'Axes' was given, so there is no room for the intensity panel, skipping it");
                     iopt = [];
                 end
-                [fig, ax] = obj.get_axes(R, 'Time History');
+                if isempty(R.Axes)
+                    %%% Own figure: leave headroom for the figure-level run
+                    %%% title, which a default-positioned axes runs into.
+                    fig = obj.new_figure('Time History', [900 820]);
+                    ax  = axes(fig, 'Position', [0.09 0.07 0.78 0.79]);
+                else
+                    [fig, ax] = obj.get_axes(R, 'Time History');
+                end
             end
 
             %%% Weight shading. The scene axes already owns a colormap (the
@@ -520,11 +571,56 @@ classdef visualize < mWidar
                 obj.weight_colorbar(fig, ax, wopt);
             end
 
-            %%% With two panels the run-level title no longer fits over the
-            %%% (now narrower) scene axes, so it moves up to the figure and the
-            %%% scene axes keeps only the per-frame line.
-            if ~isempty(axI) && ~isempty(R.Title)
-                sgtitle(fig, R.Title, 'FontSize', obj.fs);
+            %%% The run-level title goes on the figure and the scene axes keeps
+            %%% only the per-frame line: the two together don't fit over one
+            %%% axes and the run title got clipped. Only when we own the figure;
+            %%% with caller-supplied 'Axes' it stays in the axes title.
+            %%% With two panels the per-frame line belongs to both, so it goes
+            %%% under the run title in the figure title, and each panel keeps
+            %%% a static title of its own.
+            ownTitle = ~isempty(R.Title) && isempty(R.Axes);
+            runLines = {};
+            if ownTitle
+                runLines = cellstr(obj.wrap_title(R.Title, 90));
+            end
+            sg = [];
+            if ownTitle || two
+                first = runLines;
+                if isempty(first)
+                    first = ' ';   % placeholder; two-panel frames overwrite it
+                end
+                sg = sgtitle(fig, first, 'FontSize', obj.fs);
+            end
+
+            %%% One entry per scene panel: what image to draw and how
+            P = struct('ax', ax, 'stack', signals, 'clim', R.CLim, ...
+                       'cmap', R.Colormap, 'label', R.ImageLabel, ...
+                       'title', R.PanelTitles{1});
+            if two
+                P(2) = struct('ax', ax2, 'stack', R.Signals2, 'clim', R.CLim2, ...
+                              'cmap', R.Colormap2, 'label', R.ImageLabel2, ...
+                              'title', R.PanelTitles{min(2, end)});
+            end
+            perFrame = false(1, numel(P));
+            for i = 1:numel(P)
+                [perFrame(i), P(i).clim] = obj.resolve_clim(P(i).clim, P(i).stack);
+            end
+            cbImg = gobjects(1, numel(P));
+
+            %%% What the marks mean, once, under the panels
+            pextra = struct('showZero', R.ShowZeroWeight, 'births', []);
+            if ~isempty(Yc) && isempty(R.Axes)
+                key = 'magenta: particles carrying weight';
+                if R.ShowZeroWeight
+                    key = [key, '     grey dots: E = 1 particles with zero weight'];
+                end
+                if ~isempty(R.Births)
+                    key = [key, '     white diamonds: born this frame'];
+                end
+                key = [key, '     black: truth'];
+                annotation(fig, 'textbox', [0 0.005 1 0.035], 'String', key, ...
+                    'EdgeColor', 'none', 'Interpreter', 'none', ...
+                    'HorizontalAlignment', 'center', 'FontSize', obj.fs - 1);
             end
 
             [fmt, outFile] = obj.resolve_format(R.Save, R.Format);
@@ -537,27 +633,56 @@ classdef visualize < mWidar
 
             for k = 1:K
 
-                cla(ax);
-                obj.draw_image(ax, signals(:,:,k), R.Units, R.Colormap, clim_);
-                hold(ax, 'on');
-
-                %%% Particle cloud for this frame
-                for t = 1:numel(Yc)
-                    Yk = Yc{t}(:,:,k);
-                    wk = [];
-                    if ~isempty(R.Weights) && k <= size(R.Weights, 2)
-                        wk = R.Weights(:,k);
-                    end
-                    obj.overlay_particles(ax, Yk, wk, du, R.Units, wopt);
+                if k <= numel(R.Births)
+                    pextra.births = R.Births{k};
+                else
+                    pextra.births = [];
                 end
 
-                %%% Trails + current markers
-                obj.draw_trails(ax, tru, k, R.Trail, du, R.Units, obj.truthColor, '-');
-                obj.draw_trails(ax, est, k, R.Trail, du, R.Units, obj.estColor, '--');
-                obj.mark_tracks_at_k(ax, tru, k, du, R.Units, obj.truthColor, 'o');
-                obj.mark_tracks_at_k(ax, est, k, du, R.Units, obj.estColor, 'x');
+                for i = 1:numel(P)
+                    a = P(i).ax;
+                    cla(a);
+                    img = P(i).stack(:,:,k);
+                    clk = P(i).clim;
+                    if perFrame(i)
+                        clk = obj.frame_clim(img);
+                    end
+                    obj.draw_image(a, img, R.Units, P(i).cmap, clk);
+                    hold(a, 'on');
 
-                obj.style_scene(ax, R.Units);
+                    %%% Image colorbar, made once: it follows the axes' CLim,
+                    %%% so per-frame limits update it without redrawing it.
+                    if ~isempty(P(i).label) && isempty(wopt) && ~isgraphics(cbImg(i))
+                        cbImg(i) = colorbar(a);
+                        cbImg(i).Label.Interpreter = 'latex';
+                        cbImg(i).Label.String   = P(i).label;
+                        cbImg(i).Label.FontSize = obj.fs;
+                        cbImg(i).FontSize       = obj.fs - 1;
+                    end
+
+                    %%% Trails + current markers
+                    obj.draw_trails(a, tru, k, R.Trail, du, R.Units, obj.truthColor, '-');
+                    obj.draw_trails(a, est, k, R.Trail, du, R.Units, obj.estColor, '--');
+                    obj.mark_tracks_at_k(a, tru, k, du, R.Units, obj.truthColor, 'o');
+                    obj.mark_tracks_at_k(a, est, k, du, R.Units, obj.estColor, 'x');
+
+                    %%% Particle cloud for this frame, drawn AFTER the truth: a
+                    %%% converged cloud is ~1 cell wide and the truth marker
+                    %%% would otherwise cover it completely.
+                    for t = 1:numel(Yc)
+                        Yk = Yc{t}(:,:,k);
+                        wk = [];
+                        if ~isempty(R.Weights) && k <= size(R.Weights, 2)
+                            wk = R.Weights(:,k);
+                        end
+                        obj.overlay_particles(a, Yk, wk, du, R.Units, wopt, pextra);
+                    end
+
+                    obj.style_scene(a, R.Units);
+                    if two
+                        title(a, P(i).title, 'FontSize', obj.fs);
+                    end
+                end
 
                 ttl = sprintf('k = %d / %d', k, K);
                 %%% Per frame, not the whole run: SNR changes with the target's
@@ -570,10 +695,14 @@ classdef visualize < mWidar
                     ttl = [ttl, sprintf('   P(E) = %s', ...
                         strjoin(compose('%.2f', pE(:,k)'), ', '))]; %#ok<AGROW>
                 end
-                if ~isempty(R.Title) && isempty(axI)
-                    ttl = [R.Title, '   |   ', ttl];
+                if two
+                    sg.String = [runLines, {ttl}];
+                else
+                    if ~isempty(R.Title) && ~ownTitle
+                        ttl = [R.Title, '   |   ', ttl];
+                    end
+                    title(ax, ttl, 'FontSize', obj.fs);
                 end
-                title(ax, ttl, 'FontSize', obj.fs);
 
                 if ~isempty(axI)
                     obj.intensity_frame(axI, Yc, R.Weights, k, iopt);
@@ -657,7 +786,7 @@ classdef visualize < mWidar
 
             %%%   [ track | existence ]
             %%%   [  p_x  |    p_y    ]
-            %%%   [ error | particles ]
+            %%%   [ error | occupied cells ]
             %%%   [    Intensity      ]   <- only when the particle cloud carries I (row 5)
             %%%   [       ESS        ]   <- only when the weights were recorded
             %%%   [       SNR        ]   <- only when res.snr is given
@@ -727,7 +856,11 @@ classdef visualize < mWidar
             obj.existence_axes(ax, kvec, pE, obj.to_rowmat(res.Etruth), thresh, tlab);
 
             %%% Per-axis position ---------------------------------------------
-            axNames = {'p_x', 'p_y'};
+            %%% Declared frames only, same as the track panel: an estimate
+            %%% while pE is under the threshold is not a track.
+            %%% Explicit LaTeX: the bare 'p_x' only rendered under the TeX
+            %%% interpreter, and startup.m sets LaTeX as the default.
+            axNames = {'$p_x$', '$p_y$'};
             for d = 1:2
                 ax = nexttile(tl);
                 for t = 1:numel(tru)
@@ -737,7 +870,7 @@ classdef visualize < mWidar
                     hold(ax, 'on');
                 end
                 for t = 1:numel(est)
-                    v = obj.axis_series(est{t}, d, du, R.Units);
+                    v = obj.declared_only(obj.axis_series(est{t}, d, du, R.Units), pE, t, thresh);
                     plot(ax, kvec(1:min(end,numel(v))), v(1:min(end,numel(kvec))), '.', ...
                         'Color', cols(t,:), 'MarkerSize', obj.ms + 4);
                     hold(ax, 'on');
@@ -745,8 +878,9 @@ classdef visualize < mWidar
                 grid(ax, 'on');
                 xlabel(ax, tlab, 'FontSize', obj.fs);
                 ylabel(ax, [axNames{d} ' [' char(obj.unit_suffix(R.Units)) ']'], ...
-                    'FontSize', obj.fs);
-                title(ax, [axNames{d} ' vs time'], 'FontSize', obj.fs);
+                    'FontSize', obj.fs, 'Interpreter', 'latex');
+                title(ax, [axNames{d} ' vs time (declared)'], 'FontSize', obj.fs, ...
+                    'Interpreter', 'latex');
             end
 
             %%% Position error --------------------------------------------------
@@ -774,19 +908,21 @@ classdef visualize < mWidar
             title(ax, 'Position Error', 'FontSize', obj.fs);
 
             %%% Particle health ---------------------------------------------------
-            %%% Head count, not ESS: ESS gets its own full-width row below when
-            %%% the weights were recorded, and the two answer different
-            %%% questions (how many particles think the target exists, vs how
-            %%% many of them are still carrying weight).
+            %%% Distinct pixel cells holding E = 1 particles with nonzero
+            %%% weight. A head count of E = 1 particles stopped meaning much:
+            %%% it counts dead-weight particles before a target appears, and
+            %%% sits at N once one does. The cell count says how many distinct
+            %%% hypotheses survive (impoverishment) and how wide the cloud is,
+            %%% which ESS alone doesn't (roadmap item 14).
             ax = nexttile(tl);
             if ~isempty(res.particles)
                 Yc = obj.to_particle_cell(res.particles);
-                nAlive = squeeze(sum(Yc{1}(end,:,:) ~= 0, 2))';
-                plot(ax, kvec(1:min(end,numel(nAlive))), ...
-                    nAlive(1:min(end,numel(kvec))), '-', ...
+                nCells = obj.occupied_cells(Yc{1}, res.weights, du);
+                plot(ax, kvec(1:min(end,numel(nCells))), ...
+                    nCells(1:min(end,numel(kvec))), '-', ...
                     'Color', obj.particleColor, 'LineWidth', obj.lw);
-                ylabel(ax, '\# particles with E = 1', 'FontSize', obj.fs);
-                title(ax, 'Existing Particles', 'FontSize', obj.fs);
+                ylabel(ax, '\# cells', 'FontSize', obj.fs);
+                title(ax, 'Occupied Cells (E = 1, weight > 0)', 'FontSize', obj.fs);
             elseif hasESS
                 obj.ess_axes(ax, kvec, essR, R.ESSThresh, res.resampled, tlab);
             else
@@ -799,6 +935,9 @@ classdef visualize < mWidar
             %%% Target intensity ----------------------------------------------
             if hasIntensity
                 ax = nexttile(tl, [1 2]);
+                for t = 1:size(Ihat, 1)
+                    Ihat(t,:) = obj.declared_only(Ihat(t,:), pE, t, thresh);
+                end
                 obj.intensity_axes(ax, kvec, Ihat, tlab);
             end
 
@@ -912,7 +1051,7 @@ classdef visualize < mWidar
             drops out, this says whether the signal was there to be found.
 
             fig = v.snr_vs_time(snr, ...)
-              snr  1 x K peak SNR in dB, as simulator.get_SNR reports it
+              snr  1 x K matched-filter SNR in dB, as simulator.get_SNR reports it
                    (scenario.snr carries it downstream)
             Options
               'Time'    1 x K time vector, defaults to 1:K
@@ -1585,7 +1724,7 @@ classdef visualize < mWidar
                 'weights',   [], ... % N x K normalized weights
                 'ess',       [], ... % 1 x K effective sample size (absolute, 1..N)
                 'resampled', [], ... % 1 x K logical, frames the filter resampled on
-                'snr',       [], ... % 1 x K measurement peak SNR [dB]
+                'snr',       [], ... % 1 x K matched-filter SNR [dB] (simulator.get_SNR)
                 't',         [], ... % 1 x K time stamps (seconds); [] -> use k
                 'pEthresh',  0.5);
         end
@@ -2010,17 +2149,101 @@ classdef visualize < mWidar
             v(cond) = NaN;
         end
 
+        %%% Color-limit mode for an image stack. spec is [lo hi] (fixed), []
+        %%% (the stack's run-wide [min max], so brightness doesn't flicker), or
+        %%% 'frame' (each frame its own limits, via frame_clim).
+        function [perFrame, cl] = resolve_clim(~, spec, stack)
+            perFrame = (ischar(spec) || isstring(spec)) && strcmpi(spec, 'frame');
+            cl = [];
+            if perFrame
+                return
+            end
+            cl = spec;
+            if isempty(cl)
+                cl = [min(stack(:)), max(stack(:))];
+            end
+            if ~(diff(cl) > 0)
+                cl = cl(1) + [0 1];
+            end
+        end
+
+        function cl = frame_clim(~, img)
+            cl = [min(img(:)), max(img(:))];
+            if ~(diff(cl) > 0)
+                cl = cl(1) + [0 1];
+            end
+        end
+
+        %%% Split a long title into two lines at the ', ' nearest its middle.
+        %%% Returns t unchanged when it fits in maxLen characters or has no
+        %%% comma to break at.
+        function t = wrap_title(~, t, maxLen)
+            t = char(string(t));
+            cuts = strfind(t, ', ');
+            if numel(t) <= maxLen || isempty(cuts)
+                return
+            end
+            [~, i] = min(abs(cuts - numel(t) / 2));
+            t = {t(1:cuts(i)), strtrim(t(cuts(i)+1:end))};
+        end
+
+        %%% Blank a 1 x K series on frames where track t was not declared
+        %%% (pE(t,k) <= thresh). No pE for that track leaves v unchanged.
+        function v = declared_only(obj, v, pE, t, thresh)
+            if isempty(pE) || t > size(pE,1) || isempty(thresh)
+                return
+            end
+            v = reshape(v, 1, []);
+            n = min(numel(v), size(pE,2));
+            v(1:n) = obj.nan_where(v(1:n), ~(pE(t,1:n) > thresh));
+        end
+
+        %%% # of distinct pixel cells holding E = 1 particles with nonzero
+        %%% weight, per frame. Cells use the filter's nearest-cell mapping,
+        %%% round((p - grid(1))/d) + 1, so particles the likelihood can't tell
+        %%% apart count once.
+        %%%   Y   S x N x K particle history (E in the last row)
+        %%%   W   N x K weights, or [] to count every E = 1 particle
+        %%%   du  units the particle positions are in
+        function n = occupied_cells(obj, Y, W, du)
+            K = size(Y, 3);
+            N = size(Y, 2);
+            n = zeros(1, K);
+            [ix, iy] = obj.pos_rows(Y);
+            for k = 1:K
+                keep = Y(end,:,k) ~= 0;
+                if ~isempty(W) && k <= size(W, 2)
+                    keep = keep & reshape(W(1:N,k), 1, []) > 0;
+                end
+                if ~any(keep)
+                    continue
+                end
+                [c, r] = obj.convert_xy(Y(ix,keep,k), Y(iy,keep,k), du, 'pixels');
+                n(k) = size(unique([round(r(:)), round(c(:))], 'rows'), 1);
+            end
+        end
+
         %% ------------------------------------------------------------------
         %% Overlay helpers
         %% ------------------------------------------------------------------
 
-        %%% Scatter the existing particles onto ax, shaded by weight if given
         %%% Draw one frame's particle cloud. wopt (optional) is the struct
         %%% weight_opts() builds; with it the particles are shaded by weight
         %%% using explicit RGB, without it they are only sized by weight.
-        function overlay_particles(obj, ax, Yk, w, du, units, wopt)
+        %%% extra (optional) adds the birth-process layers:
+        %%%   extra.showZero  also draw E = 1 particles with exactly zero
+        %%%                   weight, as small grey dots under the cloud
+        %%%   extra.births    2 x n [x; y] (in du) of this frame's newborns,
+        %%%                   drawn as white diamonds on top. Positions, not
+        %%%                   a mask on Yk: a newborn rarely survives the
+        %%%                   resample, so Yk usually no longer holds it.
+        %%% Layers, bottom to top: zero-weight, weighted cloud, newborns.
+        function overlay_particles(obj, ax, Yk, w, du, units, wopt, extra)
             if nargin < 7
                 wopt = [];
+            end
+            if nargin < 8 || isempty(extra)
+                extra = struct('showZero', false, 'births', []);
             end
             if isempty(Yk)
                 return
@@ -2028,37 +2251,56 @@ classdef visualize < mWidar
             [ix, iy] = obj.pos_rows(Yk);
             N = size(Yk,2);
             if size(Yk,1) >= 5
-                alive = Yk(end,:) ~= 0;
+                exists = Yk(end,:) ~= 0;
             else
-                alive = true(1, N);
-            end
-            if ~any(alive)
-                return
-            end
-            [x, y] = obj.convert_xy(Yk(ix,alive), Yk(iy,alive), du, units);
-            if isempty(w)
-                plot(ax, x, y, '.', 'Color', obj.particleColor, ...
-                    'MarkerSize', 8, 'DisplayName', 'Particles');
-                return
+                exists = true(1, N);
             end
 
-            wa = reshape(w, 1, []);
-            wa = wa(alive);
-
-            if isempty(wopt)
-                sz = 10 + 35 * obj.unit_scale(wa);
-                scatter(ax, x, y, sz, obj.particleColor, 'filled', ...
-                    'MarkerFaceAlpha', 0.6, 'DisplayName', 'Particles');
-                return
+            %%% With weights, a particle that carries none is not part of the
+            %%% posterior. Under SIS a dead-weight E = 1 particle can sit in
+            %%% the set for many frames (e.g. every newborn before a target
+            %%% appears), so it only shows when the caller asks for it.
+            alive = exists;
+            zero  = false(1, N);
+            if ~isempty(w)
+                wall  = reshape(double(w), 1, []);
+                alive = exists & wall(1:N) > 0;
+                zero  = exists & ~(wall(1:N) > 0);
             end
 
-            %%% One colormap per axes, and the signal image already claimed it,
-            %%% so hand scatter an n x 3 of RGB instead of scalar CData.
-            u = obj.weight_unit(wa, wopt);
-            C = obj.weight_rgb(u, wopt);
-            sz = 6 + 40 * u;
-            scatter(ax, x, y, sz, C, 'filled', 'MarkerFaceAlpha', 0.85, ...
-                'DisplayName', 'Particles');
+            if extra.showZero && any(zero)
+                [xz, yz] = obj.convert_xy(Yk(ix,zero), Yk(iy,zero), du, units);
+                scatter(ax, xz, yz, 7, [0.25 0.25 0.25], 'filled', ...
+                    'MarkerFaceAlpha', 0.45, 'DisplayName', 'Zero-weight particles');
+            end
+
+            if any(alive)
+                [x, y] = obj.convert_xy(Yk(ix,alive), Yk(iy,alive), du, units);
+                if isempty(w)
+                    plot(ax, x, y, '.', 'Color', obj.particleColor, ...
+                        'MarkerSize', 8, 'DisplayName', 'Particles');
+                elseif isempty(wopt)
+                    sz = 10 + 35 * obj.unit_scale(wall(alive));
+                    scatter(ax, x, y, sz, obj.particleColor, 'filled', ...
+                        'MarkerFaceAlpha', 0.6, 'DisplayName', 'Particles');
+                else
+                    %%% One colormap per axes, and the signal image already
+                    %%% claimed it, so hand scatter an n x 3 of RGB instead of
+                    %%% scalar CData.
+                    u = obj.weight_unit(wall(alive), wopt);
+                    C = obj.weight_rgb(u, wopt);
+                    sz = 6 + 40 * u;
+                    scatter(ax, x, y, sz, C, 'filled', 'MarkerFaceAlpha', 0.85, ...
+                        'DisplayName', 'Particles');
+                end
+            end
+
+            if ~isempty(extra.births)
+                [xb, yb] = obj.convert_xy(extra.births(1,:), extra.births(2,:), du, units);
+                scatter(ax, xb, yb, 28, 'd', 'MarkerFaceColor', 'w', ...
+                    'MarkerEdgeColor', 'k', 'LineWidth', 0.5, ...
+                    'DisplayName', 'Born this frame');
+            end
         end
 
         %%% Settle the intensity histogram's bins and y scale once for the
@@ -2616,13 +2858,16 @@ classdef visualize < mWidar
                     continue
                 end
 
+                %%% No weight on E = 1 means there is no posterior to take a
+                %%% mean of: leave the estimate NaN. (An unweighted mean here
+                %%% used to plot the zero-weight particles that pile up
+                %%% before a target appears as an "estimate".)
                 wa = w(alive);
                 sa = sum(wa);
-                if sa <= 0
-                    wa = ones(1,nnz(alive)) / nnz(alive);
-                else
-                    wa = wa / sa;
+                if ~(sa > 0)
+                    continue
                 end
+                wa = wa / sa;
 
                 xs = Y(ix,alive,k);
                 ys = Y(iy,alive,k);
@@ -2784,8 +3029,12 @@ classdef visualize < mWidar
             grid(ax, 'on');
             xlabel(ax, tlab, 'FontSize', obj.fs);
             ylabel(ax, 'intensity I', 'FontSize', obj.fs);
-            obj.maybe_legend(ax);
-            title(ax, 'Target Intensity (weighted mean, E = 1 particles)', ...
+            %%% One series needs no legend; a lone 'I_k' entry just lands on
+            %%% top of the data.
+            if size(Ihat, 1) > 1
+                obj.maybe_legend(ax);
+            end
+            title(ax, 'Target Intensity (weighted mean, E = 1 particles, declared frames)', ...
                 'FontSize', obj.fs);
         end
 
@@ -2829,8 +3078,9 @@ classdef visualize < mWidar
 
             grid(ax, 'on');
             xlabel(ax, tlab, 'FontSize', obj.fs);
-            ylabel(ax, 'peak SNR [dB]', 'FontSize', obj.fs);
-            title(ax, 'Measurement SNR', 'FontSize', obj.fs);
+            ylabel(ax, 'SNR [dB]', 'FontSize', obj.fs);
+            title(ax, 'Matched-filter SNR  ($\sum h^2 / \sigma^2$, noiseless frame)', ...
+                'FontSize', obj.fs, 'Interpreter', 'latex');
         end
 
         function K = n_steps(~, res, est, tru)

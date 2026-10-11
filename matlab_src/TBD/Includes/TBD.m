@@ -56,7 +56,8 @@ classdef TBD < mWidar
             addParameter(p, 'Seed', 420, @(x) isempty(x) || (isscalar(x) && x >= 0 && mod(x,1) == 0));
 
             % sensor params
-            addParameter(p, 'STD', 0.5, @(x) isscalar(x) && x > 0);
+            % NoiseSTD and Sigma have large affects on filter performance
+            addParameter(p, 'STD', 0.75, @(x) isscalar(x) && x > 0);
             addParameter(p, 'Sigma', 0.5, @(x) isscalar(x) && x > 0);
             addParameter(p, 'dt', 0.1, @(x) isscalar(x) && x > 0);
             addParameter(p, 'Ip', 1, @(x) isscalar(x) && x > 0);
@@ -83,7 +84,7 @@ classdef TBD < mWidar
             addParameter(p, 'I_min', 0.1, @(x) isscalar(x) && x > 0);
 
             % general
-            addParameter(p, 'gamma', 0.75, @(x) isscalar(x) && x >= 0);
+            addParameter(p, 'gamma', 0.75, @(x) isscalar(x) && x >= 0 && x < 1);
             addParameter(p, 'K', 100, @(x) isscalar(x) && x >= 1 && mod(x,1) == 0);
 
             parse(p, varargin{:});
@@ -153,7 +154,7 @@ classdef TBD < mWidar
         w = importance_weights(obj, Y, z)
         l = guass_likelihood(obj, pos, pix, idx, z, I)
         X = sample_new(obj, z)
-        [post, w, ESS, didResample] = timestep(obj, prior, w_prior, z)
+        [post, w, ESS, didResample, llrMap, births] = timestep(obj, prior, w_prior, z)
         X_plus = dynamics(obj, X_minus)
         w_n = normalize(obj, w)
 

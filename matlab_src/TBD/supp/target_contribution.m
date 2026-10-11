@@ -11,30 +11,13 @@ p_window = 5; %%% Define the size of the square window we are looking at
 L = zeros(128,128); % Store like in here
 
 for i = 1:128 % rows
-
-    pRowStart = max(1,i - p_window);
-    pRowEnd = min(128, i + p_window); 
     i
     for j = 1:128 % cols
-        
-        pos = {[i, j]};
+        pos = {[j, i]};
         % Generate the signal
-        signal = s.generate_mWidar_image(pos, 'pixels', true);
-
-        % Sliding window:
-        pColStart = max(1,i - p_window);
-        pColEnd = min(128, i + p_window);
-
-        pRows = pRowStart:1:pRowEnd;
-        pCols = pColStart:1:pColEnd;
-
-        score = 1;
-        % more loops
-        for k = 1:size(pRows,2)
-            for n = 1:size(pCols,2)
-                score = score*signal(k,n);
-            end
-        end
+        h = s.generate_mWidar_image(pos, 'pixels', true);
+        h = h(:); % make into col vector
+        score = norm(h)^2;
         L(i,j) = score;
     end
 end

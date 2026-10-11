@@ -37,8 +37,8 @@ classdef simulator < mWidar
             % Parse optional inputs
             p = inputParser;
             addParameter(p, 'Debug', false, @islogical);
-            addParameter(p, 'Normalize', true, @islogical);
-            addParameter(p, 'Blur', true, @islogical);
+            addParameter(p, 'Normalize', false, @islogical);
+            addParameter(p, 'Blur', false, @islogical);
             addParameter(p, 'Sigma', 2);
             addParameter(p,'Objects', 1)
             addParameter(p,'Var', 0);
@@ -69,7 +69,7 @@ classdef simulator < mWidar
 
         %%% Generate single image
         %%% [signal, SNR] = sim.generate_mWidar_image(pos, 'meters', true)
-        %%% SNR is the peak SNR of this frame in dB (see get_SNR); it is
+        %%% SNR is the matched-filter SNR of this frame in dB (see get_SNR); it is
         %%% measured on the noiseless signal, so callers can label a frame with
         %%% the SNR it was actually generated at.
         function [signal, SNR] = generate_mWidar_image(obj, pos, varargin)
@@ -122,8 +122,9 @@ classdef simulator < mWidar
 
                 %%5 Get grid cell corresponding to m pos 
                 if obj.checkbound_x(px) && obj.checkbound_y(py)
-                    Gx = find(px <= obj.xgrid,1,'first');
-                    Gy = find(py <= obj.ygrid,1,'first');
+                    Gx = round((px - obj.xgrid(1)) / obj.dx) + 1;   
+                    Gy = round((py - obj.ygrid(1)) / obj.dy) + 1;
+
 
                     %%% Check it exists within obj bounds
                     if obj.checkbound_idx(Gx) && obj.checkbound_idx(Gy)
@@ -203,6 +204,7 @@ classdef simulator < mWidar
                 signal_flat = obj.M * signal_flat;
                 signal_flat = obj.G' * signal_flat;
                 raw_signal = reshape(signal_flat, obj.npx,obj.npx)';
+                
                 blurred = obj.blur_signal(raw_signal);
             end
 
@@ -258,22 +260,26 @@ classdef simulator < mWidar
             end
         end
         
-        %%% Peak SNR of a frame in dB.
-        %%% NOTE: Signal here is before any noise is added
-        %%% The noise is a zero-mean gaussian, so its power is var.
-        %%% Peak is measured above the frame median, not above zero: the
-        %%% reconstruction carries a large background offset, and counting it
-        %%% as signal overstated the SNR by ~18 dB against the contrast the
-        %%% filter actually sees after TBD_PF.preprocess.
+        %%% Matched-filter SNR of a frame in dB: 10*log10( sum(h.^2) / var ).
+        %%% NOTE: signal here is the noiseless frame h (after blur, before
+        %%% noise and normalization). The noise is zero-mean i.i.d. Gaussian
+        %%% per pixel, so this is the SNR a matched filter for the whole
+        %%% template achieves, which is what the forward-model likelihood
+        %%% uses: for one unit-intensity target at cell x it equals
+        %%% I^2 * E(x) / sigma^2 with I = 1 (E = TBD_PF.TC, roadmap item 16).
+        %%% It counts the whole template, pedestal included, so it is much
+        %%% higher than the per-pixel contrast you see by eye: roughly
+        %%% 58-74 dB at Var = 15 here, against ~4 dB peak-above-median.
+        %%% With several targets it is the energy of the superposed frame.
         %%% The degenerate cases are reported rather than hidden, so a plot can
         %%% leave them as gaps instead of drawing a bogus number:
         %%%   var == 0 (noise off)   -> +Inf with signal, NaN on a blank frame
-        %%%   no target in the scene -> -Inf (peak is zero)
+        %%%   no target in the scene -> -Inf (zero energy)
         function SNR = get_SNR(obj, signal)
-            peak = max(signal(:)) - median(signal(:));
+            energy = sum(signal(:).^2);
 
             if obj.var <= 0
-                if peak > 0
+                if energy > 0
                     SNR = Inf; % noiseless
                 else
                     SNR = NaN; % no signal and no noise, nothing to report
@@ -281,8 +287,7 @@ classdef simulator < mWidar
                 return
             end
 
-            SNR_peak = peak^2 / obj.var;
-            SNR = 10 * log10(SNR_peak); % -Inf when peak == 0
+            SNR = 10 * log10(energy / obj.var); % -Inf when energy == 0
         end
 
 
