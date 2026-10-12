@@ -14,6 +14,8 @@ switch o
         cfg = T1_PF_Static_N5000_v0_s1();
     case {'T2','2','t2',2}
         cfg = T2_PF_Static_N5000_v15_s1();
+    case {'T3','3','t3',3}
+        cfg = T2_PF_Static_N5000_v15_s1();
     otherwise
         error("Unknown test case, look in TBD/test/TBD_PF_test/config for valid options")
 
