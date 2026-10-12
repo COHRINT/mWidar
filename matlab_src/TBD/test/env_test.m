@@ -2,7 +2,7 @@ addpath("TBD/Includes")
 
 trajs = {'scurve'};
 rw = [false];
-v = 0.1;
+v = 15;
 e = environment('objs', 1,'trajectories', trajs, 'rw', rw, 'kEnd', 100, ...
                 'kBirth', 10, 'kDeath', 90, 'Seed', 56789, 'Noise', true, 'Var', v);
 

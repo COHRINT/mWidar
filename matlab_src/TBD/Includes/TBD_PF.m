@@ -480,7 +480,6 @@ classdef TBD_PF < TBD
         %%% resample. llrMap and births are for plotting only.
         function [post, w, ESS, didResample, llrMap, births] = timestep(obj, prior, w_prior, z)
             llrMap = [];
-            births = zeros(2, 0);
             x_minus = prior(1:5,:);
             E_minus = prior(6,:);
 
@@ -511,7 +510,6 @@ classdef TBD_PF < TBD
             logBirthCorr = log(numel(birthIdx) / nValid); 
 
             logL = zeros(1, obj.N);
-
             for n = 1:obj.N
 
                 % New born particles
@@ -523,8 +521,9 @@ classdef TBD_PF < TBD
 
                 % Evaluate importance weights
                 Y(:, n) = [x_plus(:,n); E_plus(n)];
-                [logL(n), Ihat] = obj.importance_weights(Y(:,n),z);
-                if ~isnan(Ihat), Y(5, n) = Ihat; end   % keep I in the state = fitted intensity
+                [logL(n), ~] = obj.importance_weights(Y(:,n),z);
+
+                %if ~isnan(Ihat), Y(5, n) = Ihat; end   % keep I in the state = fitted intensity
             end
 
             %%% Update
