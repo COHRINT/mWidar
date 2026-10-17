@@ -22,6 +22,11 @@ classdef TBD_PF < TBD
                            % false -> SIS, resample only when ESS/N drops
         RESAMPLE_THRESHOLD % ESS/N at or below which the adaptive filter resamples
 
+        %%% Plotting only, set by run('DebugPlots', ...). When true, timestep
+        %%% also returns a snapshot of its intermediate variables for the
+        %%% visualize.debug_* plots. It never changes what the filter computes.
+        debugPlots = false
+
         %%Forward model matrices, used for model based likelihood
         RECOVERY_FILEPATH % G -> Recovery matrix
         SAMPLING_FILEPATH; % M -> sampling matrix
@@ -57,8 +62,20 @@ classdef TBD_PF < TBD
         %%%   'ESS'       resampling threshold as a FRACTION of N, in (0, 1].
         %%%               Resample when ESS/N <= this. Default 0.5, the usual
         %%%               N/2 rule. Ignored when 'Bootstrap' is true.
+        %%%   'DebugPlots'  draw step-by-step debug figures (existence
+        %%%               transitions, births, dynamics, importance weights,
+        %%%               normalization, resampling) plus a whole-run summary.
+        %%%               Plotting only: R is identical with it on or off.
+        %%%               Default false. See visualize.debug_step.
+        %%%   'DebugFrames' frames to draw the per-step figures for. Default []
+        %%%               = every frame. The summary always covers every frame.
+        %%%   'DebugName'   run sub folder, default a timestamp
+        %%%   'DebugDir'    root folder, default TBD/test/figs/debug. Figures
+        %%%               land in <DebugDir>/<DebugName>/<NN_stage>/k###_<stage>.png
+        %%%   'DebugVisible' leave the debug figures open on screen (default
+        %%%               false: drawn off screen, saved, then closed)
         %%%
-        %%%   R.particles   6 x N x K, posterior particle set [px; vx; py; vy; I; E] at each k
+        %%%   R.particles  6 x N x K, posterior particle set [px; vx; py; vy; I; E] at each k
         %%%   R.weights     N x K, normalized posterior weight of each particle
         %%%   R.ess         1 x K, ESS of the weights BEFORE the resample decision
         %%%   R.resampled   1 x K logical, frames where the filter resampled
@@ -78,6 +95,11 @@ classdef TBD_PF < TBD
             addParameter(p, 'ESS', 0.5, @(x) isscalar(x) && isnumeric(x) && x > 0 && x <= 1);
             addParameter(p, 'Likelihood', 'model', @(x) ismember(x, {'gauss', 'model'}))
             addParameter(p, 'Var', 1)
+            addParameter(p, 'DebugPlots', false, @islogical);
+            addParameter(p, 'DebugFrames', [], @(x) isempty(x) || (isnumeric(x) && all(x >= 1)));
+            addParameter(p, 'DebugName', '', @(x) ischar(x) || isstring(x));
+            addParameter(p, 'DebugDir', fullfile('TBD', 'test', 'figs', 'debug'), @(x) ischar(x) || isstring(x));
+            addParameter(p, 'DebugVisible', false, @islogical);
             parse(p, varargin{:});
 
             %%% TBD_PF is a value class, so these land on run()'s own copy of
@@ -87,6 +109,7 @@ classdef TBD_PF < TBD
             obj.bootstrap = p.Results.Bootstrap;
             obj.RESAMPLE_THRESHOLD = p.Results.ESS;
             obj.likelihood = p.Results.Likelihood;
+            obj.debugPlots = p.Results.DebugPlots;
             var = p.Results.Var;
 
             if var ~= 0
@@ -147,7 +170,7 @@ classdef TBD_PF < TBD
             %%% Initialize, every particle dead with undefined state and an
             %%% equal share of the weight
             prior   = [nan(5, obj.N); false(1, obj.N)];
-            w_prior = ones(1, obj.N) / obj.N;
+            logw_prior = -log(obj.N)*ones(1,obj.N);
 
             R = struct();
             R.N         = obj.N;
@@ -179,9 +202,27 @@ classdef TBD_PF < TBD
             %%% (a newborn rarely survives the resample).
             R.births = cell(1, K);
 
+            %%% Debug plots: everything visualize needs that only the filter
+            %%% knows. Plotting only. yMin is the y gate hard-coded in
+            %%% importance_weights / birth_cells / llr_map.
+            if obj.debugPlots
+                fp = struct('N', obj.N, 'Pb', obj.Pb, 'Ps', obj.Ps, 'gamma', obj.gamma, ...
+                    'NoiseSTD', obj.NoiseSTD, 'TC', obj.TC, 'likelihood', obj.likelihood, ...
+                    'yMin', 0.25, 'I_min', obj.I_min, 'I_max', obj.I_max, ...
+                    'v_min', obj.v_min, 'v_max', obj.v_max, 'pEthresh', obj.pEthresh, ...
+                    'essThresh', obj.RESAMPLE_THRESHOLD, 'bootstrap', obj.bootstrap);
+                dbgCtx = obj.vis.debug_context(scenario, K, fp, ...
+                    'Dir', p.Results.DebugDir, 'Name', p.Results.DebugName, ...
+                    'Frames', p.Results.DebugFrames, 'Visible', p.Results.DebugVisible);
+                dbgSteps = cell(1, K);
+            end
+
             %%% Filter
             for k = 1:K
-                [post, w, ess, didResample, llrMap, births] = obj.timestep(prior, w_prior, z{k});
+                [post, w, logw, ess, didResample, llrMap, births, dbg] = obj.timestep(prior, logw_prior, z{k});
+                if obj.debugPlots
+                    dbgSteps{k} = obj.vis.debug_step(dbg, k, dbgCtx);
+                end
                 if ~isempty(llrMap)
                     R.llrMax(k)   = max(llrMap(:));
                     R.llr(:,:,k)  = single(llrMap - R.llrMax(k));
@@ -201,7 +242,7 @@ classdef TBD_PF < TBD
                     k, K, R.pE(k), R.exist(k), ess / obj.N, didResample));
 
                 prior   = post; % Carry posterior forward as next step's prior
-                w_prior = w;    % ... and its weights, that is the whole point
+                logw_prior = logw;    % ... and its weights, that is the whole point
             end
 
             %%% Summary
@@ -215,6 +256,10 @@ classdef TBD_PF < TBD
             end
             obj.debug_print(sprintf("run: resampled %d/%d frames, median ESS/N = %.3f", ...
                 nnz(R.resampled), K, median(R.ess, 'omitnan') / obj.N));
+
+            if obj.debugPlots
+                obj.vis.debug_summary([dbgSteps{:}], dbgCtx);
+            end
 
         end
 
@@ -463,7 +508,7 @@ classdef TBD_PF < TBD
         %%% model_likelihood per particle.
         function LL = llr_map(obj)
             Ihat = min(max(obj.C ./ obj.TC, obj.I_min), obj.I_max);
-            LL = (Ihat .* obj.C - 0.5 * Ihat.^2 .* obj.TC) / obj.NoiseSTD^2;
+            LL = ( obj.C - 0.5 .* obj.TC) / obj.NoiseSTD^2;
             LL(obj.ygrid(:) < 0.25, :) = NaN;   % rows = y
         end
 
@@ -478,8 +523,13 @@ classdef TBD_PF < TBD
         %%% (llr_map) for 'model', [] for 'gauss'. births is 2 x nBorn, the
         %%% [px; py] of every particle born this frame, taken before the
         %%% resample. llrMap and births are for plotting only.
-        function [post, w, ESS, didResample, llrMap, births] = timestep(obj, prior, w_prior, z)
+        %%% dbg is [] unless obj.debugPlots, then a struct of copies of this
+        %%% step's intermediate variables for visualize.debug_step. Also
+        %%% plotting only: filling it draws no random numbers and changes
+        %%% nothing the filter computes.
+        function [post, w, logw, ESS, didResample, llrMap, births, dbg] = timestep(obj, prior, logw_prior, z)
             llrMap = [];
+            dbg = [];
             x_minus = prior(1:5,:);
             E_minus = prior(6,:);
 
@@ -487,7 +537,7 @@ classdef TBD_PF < TBD
                 error('TBD_PF:timestep', ...
                     'timestep now takes the prior weights: timestep(prior, w_prior, z)');
             end
-            w_prior = reshape(w_prior, 1, []);
+            logw_prior = reshape(logw_prior, 1, []);
             
 
             % Regime transition
@@ -522,12 +572,14 @@ classdef TBD_PF < TBD
                 % Evaluate importance weights
                 Y(:, n) = [x_plus(:,n); E_plus(n)];
                 [logL(n), ~] = obj.importance_weights(Y(:,n),z);
-
+                if E_plus(n) && ~E_minus(n) % correct weights for newbotns
+                    logL(n) = logL(n) + logBirthCorr;
+                end
                 %if ~isnan(Ihat), Y(5, n) = Ihat; end   % keep I in the state = fitted intensity
             end
 
             %%% Update
-            w = obj.normalize_log(log(w_prior) + logL);
+            [w, logw_post] = obj.normalize_log(logw_prior + logL);
             ESS = obj.get_ESS(w);
 
             %%% Where this frame's newborns landed, BEFORE the resample: a
@@ -535,11 +587,31 @@ classdef TBD_PF < TBD
             %%% can't show the birth process. Plotting only.
             births = Y([1 3], E_plus & ~E_minus);   % 2 x nBorn [px; py], meters
 
+            %%% Debug plots only: snapshot the step before the resample
+            %%% overwrites w. logw repeats the expression passed to
+            %%% normalize_log above.
+            if obj.debugPlots
+                dbg = struct('z', z, 'C', obj.C, 'llrMap', llrMap, ...
+                    'birthIdx', birthIdx, 'nValid', nValid, 'logBirthCorr', logBirthCorr, ...
+                    'E_minus', E_minus, 'E_plus', E_plus, ...
+                    'x_minus', x_minus, 'x_plus', x_plus, 'Y', Y, ...
+                    'logw_prior', logw_prior, 'logL', logL, ...
+                    'logw', logw_prior + logL, 'w', w, 'ESS', ESS);
+            end
+
             didResample = obj.bootstrap || (ESS <= obj.RESAMPLE_THRESHOLD * obj.N);
             if didResample
                 [post, w] = obj.resample(Y, w);
+                logw = -log(obj.N)*ones(1,obj.N);
             else
                 post = Y;
+                logw = logw_post;
+            end
+
+            if obj.debugPlots
+                dbg.didResample = didResample;
+                dbg.post        = post;
+                dbg.w_post      = w;
             end
 
             if obj.debug
@@ -554,17 +626,19 @@ classdef TBD_PF < TBD
 
         end
 
-        function w_n = normalize_log(obj, logw)
+        function [w_n,logw_norm] = normalize_log(obj, logw)
             logw = reshape(double(logw), 1, []);
             logw(isnan(logw)) = -Inf;
             m = max(logw);
             if ~isfinite(m)
                 obj.debug_print("all log weights -Inf, using uniform")
                 w_n = ones(size(logw)) / numel(logw);
+                logw_norm = -log(obj.N);
                 return
             end
             w = exp(logw - m);
             w_n = w / sum(w);
+            logw_norm = logw - m - log(sum(w));
         end
         %%% Effective sample size, Kong's 1/sum(w^2) written scale-free so it
         %%% works on normalized or unnormalized weights. Ranges over [1, N].
@@ -583,11 +657,18 @@ classdef TBD_PF < TBD
 
         function [idx, nValid] = birth_cells(obj,z)
             validRow = obj.ygrid(:) >= 0.25;
-            zv = z;
-            zv(~validRow,:) = -Inf; % never chosen
             nValid = nnz(validRow)*obj.npx;
             nKeep = max(1, ceil((1-obj.gamma) * nValid));
-            [~, idx] = maxk(zv(:), nKeep);
+            if all(z == 0, 'all') % need a check for empty frames, sample uniformly
+                validMask = repmat(validRow, 1, size(z, 2));   % 128x128 logical
+                validLin  = find(validMask);                   % linear indices of valid pixels
+                idx       = validLin(randperm(numel(validLin), nKeep));
+            else
+                zv = z;
+                zv(~validRow,:) = -Inf; % never chosen
+                
+                [~, idx] = maxk(zv(:), nKeep);
+            end
         end
         %%% Per particle
 

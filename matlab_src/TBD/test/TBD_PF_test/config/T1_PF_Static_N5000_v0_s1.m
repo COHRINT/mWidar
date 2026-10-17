@@ -58,11 +58,12 @@ function cfg = T1_PF_Static_N5000_v0_s1()
     cfg.TBD.gamma = 0.75;
 
     %% Fields for TBD_Pf.run()
-    cfg.run.Bootstrap = false;
+    cfg.run.Bootstrap = false; % try
     cfg.run.ESS = 0.3;
     cfg.run.Likelihood = 'model';
     cfg.run.Var = cfg.env.Var;
-
+    cfg.run.DebugPlots = true;
+    cfg.run.DebugFrames = [9 11 20 40 60 80 89 91];
     %% Fields for TBD_PF.show() (plotting)
     cfg.show.Animate = true;
     cfg.show.Save = sprintf('TBD/test/TBD_PF_test/figures/PF_Static_N5000_v0_s1');

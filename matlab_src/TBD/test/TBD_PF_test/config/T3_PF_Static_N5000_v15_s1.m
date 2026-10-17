@@ -62,6 +62,8 @@ function cfg = T3_PF_Static_N5000_v15_s1()
     cfg.run.ESS = 0.3;
     cfg.run.Likelihood = 'gauss';
     cfg.run.Var = cfg.env.Var;
+    cfg.run.DebugPlots = false;
+    cfg.run.DebugFrames = [];
 
     %% Fields for TBD_PF.show() (plotting)
     cfg.show.Animate = true;

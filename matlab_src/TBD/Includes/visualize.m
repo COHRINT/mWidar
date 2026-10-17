@@ -1705,6 +1705,239 @@ classdef visualize < mWidar
 
         end
 
+        %% ------------------------------------------------------------------
+        %% TBD_PF debug plots: TBD_PF.run(..., 'DebugPlots', true)
+        %% ------------------------------------------------------------------
+        %%% One figure per filter stage per frame, saved as
+        %%%   <dir>/<name>/01_existence/k###_existence.png   (RT)
+        %%%                02_births/k###_births.png         (birth_cells + sample_new)
+        %%%                03_dynamics/k###_dynamics.png     (dynamics)
+        %%%                04_weights/k###_weights.png       (importance_weights)
+        %%%                05_normalize/k###_normalize.png   (normalize_log)
+        %%%                06_resample/k###_resample.png     (resample)
+        %%%                00_summary/<name>_summary.png     (every frame)
+        %%%
+        %%% Notation: k-1 is the prior the step starts from (x_minus, E_minus,
+        %%% logw_prior), k the frame it ends on (x_plus, E_plus, w). ell = logL,
+        %%% the per-particle log LR importance_weights returns.
+        %%% Particle groups keep one color + marker in every figure:
+        %%%   born      E_{k-1} = 0 -> E_k = 1   blue diamond
+        %%%   survived  E_{k-1} = 1 -> E_k = 1   magenta dot
+        %%%   died      E_{k-1} = 1 -> E_k = 0   orange cross
+        %%% Backgrounds are grayscale so the groups stay readable on them.
+        %%% Nothing here may draw random numbers: these run between filter
+        %%% steps, so a rand() call would shift the filter's RNG stream.
+
+        %{
+            Settle what the per-step debug plots need, once per run.
+
+            ctx = v.debug_context(scenario, K, fp, 'Dir', d, 'Name', nm, 'Frames', f)
+
+            scenario  what was handed to TBD_PF.run (a bare cell -> no truth)
+            K         # frames run
+            fp        filter parameters packed by TBD_PF.run (N, Pb, Ps,
+                      gamma, NoiseSTD, TC, likelihood, yMin, I_min, I_max,
+                      v_min, v_max, pEthresh, essThresh, bootstrap)
+            Options
+              'Dir'     root folder (default TBD/test/figs/debug)
+              'Name'    run sub folder (default a timestamp)
+              'Frames'  frames that get per-step figures ([] -> all)
+              'Visible' leave the figures open (default false: drawn off
+                        screen, saved, closed)
+              'DPI'     export resolution, default 120 (below obj.dpi: a
+                        full run writes hundreds of these)
+        %}
+        function ctx = debug_context(obj, scenario, K, fp, varargin)
+            p = inputParser;
+            addParameter(p, 'Dir', fullfile('TBD', 'test', 'figs', 'debug'));
+            addParameter(p, 'Name', '');
+            addParameter(p, 'Frames', []);
+            addParameter(p, 'Visible', false, @islogical);
+            addParameter(p, 'DPI', 120);
+            parse(p, varargin{:});
+            R = p.Results;
+
+            name = char(string(R.Name));
+            if isempty(name)
+                name = char(datetime('now', 'Format', 'yyyyMMdd_HHmmss'));
+            end
+            frames = R.Frames;
+            if isempty(frames)
+                frames = 1:K;
+            end
+
+            ctx = struct();
+            ctx.name    = name;
+            ctx.dir     = fullfile(char(R.Dir), name);
+            ctx.frames  = frames(frames >= 1 & frames <= K);
+            ctx.K       = K;
+            ctx.fp      = fp;
+            ctx.visible = R.Visible;
+            ctx.dpi     = R.DPI;
+
+            %%% Truth in meters, 4 x K x T [px; vx; py; vy], NaN where the
+            %%% target is absent
+            ctx.truth = nan(4, K, 0);
+            if isstruct(scenario) && isfield(scenario, 'truth') && ~isempty(scenario.truth)
+                tr = obj.to_cell(scenario.truth);
+                tu = 'meters';
+                if isfield(scenario, 'units')
+                    tu = obj.check_units(scenario.units);
+                end
+                ctx.truth = nan(4, K, numel(tr));
+                for t = 1:numel(tr)
+                    S = tr{t};
+                    n = min(K, size(S, 2));
+                    S = S(:, 1:n);
+                    if isfield(scenario, 'exist') && size(scenario.exist, 1) >= t
+                        S(:, ~scenario.exist(t, 1:n)) = NaN;
+                    end
+                    [S(1,:), S(3,:)] = obj.convert_xy(S(1,:), S(3,:), tu, 'meters');
+                    if strcmp(tu, 'pixels')
+                        S([2 4], :) = S([2 4], :) .* [obj.dx; obj.dy];
+                    end
+                    ctx.truth(:, 1:n, t) = S;
+                end
+            end
+
+            obj.debug_print(sprintf("debug plots: %d of %d frames, saving under %s", ...
+                numel(ctx.frames), K, ctx.dir));
+        end
+
+        %{
+            Debug figures for one filter step. Always returns the step's
+            scalar diagnostics (for debug_summary); draws and saves the six
+            stage figures only when k is in ctx.frames.
+
+            s = v.debug_step(dbg, k, ctx)
+
+            dbg  the snapshot TBD_PF.timestep returns when obj.debugPlots
+            ctx  from debug_context
+        %}
+        function s = debug_step(obj, dbg, k, ctx)
+            d = obj.dbg_derive(dbg, k, ctx);
+            s = d.s;
+            if ~ismember(k, ctx.frames)
+                return
+            end
+            obj.dbg_existence(d, k, ctx);
+            obj.dbg_births(d, k, ctx);
+            obj.dbg_dynamics(d, k, ctx);
+            obj.dbg_weights(d, k, ctx);
+            obj.dbg_normalize(d, k, ctx);
+            obj.dbg_resample(d, k, ctx);
+            obj.debug_print(sprintf("debug plots: k = %d saved", k));
+        end
+
+        %{
+            Whole-run summary of the debug_step diagnostics, one point per
+            frame.
+
+            fig = v.debug_summary(S, ctx)
+
+            S    1 x K struct array, the debug_step outputs
+            ctx  from debug_context
+        %}
+        function fig = debug_summary(obj, S, ctx)
+            fp = ctx.fp;
+            kv = [S.k];
+            pos = @(v) obj.nan_where(v, ~(v > 0));   % log axes: drop zeros
+
+            [fig, tl] = obj.dbg_figure(ctx, 'debug summary', [1300 1350], 4, 2);
+
+            %%% Frames where any target is present
+            pres = reshape(any(~isnan(ctx.truth(1,:,:)), 3), 1, []);
+            kOn = find(pres, 1, 'first');
+            kOff = find(pres, 1, 'last');
+
+            % (a) existence transitions
+            ax = obj.dbg_axes(tl);
+            h = [plot(ax, kv, pos([S.nBorn]), '.-', 'Color', obj.dbg_color('born'), 'DisplayName', 'born'), ...
+                 plot(ax, kv, pos([S.nKept]), '.-', 'Color', obj.dbg_color('kept'), 'DisplayName', 'survived'), ...
+                 plot(ax, kv, pos([S.nDied]), '.-', 'Color', obj.dbg_color('died'), 'DisplayName', 'died'), ...
+                 plot(ax, kv, pos([S.nAliveZeroW]), '.:', 'Color', obj.dbg_color('zero'), 'DisplayName', '$E_k = 1$, $w_k = 0$')];
+            set(ax, 'YScale', 'log');
+            obj.dbg_finish(ax, '(a) existence transitions per frame', '$k$', '\# particles', h, kOn, kOff, ctx.K);
+
+            % (b) weight mass by group, before resampling
+            ax = obj.dbg_axes(tl);
+            h = [plot(ax, kv, log10([S.massBorn]), '.-', 'Color', obj.dbg_color('born'), 'DisplayName', 'born'), ...
+                 plot(ax, kv, log10([S.massKept]), '.-', 'Color', obj.dbg_color('kept'), 'DisplayName', 'survived'), ...
+                 plot(ax, kv, log10([S.massDead]), '.-', 'Color', obj.dbg_color('stay'), 'DisplayName', '$E_k = 0$')];
+            %%% Fixed upper limit: the dominant group sits at ~1, and an
+            %%% autoscaled axis would zoom in on its 1e-15 round-off
+            lm = log10([S.massBorn, S.massKept, S.massDead]);
+            lm = lm(isfinite(lm));
+            if ~isempty(lm)
+                ylim(ax, [min(-1, floor(min(lm)) - 1), 0.5]);
+            end
+            obj.dbg_finish(ax, '(b) weight mass $\sum w_k$ by group, before resampling (gaps: exactly 0)', ...
+                '$k$', '$\log_{10}$ mass', h, kOn, kOff, ctx.K);
+
+            % (c) how far the best newborn trails the best particle
+            ax = obj.dbg_axes(tl);
+            h = [plot(ax, kv, log10(1 + [S.maxLogL] - [S.maxLogLBorn]), '.-', 'Color', obj.dbg_color('born'), 'DisplayName', 'best newborn'), ...
+                 plot(ax, kv, log10(1 + [S.maxLogL] - [S.maxLogLKept]), '.-', 'Color', obj.dbg_color('kept'), 'DisplayName', 'best survivor')];
+            obj.dbg_finish(ax, '(c) $\ell_k$ deficit to the best particle (gaps: none in group)', ...
+                '$k$', '$\log_{10}(1 + \max \ell - \max_{group} \ell)$', h, kOn, kOff, ctx.K);
+
+            % (d) newborns: prior weight and survival
+            ax = obj.dbg_axes(tl);
+            h = [plot(ax, kv, [S.nBorn], '-', 'Color', obj.dbg_color('born'), 'DisplayName', 'born'), ...
+                 plot(ax, kv, [S.nBornPriorZero], '--', 'Color', obj.dbg_color('born'), 'DisplayName', 'born with $w_{k-1} = 0$'), ...
+                 plot(ax, kv, [S.nBornPost], '-', 'Color', obj.dbg_color('stay'), 'DisplayName', 'newborn copies after resample ($w > 0$)')];
+            obj.dbg_finish(ax, '(d) newborns: prior weight and survival', '$k$', '\# particles', h, kOn, kOff, ctx.K);
+
+            % (e) degeneracy
+            ax = obj.dbg_axes(tl);
+            N = fp.N;
+            rs = logical([S.didResample]);
+            ess = [S.ess] / N;
+            h = [plot(ax, kv, ess, '-', 'Color', obj.dbg_color('kept'), 'DisplayName', 'ESS / N (before resample)'), ...
+                 plot(ax, kv, [S.nUniquePost] / N, '-', 'Color', obj.dbg_color('stay'), 'DisplayName', 'distinct states / N (after)'), ...
+                 plot(ax, kv(rs), ess(rs), 'v', 'Color', obj.dbg_color('kept'), 'MarkerSize', 5, 'DisplayName', 'resampled')];
+            if ~fp.bootstrap
+                yline(ax, fp.essThresh, ':k', 'HandleVisibility', 'off');
+            end
+            set(ax, 'YScale', 'log');
+            obj.dbg_finish(ax, '(e) degeneracy', '$k$', 'fraction of $N$', h, kOn, kOff, ctx.K);
+
+            % (f) is the truth the best cell on the map the particles see?
+            ax = obj.dbg_axes(tl);
+            h = [plot(ax, kv, [S.rankScore], '.-', 'Color', 'k', 'DisplayName', 'scoring map (as in model\_likelihood)'), ...
+                 plot(ax, kv, [S.rankLlr], '--', 'Color', [0.5 0.5 0.5], 'DisplayName', 'R.llr (llr\_map)')];
+            set(ax, 'YScale', 'log');
+            obj.dbg_finish(ax, '(f) rank of the truth cell (1 = best of all cells)', '$k$', 'rank', h, kOn, kOff, ctx.K);
+
+            % (g) localization
+            ax = obj.dbg_axes(tl);
+            h = [plot(ax, kv, [S.cloudErr], '.-', 'Color', obj.dbg_color('kept'), 'DisplayName', 'weighted cloud mean'), ...
+                 plot(ax, kv, [S.bornDistMin], '.-', 'Color', obj.dbg_color('born'), 'DisplayName', 'closest newborn'), ...
+                 plot(ax, kv, [S.peakErrScore], '-', 'Color', 'k', 'DisplayName', 'scoring-map argmax'), ...
+                 plot(ax, kv, [S.peakErrLlr], '--', 'Color', [0.5 0.5 0.5], 'DisplayName', 'R.llr argmax')];
+            set(ax, 'YScale', 'log');
+            obj.dbg_finish(ax, '(g) distance to truth', '$k$', '[m]', h, kOn, kOff, ctx.K);
+
+            % (h) particle ell vs the map, cell by cell. Should be exactly 0.
+            ax = obj.dbg_axes(tl);
+            h = plot(ax, kv, [S.scoreMismatch], '.-', 'Color', 'k', 'DisplayName', 'max $|\ell - LL(cell)|$');
+            obj.dbg_finish(ax, '(h) check: particle $\ell$ vs scoring map at its cell, birth correction removed (expect 0)', ...
+                '$k$', 'nats', h, kOn, kOff, ctx.K);
+
+            title(tl, sprintf('debug summary: %s, $N = %d$, $P_b = %.3g$, $P_s = %.3g$, %s likelihood', ...
+                obj.dbg_esc(ctx.name), N, fp.Pb, fp.Ps, fp.likelihood), ...
+                'Interpreter', 'latex', 'FontSize', obj.fs + 2);
+
+            bad = max([S.scoreMismatch]);
+            if bad > 0
+                obj.debug_print(sprintf("debug summary: particle logL differs from the scoring map by up to %.3g nats", bad));
+            end
+            obj.dbg_export(fig, fullfile(ctx.dir, '00_summary', [ctx.name '_summary.png']), ctx);
+            if ~ctx.visible
+                close(fig);
+            end
+        end
+
     end
 
     methods(Static)
@@ -3138,6 +3371,890 @@ classdef visualize < mWidar
         %% ------------------------------------------------------------------
         %% Misc
         %% ------------------------------------------------------------------
+
+        %% ------------------------------------------------------------------
+        %% TBD_PF debug plots: per-stage figures and helpers
+        %% ------------------------------------------------------------------
+
+        %%% Unpack one timestep snapshot: group masks, truth at k and k-1,
+        %%% the scoring map, and the scalar diagnostics debug_summary plots.
+        function d = dbg_derive(obj, dbg, k, ctx)
+            fp = ctx.fp;
+            d = dbg;
+            d.yMin = fp.yMin;
+            d.N = numel(dbg.E_plus);
+
+            row = @(v) reshape(double(v), 1, []);
+            %%% Prior weights arrive in the log domain. A scalar (the flat
+            %%% -log(N) after a resample) applies to every particle.
+            d.logw_prior = row(dbg.logw_prior);
+            if isscalar(d.logw_prior)
+                d.logw_prior = repmat(d.logw_prior, 1, d.N);
+            end
+            %%% Normalized linear prior weight, DISPLAY ONLY: anything more
+            %%% than ~745 nats below the best underflows to 0. Masses and the
+            %%% weights figure use logw_prior directly.
+            d.w_prior = exp(d.logw_prior - obj.dbg_logsumexp(d.logw_prior));
+            d.logL    = row(dbg.logL);
+            d.logw    = row(dbg.logw);
+            d.w       = row(dbg.w);
+            d.w_post  = row(dbg.w_post);
+
+            Em = row(dbg.E_minus) ~= 0;
+            Ep = row(dbg.E_plus) ~= 0;
+            d.Em = Em;
+            d.Ep = Ep;
+            d.born  = Ep & ~Em;
+            d.kept  = Ep & Em;
+            d.died  = ~Ep & Em;
+            d.stay  = ~Ep & ~Em;
+            d.gated = Ep & d.logL == -Inf;   % outside the x / y >= yMin gate
+
+            d.truth  = obj.dbg_truth_at(ctx, k);
+            d.truthM = obj.dbg_truth_at(ctx, k - 1);
+
+            %%% The map the particles are scored against. Same expression as
+            %%% TBD_PF.model_likelihood AS WRITTEN there (I = 1: Ihat is
+            %%% computed but not used), so each particle's ell is this map at
+            %%% its cell. Rebuilt here from C rather than taken from llrMap
+            %%% (TBD_PF.llr_map, R.llr) so the two can be checked against
+            %%% each other: debug_summary (f), (g) plot both.
+            d.score = [];
+            if strcmp(fp.likelihood, 'model') && ~isempty(dbg.C) && ~isempty(fp.TC)
+                d.score = (dbg.C - 0.5 * fp.TC) / fp.NoiseSTD^2;
+                d.score(obj.ygrid(:) < fp.yMin, :) = NaN;   % rows = y
+            end
+
+            %%% Each particle's cell, the filter's round((p - grid(1))/d) + 1
+            ix = round((dbg.x_plus(1,:) - obj.xgrid(1)) / obj.dx) + 1;
+            iy = round((dbg.x_plus(3,:) - obj.ygrid(1)) / obj.dy) + 1;
+            inb = Ep & ix >= 1 & ix <= obj.npx & iy >= 1 & iy <= obj.npx;
+
+            fin = Ep & isfinite(d.logL);
+            Epost = d.post(6,:) ~= 0;
+            livePost = Epost & d.w_post > 0;
+
+            s = struct();
+            s.k             = k;
+            s.nBorn         = nnz(d.born);
+            s.nKept         = nnz(d.kept);
+            s.nDied         = nnz(d.died);
+            s.nStay         = nnz(d.stay);
+            s.nAliveZeroW   = nnz(Ep & ~(d.w > 0));
+            s.nGated        = nnz(d.gated);
+            s.nBornPriorZero = nnz(d.born & d.logw_prior == -Inf);
+            s.massBorn      = sum(d.w(d.born));
+            s.massKept      = sum(d.w(d.kept));
+            s.massDead      = sum(d.w(~Ep));
+            s.maxLogL       = obj.dbg_max(d.logL(fin));
+            s.maxLogLBorn   = obj.dbg_max(d.logL(fin & d.born));
+            s.maxLogLKept   = obj.dbg_max(d.logL(fin & d.kept));
+            s.ess           = dbg.ESS;
+            s.didResample   = dbg.didResample;
+            s.nUniquePost   = size(unique(d.post(:, livePost).', 'rows'), 1);
+            s.nBornPost     = nnz(ismember(d.post(:, livePost).', d.Y(:, d.born).', 'rows'));
+
+            %%% Newborns carry the p_b/q birth correction on top of the map
+            %%% value, so take it back off before comparing
+            d.birthCorr = 0;
+            if isfield(dbg, 'logBirthCorr') && ~isempty(dbg.logBirthCorr)
+                d.birthCorr = dbg.logBirthCorr;
+            end
+            s.scoreMismatch = NaN;
+            if ~isempty(d.score)
+                ok = inb & fin;
+                if any(ok)
+                    ref = d.score(sub2ind(size(d.score), iy(ok), ix(ok)));
+                    lk = d.logL(ok) - d.birthCorr * d.born(ok);
+                    s.scoreMismatch = max(abs(lk - ref));
+                end
+            end
+
+            %%% Distances use the first target present (single-target filter)
+            s.bornDistMin   = NaN;
+            s.cloudErr      = NaN;
+            s.rankScore     = NaN;
+            s.rankLlr    = NaN;
+            s.peakErrScore  = NaN;
+            s.peakErrLlr = NaN;
+            if ~isempty(d.truth)
+                tp = d.truth([1 3], 1);
+                if s.nBorn > 0
+                    s.bornDistMin = min(vecnorm(d.x_plus([1 3], d.born) - tp, 2, 1));
+                end
+                m = Ep & d.w > 0;
+                if any(m)
+                    mu = d.x_plus([1 3], m) * (d.w(m).' / sum(d.w(m)));
+                    s.cloudErr = norm(mu - tp);
+                end
+                [s.rankScore,  s.peakErrScore]  = obj.dbg_rank(d.score, tp);
+                [s.rankLlr, s.peakErrLlr] = obj.dbg_rank(dbg.llrMap, tp);
+            end
+            d.s = s;
+        end
+
+        %%% 01: E_{k-1} -> E_k (regime transition, RT)
+        function dbg_existence(obj, d, k, ctx)
+            fp = ctx.fp;
+            s = d.s;
+            [fig, tl] = obj.dbg_figure(ctx, sprintf('k = %d existence', k), [1650 560], 1, 3);
+
+            % (a) where they died / were born
+            ax = obj.dbg_scene(tl, d, 'raw');
+            h = [obj.dbg_points(ax, d.x_minus([1 3], d.kept), 'kept', sprintf('survived (%d), at $x_{k-1}$', s.nKept)), ...
+                 obj.dbg_points(ax, d.x_minus([1 3], d.died), 'died', sprintf('died (%d), at $x_{k-1}$', s.nDied)), ...
+                 obj.dbg_points(ax, d.x_plus([1 3], d.born), 'born', sprintf('born (%d), at $x_k$', s.nBorn)), ...
+                 obj.dbg_truth(ax, d.truth, false, 'truth at $k$')];
+            obj.dbg_title(ax, '(a) $E_{k-1} \to E_k$, on the raw frame $z_k$');
+            obj.dbg_legend(ax, h, 'southoutside');
+
+            % (b) counts, against what P_b / P_s predict
+            ax = obj.dbg_axes(tl);
+            nDeadPrev  = nnz(~d.Em);
+            nAlivePrev = nnz(d.Em);
+            cnt  = [s.nStay, s.nBorn, s.nDied, s.nKept];
+            expv = [nDeadPrev * (1 - fp.Pb), nDeadPrev * fp.Pb, nAlivePrev * (1 - fp.Ps), nAlivePrev * fp.Ps];
+            cats = {'stay', 'born', 'died', 'kept'};
+            for i = 1:4
+                bar(ax, i, cnt(i), 0.6, 'FaceColor', obj.dbg_color(cats{i}), 'EdgeColor', 'none', ...
+                    'HandleVisibility', 'off');
+                text(ax, i, cnt(i), sprintf('%d', cnt(i)), 'HorizontalAlignment', 'center', ...
+                    'VerticalAlignment', 'bottom', 'Interpreter', 'latex', 'FontSize', obj.fs);
+            end
+            he = plot(ax, 1:4, expv, '_', 'Color', 'k', 'MarkerSize', 30, 'LineWidth', 2, ...
+                'LineStyle', 'none', 'DisplayName', 'expected from $P_b$, $P_s$');
+            xticks(ax, 1:4);
+            xticklabels(ax, {'stayed dead', 'born', 'died', 'survived'});
+            ylim(ax, [0, 1.12 * max([cnt, expv, 1])]);
+            obj.dbg_labels(ax, '', '\# particles');
+            obj.dbg_title(ax, sprintf('(b) transition counts, $P_b = %.3g$, $P_s = %.3g$', fp.Pb, fp.Ps));
+            obj.dbg_legend(ax, he, 'northoutside');
+
+            % (c) prior weight each group carries into the step
+            ax = obj.dbg_axes(tl);
+            lwn = d.logw_prior - obj.dbg_logsumexp(d.logw_prior);   % normalized, in case the carry isn't
+            lm = [obj.dbg_log10_mass(lwn, d.stay), obj.dbg_log10_mass(lwn, d.born), ...
+                  obj.dbg_log10_mass(lwn, d.died), obj.dbg_log10_mass(lwn, d.kept)];
+            obj.dbg_mass_bars(ax, lm, cats, {'stayed dead', 'born', 'died', 'survived'});
+            obj.dbg_labels(ax, '', '$\log_{10} \sum w_{k-1}$');
+            obj.dbg_title(ax, '(c) prior weight $w_{k-1}$ each group carries in');
+
+            title(tl, sprintf('$k = %d$: existence (regime transition)', k), ...
+                'Interpreter', 'latex', 'FontSize', obj.fs + 2);
+            obj.dbg_save(fig, ctx, '01_existence', k);
+        end
+
+        %%% 02: birth proposal (birth_cells) -> newborn states (sample_new)
+        function dbg_births(obj, d, k, ctx)
+            fp = ctx.fp;
+            s = d.s;
+            [fig, tl] = obj.dbg_figure(ctx, sprintf('k = %d births', k), [1650 560], 1, 3);
+            Xb = d.x_plus(:, d.born);
+
+            % (a) before: the cells sample_new draws from
+            ax = obj.dbg_scene(tl, d, 'raw');
+            M = false(obj.npx);
+            M(d.birthIdx) = true;   % linear index into z(row, col), same as birth_cells
+            col = reshape(obj.dbg_color('born'), 1, 1, 3);
+            image(ax, obj.xgrid, obj.ygrid, repmat(col, obj.npx, obj.npx), ...
+                'AlphaData', 0.4 * double(M), 'HandleVisibility', 'off');
+            axis(ax, 'xy');
+            hp = patch(ax, NaN, NaN, obj.dbg_color('born'), 'FaceAlpha', 0.4, 'EdgeColor', 'none', ...
+                'DisplayName', sprintf('birth cells (%d of %d valid)', numel(d.birthIdx), d.nValid));
+            h = [hp, obj.dbg_truth(ax, d.truth, false, 'truth at $k$')];
+            obj.dbg_title(ax, sprintf('(a) before: birth proposal, top $%.0f\\%%$ of raw pixels', 100 * (1 - fp.gamma)));
+            obj.dbg_legend(ax, h, 'southoutside');
+
+            % (b) after: where the newborns landed, on the scoring map
+            ax = obj.dbg_scene(tl, d, 'score');
+            h = obj.dbg_points(ax, Xb([1 3], :), 'born', sprintf('born (%d)', s.nBorn));
+            fin = d.born & isfinite(d.logL);
+            if any(fin)
+                [~, j] = max(obj.dbg_masked(d.logL, fin));
+                h = [h, plot(ax, d.x_plus(1,j), d.x_plus(3,j), 'o', 'MarkerSize', 14, ...
+                    'Color', obj.estColor, 'LineWidth', 1.5, 'DisplayName', 'newborn with the highest $\ell_k$')];
+            end
+            h = [h, obj.dbg_truth(ax, d.truth, false, 'truth at $k$')];
+            obj.dbg_title(ax, sprintf('(b) after: newborns $x_k$, closest is %.3g m from truth', s.bornDistMin));
+            obj.dbg_legend(ax, h, 'southoutside');
+
+            % (c) after: newborn velocity, against the truth's
+            ax = obj.dbg_axes(tl);
+            h = gobjects(0);
+            if s.nBorn > 0
+                h = obj.dbg_points(ax, Xb([2 4], :), 'born', 'newborn $(v_x, v_y)$');
+            end
+            vbox = [fp.v_min fp.v_max fp.v_max fp.v_min fp.v_min; fp.v_min fp.v_min fp.v_max fp.v_max fp.v_min];
+            h = [h, plot(ax, vbox(1,:), vbox(2,:), '--k', 'DisplayName', 'birth range $[v_{min}, v_{max}]^2$')];
+            pts = vbox;
+            if ~isempty(d.truth)
+                h = [h, plot(ax, d.truth(2,:), d.truth(4,:), 'p', 'MarkerSize', 14, ...
+                    'MarkerFaceColor', [1 0.85 0], 'MarkerEdgeColor', 'k', 'DisplayName', 'truth velocity')];
+                pts = [pts, d.truth([2 4], :)];
+            end
+            lim = max(abs(pts(:))) * 1.3;
+            axis(ax, 'equal');
+            xlim(ax, [-lim lim]);
+            ylim(ax, [-lim lim]);
+            obj.dbg_labels(ax, '$v_x$ [m/s]', '$v_y$ [m/s]');
+            obj.dbg_title(ax, '(c) after: newborn velocity vs truth');
+            obj.dbg_legend(ax, h, 'southoutside');
+
+            title(tl, sprintf('$k = %d$: births (birth\\_cells + sample\\_new), %d born', k, s.nBorn), ...
+                'Interpreter', 'latex', 'FontSize', obj.fs + 2);
+            obj.dbg_save(fig, ctx, '02_births', k);
+        end
+
+        %%% 03: x_{k-1} -> x_k for the survivors (dynamics)
+        function dbg_dynamics(obj, d, k, ctx)
+            [fig, tl] = obj.dbg_figure(ctx, sprintf('k = %d dynamics', k), [1650 560], 1, 3);
+            Xm = d.x_minus(:, d.kept);
+            Xp = d.x_plus(:, d.kept);
+            wm = d.w_prior(d.kept);
+            pos = wm > 0;   % survivors whose prior weight hasn't underflowed
+
+            % (a) before
+            ax = obj.dbg_scene(tl, d, 'raw');
+            h = [obj.dbg_points(ax, Xm([1 3], ~pos), 'zero', sprintf('$w_{k-1} \\approx 0$ (%d)', nnz(~pos))), ...
+                 obj.dbg_points(ax, Xm([1 3], pos), 'kept', sprintf('$w_{k-1} > 0$ (%d)', nnz(pos))), ...
+                 obj.dbg_truth(ax, d.truthM, true, 'truth at $k-1$')];
+            obj.dbg_title(ax, '(a) before: survivors $x_{k-1}$, on $z_k$');
+            obj.dbg_legend(ax, h, 'southoutside');
+
+            % (b) after
+            ax = obj.dbg_scene(tl, d, 'raw');
+            h = [obj.dbg_points(ax, Xp([1 3], ~pos), 'zero', sprintf('$w_{k-1} \\approx 0$ (%d)', nnz(~pos))), ...
+                 obj.dbg_points(ax, Xp([1 3], pos), 'kept', sprintf('$w_{k-1} > 0$ (%d)', nnz(pos))), ...
+                 obj.dbg_truth(ax, d.truth, false, 'truth at $k$')];
+            obj.dbg_title(ax, '(b) after: survivors $x_k = F x_{k-1} + q$');
+            obj.dbg_legend(ax, h, 'southoutside');
+
+            % (c) zoom, one segment per survivor that carries weight
+            ax = obj.dbg_axes(tl);
+            sel = pos;
+            if ~any(sel)
+                sel = true(1, size(Xm, 2));
+            end
+            h = gobjects(0);
+            if any(sel)
+                ii = find(sel);
+                ii = ii(unique(round(linspace(1, numel(ii), min(numel(ii), 1500)))));   % deterministic subset
+                xs = [Xm(1, ii); Xp(1, ii); nan(1, numel(ii))];
+                ys = [Xm(3, ii); Xp(3, ii); nan(1, numel(ii))];
+                plot(ax, xs(:), ys(:), '-', 'Color', [0.6 0.6 0.6], 'LineWidth', 0.5, 'HandleVisibility', 'off');
+                h = [plot(ax, Xm(1, ii), Xm(3, ii), 'o', 'Color', [0.2 0.2 0.2], 'MarkerSize', 3, ...
+                        'DisplayName', 'before $x_{k-1}$'), ...
+                     obj.dbg_points(ax, Xp([1 3], ii), 'kept', 'after $x_k$')];
+                ww = wm(sel);
+                if sum(ww) > 0
+                    ww = ww / sum(ww);
+                else
+                    ww = ones(size(ww)) / numel(ww);
+                end
+                mb = Xm([1 3], sel) * ww.';
+                ma = Xp([1 3], sel) * ww.';
+                h = [h, plot(ax, [mb(1) ma(1)], [mb(2) ma(2)], '-+', 'Color', 'k', 'MarkerSize', 14, ...
+                    'LineWidth', 1.5, 'DisplayName', '$w_{k-1}$-weighted mean')];
+                obj.dbg_title(ax, sprintf('(c) zoom: mean step %.3g m, mean $|v|$ = %.3g m/s%s', ...
+                    norm(ma - mb), mean(vecnorm(Xp([2 4], sel), 2, 1)), obj.dbg_truth_dist(ma, d.truth)));
+                obj.dbg_zoom(ax, [Xm([1 3], ii), Xp([1 3], ii)], [], 0.05);
+            else
+                obj.dbg_title(ax, '(c) zoom: no survivors this frame');
+            end
+            h = [h, obj.dbg_truth(ax, d.truthM, true, 'truth at $k-1$'), ...
+                    obj.dbg_truth(ax, d.truth, false, 'truth at $k$')];
+            obj.dbg_labels(ax, 'x [m]', 'y [m]');
+            obj.dbg_legend(ax, h, 'southoutside');
+
+            title(tl, sprintf('$k = %d$: dynamics, %d survivors', k, d.s.nKept), ...
+                'Interpreter', 'latex', 'FontSize', obj.fs + 2);
+            obj.dbg_save(fig, ctx, '03_dynamics', k);
+        end
+
+        %%% 04: ell_k = importance_weights, and why newborns lose
+        function dbg_weights(obj, d, k, ctx)
+            s = d.s;
+            [fig, tl] = obj.dbg_figure(ctx, sprintf('k = %d weights', k), [1500 1250], 2, 2);
+            fin = d.Ep & isfinite(d.logL);
+            dl = s.maxLogL - d.logL;   % deficit to the best particle, >= 0
+            [~, ord] = sort(obj.dbg_masked(d.logL, fin), 'descend');
+            top = ord(1:min(10, nnz(fin)));
+
+            for panel = 1:2
+                ax = obj.dbg_scene(tl, d, 'score');
+                h = [obj.dbg_points(ax, d.x_plus([1 3], d.gated), 'gated', sprintf('$\\ell = -\\infty$, outside gate (%d)', s.nGated)), ...
+                     obj.dbg_points(ax, d.x_plus([1 3], d.kept & fin), 'kept', sprintf('survived (%d)', nnz(d.kept & fin))), ...
+                     obj.dbg_points(ax, d.x_plus([1 3], d.born & fin), 'born', sprintf('born (%d)', nnz(d.born & fin)))];
+                if ~isempty(top)
+                    h = [h, plot(ax, d.x_plus(1, top), d.x_plus(3, top), 'o', 'MarkerSize', 12, ...
+                        'Color', obj.estColor, 'LineWidth', 1.2, 'DisplayName', 'top 10 by $\ell_k$')];
+                end
+                h = [h, obj.dbg_truth(ax, d.truth, false, 'truth at $k$')];
+                if panel == 1
+                    obj.dbg_title(ax, '(a) $\ell_k$ is the scoring map at each particle''s cell');
+                else
+                    best = ord(1:min(50, nnz(fin)));
+                    if ~isempty(best)
+                        obj.dbg_zoom(ax, d.x_plus([1 3], best), [], 0.05);
+                        for r = 1:min(5, numel(top))
+                            text(ax, d.x_plus(1, top(r)), d.x_plus(3, top(r)), sprintf('  %d', r), ...
+                                'Color', obj.estColor, 'FontSize', obj.fs, 'Interpreter', 'latex', 'Clipping', 'on');
+                        end
+                    end
+                    tail = '';
+                    if ~isempty(top)
+                        tail = obj.dbg_truth_dist(d.x_plus([1 3], top(1)), d.truth);
+                    end
+                    obj.dbg_title(ax, ['(b) zoom on the 50 best, top 5 numbered' tail]);
+                end
+                obj.dbg_legend(ax, h, 'southoutside');
+            end
+
+            % (c) ell deficit by group
+            ax = obj.dbg_axes(tl);
+            x = log10(1 + dl);
+            xf = x(fin);
+            edges = linspace(0, max([xf, 1]) * 1.001, 41);
+            h = gobjects(0);
+            grp = {'kept', 'born'};
+            nm  = {'survived', 'born'};
+            for g = 1:2
+                m = fin & d.(grp{g});
+                if any(m)
+                    h = [h, histogram(ax, x(m), edges, 'DisplayStyle', 'stairs', 'LineWidth', 2, ...
+                        'EdgeColor', obj.dbg_color(grp{g}), 'DisplayName', sprintf('%s (%d)', nm{g}, nnz(m)))]; %#ok<AGROW>
+                end
+            end
+            obj.dbg_labels(ax, '$\log_{10}(1 + \max \ell_k - \ell_k)$, 0 = best', '\# particles');
+            obj.dbg_title(ax, '(c) likelihood deficit by group');
+            obj.dbg_legend(ax, h, 'northeast');
+
+            % (d) posterior log weight = log w_{k-1} + ell_k: which term loses?
+            ax = obj.dbg_axes(tl);
+            lw0 = d.logw_prior;   % exact, as carried by the filter (not normalized)
+            fl = lw0(isfinite(lw0));
+            if isempty(fl)
+                floorX = -750;
+            else
+                floorX = min(fl) - 0.1 * max(1, max(fl) - min(fl)) - 5;
+            end
+            lwp = lw0;
+            lwp(~isfinite(lwp)) = floorX;   % w_{k-1} = 0 drawn at the floor
+            y = -log10(1 + dl);
+            h = [obj.dbg_points(ax, [lwp(d.kept & fin); y(d.kept & fin)], 'kept', 'survived'), ...
+                 obj.dbg_points(ax, [lwp(d.born & fin); y(d.born & fin)], 'born', 'born')];
+            xline(ax, floorX, ':', '$w_{k-1} = 0$', 'Interpreter', 'latex', 'HandleVisibility', 'off', ...
+                'LabelVerticalAlignment', 'bottom', 'FontSize', obj.fs - 1);
+            obj.dbg_labels(ax, '$\log w_{k-1}$ [nats]', '$-\log_{10}(1 + \max \ell_k - \ell_k)$');
+            obj.dbg_title(ax, '(d) why newborns lose: prior weight vs likelihood');
+            obj.dbg_legend(ax, h, 'southeast');
+            lwt = d.logw;
+            lwMax = obj.dbg_max(lwt(isfinite(lwt)));
+            txt = {obj.dbg_best_line('best newborn', d.born & fin, d.logL, lw0, lwt, s.maxLogL, lwMax), ...
+                   obj.dbg_best_line('best survivor', d.kept & fin, d.logL, lw0, lwt, s.maxLogL, lwMax)};
+            text(ax, 0.02, 0.98, txt, 'Units', 'normalized', 'VerticalAlignment', 'top', ...
+                'Interpreter', 'latex', 'BackgroundColor', 'w', 'FontSize', obj.fs - 1);
+
+            chk = '';
+            if ~isnan(s.scoreMismatch)
+                chk = sprintf(', check $\\max|\\ell - LL(cell)| = %.3g$', s.scoreMismatch);
+            end
+            if d.birthCorr ~= 0
+                chk = sprintf('%s, newborn $\\log(p_b/q) = %.3g$', chk, d.birthCorr);
+            end
+            title(tl, sprintf('$k = %d$: importance weights $\\ell_k$ (log LR), max $\\ell_k = %s$%s', ...
+                k, obj.dbg_sci(s.maxLogL), chk), 'Interpreter', 'latex', 'FontSize', obj.fs + 2);
+            obj.dbg_save(fig, ctx, '04_weights', k);
+        end
+
+        %%% 05: log w_{k-1} + ell_k -> w_k (normalize_log)
+        function dbg_normalize(obj, d, k, ctx)
+            s = d.s;
+            [fig, tl] = obj.dbg_figure(ctx, sprintf('k = %d normalize', k), [1650 560], 1, 3);
+            grp = {'stay', 'kept', 'born'};
+            nm  = {'$E_k = 0$', 'survived', 'born'};
+            gm  = {~d.Ep, d.kept, d.born};
+
+            % (a) before: unnormalized log weights, as normalize_log sees them
+            ax = obj.dbg_axes(tl);
+            lwt = d.logw;
+            lwt(isnan(lwt)) = -Inf;   % normalize_log does the same
+            m = obj.dbg_max(lwt(isfinite(lwt)));
+            [~, ord] = sort(lwt, 'descend');
+            rk = zeros(1, d.N);
+            rk(ord) = 1:d.N;
+            y = log10(1 + m - lwt);
+            h = gobjects(0);
+            for g = 1:3
+                sel = gm{g} & isfinite(lwt);
+                if any(sel)
+                    h = [h, obj.dbg_points(ax, [rk(sel); y(sel)], grp{g}, sprintf('%s (%d)', nm{g}, nnz(sel)))]; %#ok<AGROW>
+                end
+            end
+            set(ax, 'XScale', 'log');
+            obj.dbg_labels(ax, 'rank', '$\log_{10}(1 + \max - \log \tilde w)$, 0 = best');
+            obj.dbg_title(ax, sprintf('(a) before: $\\log \\tilde w = \\log w_{k-1} + \\ell_k$ (%d are $-\\infty$)', nnz(~isfinite(lwt))));
+            obj.dbg_legend(ax, h, 'southeast');
+
+            % (b) after: normalized weights
+            ax = obj.dbg_axes(tl);
+            h = gobjects(0);
+            for g = 1:3
+                sel = gm{g} & d.w > 0;
+                if any(sel)
+                    h = [h, obj.dbg_points(ax, [rk(sel); log10(d.w(sel))], grp{g}, sprintf('%s (%d)', nm{g}, nnz(sel)))]; %#ok<AGROW>
+                end
+            end
+            set(ax, 'XScale', 'log');
+            obj.dbg_labels(ax, 'rank (same order as (a))', '$\log_{10} w_k$');
+            obj.dbg_title(ax, sprintf('(b) after: $w_k$, %d of %d nonzero', nnz(d.w > 0), d.N));
+            obj.dbg_legend(ax, h, 'southwest');
+
+            % (c) mass by group, and the checks
+            ax = obj.dbg_axes(tl);
+            obj.dbg_mass_bars(ax, log10([s.massDead, s.massKept, s.massBorn]), grp, nm);
+            obj.dbg_labels(ax, '', '$\log_{10} \sum w_k$');
+            if isfinite(m)
+                ref = exp(lwt - m);
+                ref = ref / sum(ref);
+            else
+                ref = ones(1, d.N) / d.N;   % normalize_log's all -Inf fallback
+            end
+            txt = {sprintf('$\\sum w_k - 1 = %.2g$', sum(d.w) - 1), ...
+                   sprintf('$\\max |w_k - e^{\\log \\tilde w - m} / \\Sigma| = %.2g$', max(abs(ref - d.w))), ...
+                   sprintf('ESS$/N = %.4f$', s.ess / d.N), ...
+                   sprintf('$p_E = %.6f$', s.massKept + s.massBorn)};
+            text(ax, 0.98, 0.98, txt, 'Units', 'normalized', 'VerticalAlignment', 'top', ...
+                'HorizontalAlignment', 'right', 'Interpreter', 'latex', 'BackgroundColor', 'w', 'FontSize', obj.fs - 1);
+            obj.dbg_title(ax, '(c) weight mass by group, and checks');
+
+            title(tl, sprintf('$k = %d$: normalization (normalize\\_log)', k), ...
+                'Interpreter', 'latex', 'FontSize', obj.fs + 2);
+            obj.dbg_save(fig, ctx, '05_normalize', k);
+        end
+
+        %%% 06: weighted cloud -> resampled cloud (resample)
+        function dbg_resample(obj, d, k, ctx)
+            fp = ctx.fp;
+            s = d.s;
+            [fig, tl] = obj.dbg_figure(ctx, sprintf('k = %d resample', k), [1650 600], 1, 3);
+
+            pre = d.Ep & d.w > 0;
+            Epost = d.post(6,:) ~= 0;
+            livePost = Epost & d.w_post > 0;
+            [U, ~, ic] = unique(d.post(:, livePost).', 'rows');
+            cnt = accumarray(ic(:), 1).';
+            U = U.';
+            Ub = false(1, size(U, 2));
+            if any(d.born) && ~isempty(U)
+                Ub = ismember(U.', d.Y(:, d.born).', 'rows').';
+            end
+            lims = [d.x_plus([1 3], pre), U([1 3], :)];
+
+            % (a) before
+            ax = obj.dbg_scene(tl, d, 'score');
+            h = gobjects(0);
+            if any(pre)
+                wsz = 8 + 120 * d.w / max(d.w(pre));
+                for g = {'kept', 'born'}
+                    sel = pre & d.(g{1});
+                    if any(sel)
+                        h = [h, obj.dbg_points(ax, d.x_plus([1 3], sel), g{1}, ...
+                            sprintf('%s (%d), size $\\propto w_k$', obj.dbg_group_name(g{1}), nnz(sel)), wsz(sel))]; %#ok<AGROW>
+                    end
+                end
+            end
+            h = [h, obj.dbg_truth(ax, d.truth, false, 'truth at $k$')];
+            obj.dbg_zoom(ax, lims, [], 0.05);
+            mu = [];
+            if any(pre)
+                mu = d.x_plus([1 3], pre) * (d.w(pre).' / sum(d.w(pre)));
+            end
+            obj.dbg_title(ax, sprintf('(a) before: $w_k > 0$ cloud, $p_E = %.4f$%s', ...
+                s.massKept + s.massBorn, obj.dbg_truth_dist(mu, d.truth)));
+            obj.dbg_legend(ax, h, 'southoutside');
+
+            % (b) after
+            ax = obj.dbg_scene(tl, d, 'score');
+            h = gobjects(0);
+            if ~isempty(U)
+                csz = 8 + 120 * cnt / max(cnt);
+                if any(~Ub)
+                    h = [h, obj.dbg_points(ax, U([1 3], ~Ub), 'kept', sprintf('from survivors (%d states)', nnz(~Ub)), csz(~Ub))];
+                end
+                if any(Ub)
+                    h = [h, obj.dbg_points(ax, U([1 3], Ub), 'born', sprintf('from newborns (%d states)', nnz(Ub)), csz(Ub))];
+                end
+                [~, j] = sort(cnt, 'descend');
+                for r = j(1:min(3, numel(j)))
+                    text(ax, U(1, r), U(3, r), sprintf('   %d', cnt(r)), 'FontSize', obj.fs, ...
+                        'Interpreter', 'latex', 'Color', 'w', 'Clipping', 'on');
+                end
+            end
+            h = [h, obj.dbg_truth(ax, d.truth, false, 'truth at $k$')];
+            obj.dbg_zoom(ax, lims, [], 0.05);
+            if s.didResample
+                obj.dbg_title(ax, sprintf('(b) after: %d distinct states, size $\\propto$ copies', size(U, 2)));
+            else
+                obj.dbg_title(ax, '(b) after: no resample, same set as (a)');
+            end
+            obj.dbg_legend(ax, h, 'southoutside');
+
+            % (c) counts before vs after
+            ax = obj.dbg_axes(tl);
+            before = [nnz(d.Ep), nnz(pre), size(unique(d.Y(:, pre).', 'rows'), 1), nnz(pre & d.born)];
+            after  = [nnz(Epost), nnz(livePost), s.nUniquePost, s.nBornPost];
+            b = bar(ax, 1:4, [before; after].', 0.8, 'EdgeColor', 'none');
+            b(1).FaceColor = [0.70 0.70 0.70];
+            b(2).FaceColor = [0.30 0.30 0.30];
+            b(1).DisplayName = 'before';
+            b(2).DisplayName = 'after';
+            for i = 1:2
+                xt = b(i).XEndPoints;
+                yt = b(i).YEndPoints;
+                for j = 1:4
+                    text(ax, xt(j), max(yt(j), 1), sprintf('%d', yt(j)), 'HorizontalAlignment', 'center', ...
+                        'VerticalAlignment', 'bottom', 'Interpreter', 'latex', 'FontSize', obj.fs - 2);
+                end
+            end
+            set(ax, 'YScale', 'log');
+            ylim(ax, [0.8, 3 * max([before, after, 1])]);
+            xticks(ax, 1:4);
+            xticklabels(ax, {'$E = 1$', '$E = 1$, $w > 0$', 'distinct states', 'newborns, $w > 0$'});
+            obj.dbg_labels(ax, '', '\# particles');
+            if fp.bootstrap
+                why = 'bootstrap: every step';
+            else
+                why = sprintf('ESS$/N = %.4f$ vs threshold $%.2f$', s.ess / d.N, fp.essThresh);
+            end
+            obj.dbg_title(ax, sprintf('(c) resampled = %d, %s', s.didResample, why));
+            obj.dbg_legend(ax, b, 'northeast');
+
+            title(tl, sprintf('$k = %d$: resampling, $p_E$ after $= %.4f$', k, sum(d.w_post(Epost))), ...
+                'Interpreter', 'latex', 'FontSize', obj.fs + 2);
+            obj.dbg_save(fig, ctx, '06_resample', k);
+        end
+
+        %%% One text line of the dbg_weights (d) annotation: the best particle
+        %%% of a group and how far each term of its log weight is behind.
+        function t = dbg_best_line(obj, label, m, logL, lw0, lwt, maxLogL, lwMax)
+            if ~any(m)
+                t = sprintf('%s: none', label);
+                return
+            end
+            [~, j] = max(obj.dbg_masked(logL, m));
+            t = sprintf('%s: $\\log w_{k-1} = %s$, $\\max \\ell - \\ell = %s$, $\\max \\log \\tilde w - \\log \\tilde w = %s$', ...
+                label, obj.dbg_sci(lw0(j)), obj.dbg_sci(maxLogL - logL(j)), obj.dbg_sci(lwMax - lwt(j)));
+            t = strrep(t, 'Inf', '\infty');
+            t = strrep(t, 'NaN', '\mathrm{NaN}');
+        end
+
+        function [fig, tl] = dbg_figure(~, ctx, name, sz, rows, cols)
+            vis = 'off';
+            if ctx.visible
+                vis = 'on';
+            end
+            fig = figure('Name', name, 'Color', 'w', 'Visible', vis, 'Position', [40 40 sz]);
+            tl = tiledlayout(fig, rows, cols, 'TileSpacing', 'compact', 'Padding', 'compact');
+        end
+
+        %%% <dir>/<NN_stage>/k###_<stage>.png, e.g. 04_weights/k010_weights.png
+        function dbg_save(obj, fig, ctx, stage, k)
+            tag = stage(strfind(stage, '_') + 1:end);
+            obj.dbg_export(fig, fullfile(ctx.dir, stage, sprintf('k%03d_%s.png', k, tag)), ctx);
+            if ~ctx.visible
+                close(fig);
+            end
+        end
+
+        %%% exportgraphics at ctx.dpi: a full run writes hundreds of these
+        function dbg_export(obj, fig, f, ctx)
+            d = fileparts(f);
+            if ~isfolder(d)
+                mkdir(d);
+            end
+            exportgraphics(fig, f, 'Resolution', ctx.dpi);
+            obj.debug_print("SAVED FIGURE TO " + string(f));
+        end
+
+        function ax = dbg_axes(obj, tl)
+            ax = nexttile(tl);
+            hold(ax, 'on');
+            grid(ax, 'on');
+            box(ax, 'on');
+            set(ax, 'FontSize', obj.fs, 'TickLabelInterpreter', 'latex');
+        end
+
+        %%% Scene panel on a grayscale background: 'raw' = z_k with per-frame
+        %%% limits, 'score' = the scoring map as -log10(1 + max LL - LL)
+        %%% (falls back to raw for 'gauss', which has no map). The dashed
+        %%% line is the y >= yMin gate.
+        function ax = dbg_scene(obj, tl, d, which)
+            ax = obj.dbg_axes(tl);
+            if strcmp(which, 'score') && ~isempty(d.score)
+                [D, lo] = obj.dbg_map_display(d.score);
+                obj.draw_image(ax, D, 'meters', 'gray', [lo 0]);
+                lab = 'scoring map $-\log_{10}(1 + \max LL - LL)$';
+            else
+                obj.draw_image(ax, d.z, 'meters', 'gray', obj.frame_clim(d.z));
+                lab = 'raw frame $z_k$';
+            end
+            %%% String and interpreter in one call: setting a LaTeX string
+            %%% while the label is still 'tex' errors on \max
+            cb = colorbar(ax, 'TickLabelInterpreter', 'latex');
+            ylabel(cb, lab, 'Interpreter', 'latex', 'FontSize', obj.fs);
+            obj.style_scene(ax, 'meters');
+            set(ax, 'TickLabelInterpreter', 'latex');
+            xlabel(ax, '$x$ [m]', 'Interpreter', 'latex');
+            ylabel(ax, '$y$ [m]', 'Interpreter', 'latex');
+            yline(ax, d.yMin, '--', 'Color', [1 1 1], 'LineWidth', 1, 'HandleVisibility', 'off');
+        end
+
+        %%% Same display transform as TBD_PF.llr_display, for one map
+        function [D, lo] = dbg_map_display(~, L)
+            dLL = max(L(:)) - L;
+            dLL(dLL < 0) = 0;   % mask, not max(0, .), so NaN stays NaN
+            D = -log10(1 + dLL);
+            lo = -1;
+            m = min(D(isfinite(D)));
+            if ~isempty(m) && m < 0
+                lo = floor(m);
+            end
+            D(~isfinite(D)) = lo;
+        end
+
+        %%% Scatter one particle group. P is 2 x n [x; y] (or any two
+        %%% coordinates); sz optionally overrides the marker area per point.
+        function h = dbg_points(obj, ax, P, grp, name, sz)
+            h = gobjects(0);
+            if isempty(P) || size(P, 2) == 0
+                return
+            end
+            c = obj.dbg_color(grp);
+            if nargin < 6 || isempty(sz)
+                switch grp
+                    case 'born',  sz = 30;
+                    case 'died',  sz = 30;
+                    case 'gated', sz = 14;
+                    case 'zero',  sz = 6;
+                    otherwise,    sz = 10;
+                end
+            end
+            switch grp
+                case 'born'
+                    h = scatter(ax, P(1,:), P(2,:), sz, 'd', 'MarkerFaceColor', c, ...
+                        'MarkerEdgeColor', 'w', 'LineWidth', 0.5);
+                case {'died', 'gated'}
+                    h = scatter(ax, P(1,:), P(2,:), sz, c, 'x', 'LineWidth', 1.2);
+                case 'zero'
+                    h = scatter(ax, P(1,:), P(2,:), sz, c, 'filled', 'MarkerFaceAlpha', 0.5);
+                otherwise
+                    h = scatter(ax, P(1,:), P(2,:), sz, c, 'filled', 'MarkerFaceAlpha', 0.75);
+            end
+            h.DisplayName = name;
+        end
+
+        function c = dbg_color(~, grp)
+            switch grp
+                case 'born',  c = [0.10 0.45 0.85];   % #1A73D9
+                case 'kept',  c = [0.84 0.14 0.62];   % #D6249F
+                case 'died',  c = [0.90 0.60 0.05];   % #E6990D
+                case 'gated', c = [0.45 0.45 0.45];
+                case 'zero',  c = [0.60 0.60 0.60];
+                otherwise,    c = [0.35 0.35 0.35];   % 'stay' / E_k = 0
+            end
+        end
+
+        function n = dbg_group_name(~, grp)
+            switch grp
+                case 'born', n = 'born';
+                case 'kept', n = 'survived';
+                case 'died', n = 'died';
+                otherwise,   n = grp;
+            end
+        end
+
+        %%% Truth star(s). T is 4 x n [px; vx; py; vy]; hollow for k-1.
+        function h = dbg_truth(~, ax, T, hollow, name)
+            h = gobjects(0);
+            if isempty(T)
+                return
+            end
+            if hollow
+                h = plot(ax, T(1,:), T(3,:), 'p', 'MarkerSize', 14, 'MarkerFaceColor', 'none', ...
+                    'MarkerEdgeColor', [1 0.85 0], 'LineWidth', 1.5, 'DisplayName', name);
+            else
+                h = plot(ax, T(1,:), T(3,:), 'p', 'MarkerSize', 14, 'MarkerFaceColor', [1 0.85 0], ...
+                    'MarkerEdgeColor', 'k', 'LineWidth', 1, 'DisplayName', name);
+            end
+        end
+
+        %%% Truth at frame k, 4 x n for the targets present (n may be 0)
+        function T = dbg_truth_at(~, ctx, k)
+            T = zeros(4, 0);
+            if k < 1 || k > size(ctx.truth, 2) || isempty(ctx.truth)
+                return
+            end
+            T = reshape(ctx.truth(:, k, :), 4, []);
+            T = T(:, all(isfinite(T([1 3], :)), 1));
+        end
+
+        %%% Square zoom around the points (2 x n) and truth (4 x n), at least
+        %%% minHalf meters either side of the center.
+        function dbg_zoom(~, ax, P, T, minHalf)
+            pts = P;
+            if ~isempty(T)
+                pts = [pts, T([1 3], :)];
+            end
+            pts = pts(:, all(isfinite(pts), 1));
+            if isempty(pts)
+                return
+            end
+            lo = min(pts, [], 2);
+            hi = max(pts, [], 2);
+            c = (lo + hi) / 2;
+            hw = max([minHalf; 0.6 * (hi - lo)]);
+            xlim(ax, c(1) + [-hw hw]);
+            ylim(ax, c(2) + [-hw hw]);
+        end
+
+        %%% Bars of log10(mass) per group, labelled with the mass. Takes
+        %%% log10 mass, not mass: carried log weights can put a group at
+        %%% 10^-400000, which a linear mass would round to 0. Exactly zero
+        %%% (-Inf) gets no bar, only a label, so it can't pass for "small".
+        function dbg_mass_bars(obj, ax, lm, grp, labels)
+            fin = isfinite(lm);
+            lo = -1;
+            if any(fin)
+                lo = min(-1, floor(min(lm(fin))) - 1);
+            end
+            for i = 1:numel(lm)
+                if fin(i)
+                    bar(ax, i, lm(i), 0.6, 'FaceColor', obj.dbg_color(grp{i}), 'EdgeColor', 'none');
+                    if lm(i) > -4
+                        lab = sprintf('%.3g', 10^lm(i));
+                    else
+                        lab = sprintf('$10^{%.5g}$', lm(i));
+                    end
+                    text(ax, i, lm(i), lab, 'HorizontalAlignment', 'center', ...
+                        'VerticalAlignment', 'top', 'Interpreter', 'latex', 'FontSize', obj.fs - 1);
+                else
+                    text(ax, i, lo, 'exactly 0', 'HorizontalAlignment', 'center', ...
+                        'VerticalAlignment', 'bottom', 'Interpreter', 'latex', 'FontSize', obj.fs - 1);
+                end
+            end
+            xlim(ax, [0.4, numel(lm) + 0.6]);
+            ylim(ax, [lo, 0.5]);
+            xticks(ax, 1:numel(lm));
+            xticklabels(ax, labels);
+        end
+
+        %%% Rank of the truth cell on map L (1 = best finite cell), and the
+        %%% distance from the truth to the map's argmax cell center
+        function [rk, err] = dbg_rank(obj, L, tp)
+            rk = NaN;
+            err = NaN;
+            if isempty(L)
+                return
+            end
+            r = round((tp(2) - obj.ygrid(1)) / obj.dy) + 1;
+            c = round((tp(1) - obj.xgrid(1)) / obj.dx) + 1;
+            if r < 1 || r > size(L, 1) || c < 1 || c > size(L, 2)
+                return
+            end
+            v = L(r, c);
+            if isfinite(v)
+                rk = 1 + nnz(L(:) > v);
+            end
+            [~, i] = max(L(:));   % max skips NaN
+            [ri, ci] = ind2sub(size(L), i);
+            err = hypot(obj.xgrid(ci) - tp(1), obj.ygrid(ri) - tp(2));
+        end
+
+        %%% ', X m from truth' for a title; '' without truth or point
+        function t = dbg_truth_dist(~, p, T)
+            t = '';
+            if isempty(p) || isempty(T)
+                return
+            end
+            t = sprintf(', %.3g m from truth', min(vecnorm(T([1 3], :) - p(:), 2, 1)));
+        end
+
+        %%% x as LaTeX: 4.43248 \times 10^{6} instead of 4.43248e+06
+        function t = dbg_sci(~, x)
+            t = sprintf('%.6g', x);
+            e = strfind(t, 'e');
+            if ~isempty(e)
+                t = sprintf('%s \\times 10^{%d}', t(1:e-1), str2double(t(e+1:end)));
+            end
+        end
+
+        %%% log(sum(exp(v))) without overflow / underflow; -Inf if empty
+        function L = dbg_logsumexp(~, v)
+            v = v(:);
+            m = max(v);
+            if isempty(v) || ~isfinite(m)
+                L = -Inf;
+                return
+            end
+            L = m + log(sum(exp(v - m)));
+        end
+
+        %%% log10 of the weight mass sum(exp(logw(mask)))
+        function lm = dbg_log10_mass(obj, logw, mask)
+            lm = obj.dbg_logsumexp(logw(mask)) / log(10);
+        end
+
+        %%% v with the entries outside mask set to -Inf, for max / sort
+        function v = dbg_masked(~, v, mask)
+            v(~mask) = -Inf;
+        end
+
+        function m = dbg_max(~, v)
+            if isempty(v)
+                m = NaN;
+            else
+                m = max(v);
+            end
+        end
+
+        function dbg_title(obj, ax, str)
+            title(ax, str, 'Interpreter', 'latex', 'FontSize', obj.fs);
+        end
+
+        function dbg_labels(obj, ax, xl, yl)
+            xlabel(ax, xl, 'Interpreter', 'latex', 'FontSize', obj.fs);
+            ylabel(ax, yl, 'Interpreter', 'latex', 'FontSize', obj.fs);
+        end
+
+        function dbg_legend(obj, ax, h, loc)
+            h = h(isgraphics(h));
+            if isempty(h)
+                return
+            end
+            lg = legend(ax, h, 'Interpreter', 'latex', 'Location', loc, 'FontSize', obj.fs - 1);
+            if any(strcmp(loc, {'southoutside', 'northoutside'}))
+                lg.NumColumns = 2;
+            end
+        end
+
+        %%% Labels, title, legend and the target-present markers for one
+        %%% debug_summary panel
+        function dbg_finish(obj, ax, ttl, xl, yl, h, kOn, kOff, K)
+            xlim(ax, [0.5, K + 0.5]);
+            if ~isempty(kOn)
+                xline(ax, kOn, '--', 'Color', [0.5 0.5 0.5], 'HandleVisibility', 'off');
+                xline(ax, kOff, '--', 'Color', [0.5 0.5 0.5], 'HandleVisibility', 'off');
+            end
+            obj.dbg_labels(ax, xl, yl);
+            obj.dbg_title(ax, ttl);
+            obj.dbg_legend(ax, h, 'best');
+        end
+
+        %%% Escape text for the LaTeX interpreter
+        function s = dbg_esc(~, s)
+            s = strrep(char(s), '_', '\_');
+        end
 
         %%% If debug is on, will print str, ow it will do nothing.
         %%% Note the %s: str often carries Windows paths, and passing those as
