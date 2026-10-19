@@ -92,7 +92,7 @@ classdef TBD_PF < TBD
             %%% only do it once the weights have actually degenerated.
             p = inputParser;
             addParameter(p, 'Bootstrap', false, @islogical);
-            addParameter(p, 'ESS', 0.5, @(x) isscalar(x) && isnumeric(x) && x > 0 && x <= 1);
+            addParameter(p, 'ESS', 0.005, @(x) isscalar(x) && isnumeric(x) && x > 0 && x <= 1); % Particles are often tightly grouped, small ESS allows for births to get a chance
             addParameter(p, 'Likelihood', 'model', @(x) ismember(x, {'gauss', 'model'}))
             addParameter(p, 'Var', 1)
             addParameter(p, 'DebugPlots', false, @islogical);
@@ -169,13 +169,20 @@ classdef TBD_PF < TBD
 
             %%% Initialize, every particle dead with undefined state and an
             %%% equal share of the weight
-            prior   = [nan(5, obj.N); false(1, obj.N)];
+            %%% NOTE: getting rid of intensity in state.
+            prior   = [nan(4, obj.N); false(1, obj.N)];
             logw_prior = -log(obj.N)*ones(1,obj.N);
 
             R = struct();
             R.N         = obj.N;
             R.K         = K;
-            R.particles = nan(6, obj.N, K);
+            R.particles = nan(5, obj.N, K);
+            %%% Object state space:
+            %%% x[1] = px
+            %%% x[2] = vx
+            %%% x[3] = py
+            %%% x[4] = vy
+            %%% x[5] = E (0 or 1)
             R.weights   = nan(obj.N, K);
             R.ess       = nan(1, K);
             R.resampled = false(1, K);
@@ -235,7 +242,7 @@ classdef TBD_PF < TBD
                 R.resampled(k)     = didResample;
                 %%% Existence is the weight mass sitting on E = 1, not the
                 %%% particle count: between resamples the two disagree.
-                R.pE(k)    = sum(w(post(6,:) ~= 0));
+                R.pE(k)    = sum(w(post(5,:) ~= 0)); %%% TODO: This is always == 1 with a target in the frame. Particles are dying... so it shouldn't be 1 
                 R.exist(k) = R.pE(k) > obj.pEthresh;
 
                 obj.debug_print(sprintf("k=%d/%d  pE=%.3f  exist=%d  ESS/N=%.3f  resampled=%d", ...
@@ -425,25 +432,26 @@ classdef TBD_PF < TBD
 
     methods (Hidden)
 
-        function [logL, Ihat] = importance_weights(obj, Y, z)
+        function [logW] = importance_weights(obj, Y, z)
 
-            X = Y(1:5);
-            E = Y(6);
-            logL = 0; Ihat = NaN;
+            X = Y(1:4);
+            E = Y(5);
+            logW = 0; 
             if ~E, return; end % skip non existing
 
 
             px = X(1);
             py = X(3);
-
+            
+            %%% Particles outside the scene get a weight of 0, so log weight is -Inf
             if px > obj.max_x || px < obj.min_x
-                logL = -Inf;
+                logW = -Inf;
                 return
             end
 
             % Going to set weights for particles below y = 0.25 to 0 to avoid sensor array
             if py > obj.max_y || py < 0.25
-                logL = -Inf;
+                logW = -Inf;
                 return
             end
 
@@ -452,7 +460,7 @@ classdef TBD_PF < TBD
             iy = round((py - obj.ygrid(1)) / obj.dy) + 1;
 
             if strcmp(obj.likelihood, 'model')
-                [logL, Ihat] = obj.model_likelihood(iy,ix, X(5));
+                [logW] = obj.model_likelihood(iy,ix);
                 return
             end
 
@@ -467,7 +475,8 @@ classdef TBD_PF < TBD
             
             for i = 1:numel(xvec)
                 for j = 1:numel(yvec)
-                    logL = logL + obj.guass_likelihood([px py], [xm(i), ym(j)], ...
+                    %%% Products here become a sum
+                    logW = logW + obj.guass_likelihood([px py], [xm(i), ym(j)], ...
                                                     [xvec(i), yvec(j)], z, X(5));
                 end
             end
@@ -478,7 +487,7 @@ classdef TBD_PF < TBD
         %%%   pos  [px py] particle position in meters
         %%%   pix  [x y]   pixel center in meters
         %%%   idx  [col row] pixel index into z
-        function l = guass_likelihood(obj, pos, pix, idx, z, I)
+        function l = guass_likelihood(obj, pos, pix, idx, z)
             px = pos(1);
             py = pos(2);
 
@@ -486,18 +495,16 @@ classdef TBD_PF < TBD
             jj = pix(2);
 
             sig = obj.Sigma * obj.dx; % Sigma is given in pixels
-            hh = I * exp( - ((ii -px)^2 + ((jj -py)^2))/ (2 * sig^2));
+            hh = exp( - ((ii -px)^2 + ((jj -py)^2))/ (2 * sig^2));
             zz = z(idx(2), idx(1)); % rows = y, cols = x
             l = (-(hh*(hh - 2*zz))/(2 * obj.NoiseSTD^2));
         end
 
-        function [l, Ihat] = model_likelihood(obj, r, c, I) % doesn't need z since C is computed already
+        function [l] = model_likelihood(obj, r, c, I) % doesn't need z since C is computed already
 
             Cv = obj.C(r,c);
             TCv = obj.TC(r,c);
-            Ihat = min(max(Cv / TCv, obj.I_min), obj.I_max);
             l = (Cv - 0.5*TCv) / obj.NoiseSTD^2;   % log domain
-
 
         end
         %%% Profile log-LR for EVERY cell at once, from this frame's C: the
@@ -507,7 +514,6 @@ classdef TBD_PF < TBD
         %%% Only used for plotting (R.llr); the filter itself still calls
         %%% model_likelihood per particle.
         function LL = llr_map(obj)
-            Ihat = min(max(obj.C ./ obj.TC, obj.I_min), obj.I_max);
             LL = ( obj.C - 0.5 .* obj.TC) / obj.NoiseSTD^2;
             LL(obj.ygrid(:) < 0.25, :) = NaN;   % rows = y
         end
@@ -530,21 +536,19 @@ classdef TBD_PF < TBD
         function [post, w, logw, ESS, didResample, llrMap, births, dbg] = timestep(obj, prior, logw_prior, z)
             llrMap = [];
             dbg = [];
-            x_minus = prior(1:5,:);
-            E_minus = prior(6,:);
+            x_minus = prior(1:4,:);
+            E_minus = prior(5,:);
 
             if nargin < 4
                 error('TBD_PF:timestep', ...
                     'timestep now takes the prior weights: timestep(prior, w_prior, z)');
             end
             logw_prior = reshape(logw_prior, 1, []);
-            
 
             % Regime transition
             E_plus = obj.RT(E_minus);
-            x_plus = nan(5,obj.N);
-            % L = zeros(1,obj.N);   % this frame's likelihood ratio, per particle
-            Y = nan(6,obj.N);
+            x_plus = nan(4,obj.N);
+            Y = nan(5,obj.N);
 
             % compute c_k
             % only if likelihood is model
@@ -554,32 +558,35 @@ classdef TBD_PF < TBD
                 obj.C = reshape(c, obj.npx, obj.npx).';
                 llrMap = obj.llr_map();
             end
-
+            % birth_cells will return the # of valid cells, as well as the indicies 
+            % valid cells are any which are in the upper gamma percentile of brightness
+            % So for gamma = 0.7, births are uniformly chosen from the gamma brightest
             [birthIdx, nValid] = obj.birth_cells(z);
             % Want to check below with book:
             logBirthCorr = log(numel(birthIdx) / nValid); 
 
-            logL = zeros(1, obj.N);
+            % Hold our log weights
+            logW = zeros(1, obj.N); 
             for n = 1:obj.N
 
                 % New born particles
                 if E_plus(n) && ~E_minus(n)
-                    x_plus(:,n) = obj.sample_new(birthIdx);
+                    x_plus(:,n) = obj.sample_new(birthIdx); 
                 elseif E_plus(n) && E_minus(n)
                     x_plus(:,n) = obj.dynamics(x_minus(:,n));
                 end
 
                 % Evaluate importance weights
                 Y(:, n) = [x_plus(:,n); E_plus(n)];
-                [logL(n), ~] = obj.importance_weights(Y(:,n),z);
-                if E_plus(n) && ~E_minus(n) % correct weights for newbotns
-                    logL(n) = logL(n) + logBirthCorr;
+                [logW(n)] = obj.importance_weights(Y(:,n),z);
+                if E_plus(n) && ~E_minus(n) % correct weights for newboens
+                    logW(n) = logW(n) + logBirthCorr;
                 end
-                %if ~isnan(Ihat), Y(5, n) = Ihat; end   % keep I in the state = fitted intensity
             end
 
             %%% Update
-            [w, logw_post] = obj.normalize_log(logw_prior + logL);
+            %%% logw_prior + logW is the weight update
+            [w, logw_post] = obj.normalize_log(logw_prior + logW);
             ESS = obj.get_ESS(w);
 
             %%% Where this frame's newborns landed, BEFORE the resample: a
@@ -618,14 +625,15 @@ classdef TBD_PF < TBD
                 nBorn = nnz(E_plus & ~E_minus);
                 kept  = nnz(E_plus &  E_minus);
                 died  = nnz(~E_plus & E_minus);
-                w0    = nnz(E_plus & logL == -Inf); % alive but zero weight (OOB or likelihood underflow)
+                w0    = nnz(E_plus & logW == -Inf); % alive but zero weight (OOB or likelihood underflow)
                 birthMode = sprintf("top %.0f%% of valid cells (%d)", 100*(1 - obj.gamma), numel(birthIdx));
                 obj.debug_print(sprintf("timestep: born=%d kept=%d died=%d alive=%d w0=%d | L max=%.3g ESS/N=%.3f resampled=%d | birth=%s", ...
-                    nBorn, kept, died, nnz(E_plus), w0, max(logL), ESS / obj.N, didResample, birthMode));
+                    nBorn, kept, died, nnz(E_plus), w0, max(logW), ESS / obj.N, didResample, birthMode));
             end
 
         end
 
+        %%% TODO: Log sum trick? 
         function [w_n,logw_norm] = normalize_log(obj, logw)
             logw = reshape(double(logw), 1, []);
             logw(isnan(logw)) = -Inf;
@@ -636,9 +644,11 @@ classdef TBD_PF < TBD
                 logw_norm = -log(obj.N);
                 return
             end
+            %%% TODO: Is it right to subtract by the max? Might over/underflow otherwise 
             w = exp(logw - m);
             w_n = w / sum(w);
             logw_norm = logw - m - log(sum(w));
+            
         end
         %%% Effective sample size, Kong's 1/sum(w^2) written scale-free so it
         %%% works on normalized or unnormalized weights. Ranges over [1, N].
@@ -670,8 +680,8 @@ classdef TBD_PF < TBD
                 [~, idx] = maxk(zv(:), nKeep);
             end
         end
-        %%% Per particle
 
+        %%% Per particle
         function X = sample_new(obj, idx)
             % Birth proposal: pick a pixel above the threshold uniformly at
             % random and place the particle at its center in meters.
@@ -683,18 +693,15 @@ classdef TBD_PF < TBD
             px = obj.xgrid(c);
             py = obj.ygrid(r);
             
-
+            %%% Sample velocity uniformly
             vx = obj.v_min + (obj.v_max - obj.v_min) * rand();
             vy = obj.v_min + (obj.v_max - obj.v_min) * rand();
-            I = obj.I_min + (obj.I_max - obj.I_min) * rand();
-            X = [px; vx; py; vy; I]; % Random new alive particle
+            X = [px; vx; py; vy]; % Random new alive particle
         end
 
-
+        %%% Push a particle through it's dynamics model
         function X_plus = dynamics(obj, X_minus)
-            X_plus = obj.F * X_minus + mvnrnd(zeros(5,1), obj.Q)';
-            % I is a random walk, keep it in the range births are drawn from
-            X_plus(5) = min(max(X_plus(5), obj.I_min), obj.I_max);
+            X_plus = obj.F * X_minus + mvnrnd(zeros(4,1), obj.Q)';
         end
 
 
@@ -702,7 +709,7 @@ classdef TBD_PF < TBD
         %%% returned weights are flat 1/N, which is what lets the SIS recursion
         %%% in timestep() reduce to the bootstrap weights on the next frame.
         function [post, w] = resample(obj, pre, w)
-            post = nan(6,obj.N);
+            post = nan(5,obj.N);
 
             Cdf = cumsum(w);
             Cdf(end) = 1; % cumsum round-off can leave C(end) just under u(N)

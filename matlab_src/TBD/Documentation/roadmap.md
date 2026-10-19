@@ -33,13 +33,6 @@ step (`normalize_log`). Resampling is SIS with an adaptive ESS threshold.
 **Still failing: acquisition and recovery at low `Var`** (e.g. `Var` = 0.1 on
 moving targets). See the new section "P0 — acquisition and exploration" below.
 
-**Plotting (2026-10-11).** `TBD_PF.show` writes one GIF with the raw frame
-(per-frame color limits) and the profile log-LR map (`R.llr`) side by side;
-zero-weight particles show as grey dots, each frame's newborns (`R.births`,
-taken before the resample) as white diamonds. Dashboard: p_x / p_y / intensity
-on declared frames only, "Occupied cells" instead of the particle count,
-matched-filter SNR. Details in `visualize.md`.
-
 **Why the target is hard to see in raw frames (not a bug).** The target is a
 small bump on a large pedestal (at k = 40: pedestal ~72, peak 6.35 above it).
 Blur made per-pixel contrast worse (peak 2.52), and normalization only rescaled
@@ -65,21 +58,6 @@ Each particle then needs two table lookups. Measured facts this rests on:
   does not carry over. The adjoint makes the full-image sum cheap instead.
 - Min-max normalization breaks the model: 92% superposition error, and the
   normalized image doesn't depend on `I`.
-
-**Done (uncommitted).**
-- `simulator` and `environment` both default to `Blur = false`,
-  `Normalize = false`.
-- `checkbound_idx` accepts index 128.
-- `TBD/supp/target_contribution.m` computes `E` with the right
-  `[col row]` order.
-- `TBD/supp/TargetContribution.mat` holds `E` built **without blur**. Spot
-  checks pass: off-diagonal cells match independent values, no zeros, and row
-  and column 128 are filled. The filter loads it as `obj.TC` (`TC(row, col)`).
-- `C` is computed once per frame in `timestep` with the row-major vec
-  (`zt = z.'; c = M'*(G*zt(:)); C = reshape(c,128,128).'`).
-- Meters path of the simulator places the target with `round` (item 9).
-- `simulator.get_SNR` is matched-filter SNR, `10*log10(sum(h.^2)/Var)` on the
-  noiseless frame (58–74 dB at `Var` = 15 on the S-curve).
 
 **Open bugs found 2026-10-11.**
 - `logBirthCorr` (`p_birth/q = nKeep/nValid`) is computed in `timestep` but
@@ -251,29 +229,6 @@ wrapper or is deleted), new `TBD/test/template_energy_test.m`.
 in `timestep`, with the correct row-major vec. Not yet a `simulator` method, and
 `run` loads its own copy of `M` and `G` (item 13).
 
-### 3. `'Likelihood'` option: `'gauss'` | `'forward'`
-**Why.** Keep the Gaussian PSF as a baseline for direct comparison.
-
-**What.**
-- A `TBD` parameter `'Likelihood'`, default `'gauss'` until item 5 checks out.
-- `'forward'`: `importance_weights` maps the particle to `(r, c)` with
-  `round((p - grid(1))/d) + 1`, then returns
-  `log LR = (I*C(r,c) - 0.5*I^2*E(r,c)) / NoiseSTD^2`. Load `E` in the
-  constructor and compute `C` once per frame in `timestep`.
-- `'forward'` skips `preprocess`: no median subtraction, no peak rescale.
-- `importance_weights` returns **log** LR for both modes (item 11).
-- Birth proposal: see item 6.
-
-**Files.** `TBD.m` (parser, load `E`), `TBD_PF.m` (`importance_weights`,
-`timestep`, `preprocess`).
-
-**Status (2026-10-11).** Done, with differences from the plan: the option is
-`'model'` (not `'forward'`), it is a `run()` option (not a `TBD` constructor
-parameter), and it defaults to `'model'`. `preprocess` no longer exists.
-`importance_weights` returns log LR in both modes. `run` also takes `'Var'`
-(default 1), which sets `NoiseSTD = sqrt(Var)` and overrides the constructor's
-`'STD'`.
-
 ### 4. One consistent image pipeline
 **Why.** `E`, `C` and the frame `z` must all come from the same `h(x)`. Today
 `simulator` defaults to no blur or normalization, but `environment` overrides
@@ -393,22 +348,6 @@ used by the birth proposal, `importance_weights`, and as a mask on `C` / `E`.
 **Status (2026-10-11).** Births now respect it (`birth_cells` excludes
 y < 0.25 m), but `0.25` is hard-coded in three places: `importance_weights`,
 `birth_cells`, `llr_map`. Still one property to add.
-
-### 9. Truth-to-pixel mapping: ceil vs round
-**Why.** `generate_mWidar_image_meters` places the target with
-`find(px <= xgrid, 1, 'first')` (rounds up), but the filter and the `E` table
-use `round`. That is up to 1 px (mean ½ px) of bias, and it now also means the
-truth is imaged from a different cell than the one whose `E` the filter looks
-up.
-
-**What.** Use `round((px - xgrid(1)) / dx) + 1` in the simulator.
-
-**Files.** `simulator.m` (`generate_mWidar_image_meters`).
-
-**Status (2026-10-11).** Done. It mattered far more than "½ px of bias": with
-the sampled-`I` likelihood, a particle exactly at the truth with I = 1 scored
-~3.8e4 nats below the cell the simulator imaged, and lost to a wrong-place
-winner. With fitted `I` the remaining effect is ~1 cm median error.
 
 ### 10. Collapse the duplicated simulator paths
 **Why.** `generate_mWidar_image_meters` and `_pixels` duplicate the forward
@@ -610,21 +549,6 @@ constant within a cell.
 **What.** Bilinear interpolation of `C` and `E`. It is an approximation; only
 worth it if position error is floored at about half a cell.
 
-### 21. Intensity by GLRT instead of in the state
-**What.** Replace `I` in the particle state with `I_hat = C/E` and
-`log LR = C^2 / (2 sigma^2 E)`. This removes a state dimension and its
-process noise. Compare against item 3.
-
-**Status (2026-10-11).** Done, and it was the fix that made tracking work (see
-"Where things stand"). Implemented as `I_hat = clamp(C/E, I_min, I_max)` with
-`log LR = (I_hat*C - 0.5*I_hat^2*E)/sigma^2`, written back into row 5 of the
-state for display; `I` is still in the state but no longer used by `'model'`.
-This picks the single best `I` (a GLRT). The exact alternative averages over
-the uniform `I` prior: `C^2/(2 sigma^2 E) + log(sqrt(2*pi)*s/(I_max-I_min)) +
-log(Phi((I_max-I_hat)/s) - Phi((I_min-I_hat)/s))`, `s = sigma/sqrt(E)`. It
-differs only by a term in log E (a few nats), but needs a stable log-difference
-of normal CDFs because s ≈ 1e-4.
-
 ### 22. Toward multiple targets
 **What.**
 - With superposition, two targets add a cross term
@@ -637,8 +561,6 @@ of normal CDFs because s ≈ 1e-4.
 ---
 
 ## Suggested order (revised 2026-10-11)
-
-Done since the last order: items 3, 9, 21; most of 2, 4, 11.
 
 1. **Acquisition and exploration:** item 19 (pedestal projection), then item 7
    (likelihood-map birth proposal, apply `logBirthCorr`), then item 23 (birth

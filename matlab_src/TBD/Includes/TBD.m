@@ -74,7 +74,7 @@ classdef TBD < mWidar
             % Q is over [px; vx; py; vy; I]. Keep the I term small: the
             % likelihood is steep in I, so a loose intensity random walk
             % spreads the weights every step without helping localization.
-            addParameter(p, 'Q', 1e-1 * diag([0.01 0.5 0.01 0.5 1e-3]), @(x) isequal(size(x), [5 5]));
+            addParameter(p, 'Q', 1e-1 * diag([0.01 0.5 0.01 0.5]), @(x) isequal(size(x), [4 4]));
             % Birth velocity range. Scenario targets move < 1 m/s; at
             % +-10 m/s newborns cross ~30 px per frame and leave the scene.
             addParameter(p, 'v_max', 0.05, @(x) isscalar(x));
@@ -116,11 +116,10 @@ classdef TBD < mWidar
                       1-obj.Ps, obj.Ps];
 
             %%% Target dynamics, constant velocity in [px; vx; py; vy; I]
-            obj.A = [0 1 0 0 0;
-                     0 0 0 0 0;
-                     0 0 0 1 0;
-                     0 0 0 0 0;
-                     0 0 0 0 0];
+            obj.A = [0 1 0 0;
+                     0 0 0 0;
+                     0 0 0 1;
+                     0 0 0 0];
             obj.F = expm(obj.A * obj.dt);
             obj.Q = R.Q;
             if R.v_min > R.v_max
