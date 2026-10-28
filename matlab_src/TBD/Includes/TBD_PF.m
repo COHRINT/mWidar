@@ -1,12 +1,12 @@
 
 %%% Full TBD filter implementation
 %%% Public entry points are run() and show()
-%%% TBD_PF.run(scenario) will output a results struct, TBD_PF.show(R, scenario) plots it
+%%% TBD_PF.run(scenario, env) will output a results struct, TBD_PF.show(R, scenario) plots it
 %%%
 %%% Conventions
-%%%   - Particle state is [px; vx; py; vy; I] in METERS, matching the scenario
-%%%     truth, plus the target intensity I. Particle sets carry existence E as
-%%%     a 6th row: [px; vx; py; vy; I; E].
+%%%   - Particle state is [px; vx; py; vy] in METERS, matching the scenario
+%%%     truth. Particle sets carry existence E as a 5th row:
+%%%     [px; vx; py; vy; E].
 %%%   - Signals are indexed z(row, col) = z(y, x), matching simulator / visualize.
 %%%   - Sigma and pDist are in pixels; Sigma is scaled by dx inside the likelihood.
 %%%   - Weights are always normalized to sum to 1, and R.particles(:,:,k) is
@@ -33,7 +33,7 @@ classdef TBD_PF < TBD
         TARGETCONTRIBUTION_FILEPATH
 
         M % sampling
-        G % recovert
+        G % recovery
         TC % TargetContribution
         C % will be computed per measurment
 
@@ -47,11 +47,11 @@ classdef TBD_PF < TBD
     methods
         %%% RUN TBD_PF
         %%% Main entry point. Takes the scenario struct from environment.setup()
-        %%% (or just a 1 x K cell of npx x npx signals) and runs the bootstrap
-        %%% PF over every frame.
-        %%%
-        %%%   R = pf.run(scenario)
-        %%%   R = pf.run(scenario, 'Bootstrap', false, 'ESS', 0.5)
+        %%% (or just a 1 x K cell of npx x npx signals) and runs the PF over
+        %%% every frame (SIS with adaptive resampling unless 'Bootstrap').
+        %%%  
+        %%%   R = pf.run(scenario, env)
+        %%%   R = pf.run(scenario, env, 'Bootstrap', false, 'ESS', 0.5)
         %%%
         %%% Options
         %%%   'Bootstrap' true resamples every step (the classic bootstrap PF,
@@ -60,8 +60,10 @@ classdef TBD_PF < TBD
         %%%               only flattened once the cloud degenerates.
         %%%               Default false.
         %%%   'ESS'       resampling threshold as a FRACTION of N, in (0, 1].
-        %%%               Resample when ESS/N <= this. Default 0.5, the usual
-        %%%               N/2 rule. Ignored when 'Bootstrap' is true.
+        %%%               Resample when ESS/N <= this. Default 0.005, far
+        %%%               below the usual N/2 rule so newborns get a chance
+        %%%               before the cloud is resampled away. Ignored when
+        %%%               'Bootstrap' is true.
         %%%   'DebugPlots'  draw step-by-step debug figures (existence
         %%%               transitions, births, dynamics, importance weights,
         %%%               normalization, resampling) plus a whole-run summary.
@@ -75,7 +77,7 @@ classdef TBD_PF < TBD
         %%%   'DebugVisible' leave the debug figures open on screen (default
         %%%               false: drawn off screen, saved, then closed)
         %%%
-        %%%   R.particles  6 x N x K, posterior particle set [px; vx; py; vy; I; E] at each k
+        %%%   R.particles  5 x N x K, posterior particle set [px; vx; py; vy; E] at each k
         %%%   R.weights     N x K, normalized posterior weight of each particle
         %%%   R.ess         1 x K, ESS of the weights BEFORE the resample decision
         %%%   R.resampled   1 x K logical, frames where the filter resampled
@@ -85,7 +87,7 @@ classdef TBD_PF < TBD
         %%%
         %%% Metrics can be appended to R later, everything here is just the
         %%% raw filter output.
-        function R = run(obj, scenario, varargin)
+        function R = run(obj, scenario, env, varargin)
 
             %%% Resampling policy. Resampling every step throws information
             %%% away whenever the frame was uninformative, so the default is to
@@ -118,19 +120,14 @@ classdef TBD_PF < TBD
                 obj.NoiseSTD = 0.1; % some small value
             end
             %%% Filepaths
-            obj.RECOVERY_FILEPATH = "supplemental/recovery.mat";
-            obj.SAMPLING_FILEPATH = "supplemental/sampling.mat";
             obj.TARGETCONTRIBUTION_FILEPATH = "TBD/supp/TargetContribution.mat";
 
             if strcmp(obj.likelihood, 'model')
-                ds = load(obj.RECOVERY_FILEPATH);
-                obj.G = ds.G;
 
-                ds = load(obj.SAMPLING_FILEPATH);
-                obj.M = ds.M;
-
+                [obj.M, obj.G] = env.get_mWidar_matrices();
                 ds = load(obj.TARGETCONTRIBUTION_FILEPATH);
                 obj.TC = ds.L;
+                
             end
 
             if obj.bootstrap && ~ismember('ESS', p.UsingDefaults)
@@ -169,7 +166,6 @@ classdef TBD_PF < TBD
 
             %%% Initialize, every particle dead with undefined state and an
             %%% equal share of the weight
-            %%% NOTE: getting rid of intensity in state.
             prior   = [nan(4, obj.N); false(1, obj.N)];
             logw_prior = -log(obj.N)*ones(1,obj.N);
 
@@ -215,7 +211,7 @@ classdef TBD_PF < TBD
             if obj.debugPlots
                 fp = struct('N', obj.N, 'Pb', obj.Pb, 'Ps', obj.Ps, 'gamma', obj.gamma, ...
                     'NoiseSTD', obj.NoiseSTD, 'TC', obj.TC, 'likelihood', obj.likelihood, ...
-                    'yMin', 0.25, 'I_min', obj.I_min, 'I_max', obj.I_max, ...
+                    'yMin', 0.25, ...
                     'v_min', obj.v_min, 'v_max', obj.v_max, 'pEthresh', obj.pEthresh, ...
                     'essThresh', obj.RESAMPLE_THRESHOLD, 'bootstrap', obj.bootstrap);
                 dbgCtx = obj.vis.debug_context(scenario, K, fp, ...
@@ -272,7 +268,7 @@ classdef TBD_PF < TBD
 
         %%% Quick look at a run. Draws the vis.plot_TBD dashboard (track over
         %%% the energy map, existence, per-axis position, error, occupied
-        %%% cells, target intensity vs time, ESS, and matched-filter SNR vs
+        %%% cells, ESS, and matched-filter SNR vs
         %%% time when the scenario recorded it) and optionally plays the
         %%% frame-by-frame history with the particle cloud. Everything is
         %%% delegated to vis, same as environment.show.
@@ -310,12 +306,6 @@ classdef TBD_PF < TBD
         %%%               cell shares a weight, and after a resample they are
         %%%               all 1/N, so the shading carries almost nothing.
         %%%   'WeightScale'    'log' (default) or 'linear' scale for that shading.
-        %%%   'Intensity' with Animate, put the weighted distribution of the
-        %%%               particles' target intensity I in a second panel next
-        %%%               to the scene. Default false: with 'model' I is the
-        %%%               fitted C/E, so the panel is one bar at ~1. Still
-        %%%               useful for 'gauss', where I is sampled.
-        %%%   'IntensityBins'  # of bins over [I_min, I_max] (default 24)
         function [fig, figAnim] = show(obj, R, scenario, varargin)
 
             if nargin < 3
@@ -332,8 +322,6 @@ classdef TBD_PF < TBD
             addParameter(p, 'ShowBirths', true, @islogical);
             addParameter(p, 'WeightColormap', '');
             addParameter(p, 'WeightScale', 'log');
-            addParameter(p, 'Intensity', false, @islogical);
-            addParameter(p, 'IntensityBins', 24, @(x) isscalar(x) && isnumeric(x) && x >= 2);
             parse(p, varargin{:});
             opt = p.Results;
 
@@ -420,10 +408,6 @@ classdef TBD_PF < TBD
                     'CLim',          'frame', ...
                     'ImageLabel',    'raw signal (per-frame limits)', ...
                     second{:}, births{:}, ...
-                    'Intensity',     opt.Intensity, ...
-                    'IntensityRow',  5, ...
-                    'IntensityLim',  [obj.I_min, obj.I_max], ...
-                    'IntensityBins', opt.IntensityBins, ...
                     'Save',          animPath);
             end
 
@@ -476,7 +460,7 @@ classdef TBD_PF < TBD
             for i = 1:numel(xvec)
                 for j = 1:numel(yvec)
                     %%% Products here become a sum
-                    logW = logW + obj.guass_likelihood([px py], [xm(i), ym(j)], ...
+                    logW = logW + obj.gauss_likelihood([px py], [xm(i), ym(j)], ...
                                                     [xvec(i), yvec(j)], z, X(5));
                 end
             end
@@ -487,7 +471,7 @@ classdef TBD_PF < TBD
         %%%   pos  [px py] particle position in meters
         %%%   pix  [x y]   pixel center in meters
         %%%   idx  [col row] pixel index into z
-        function l = guass_likelihood(obj, pos, pix, idx, z)
+        function l = gauss_likelihood(obj, pos, pix, idx, z)
             px = pos(1);
             py = pos(2);
 
@@ -520,10 +504,12 @@ classdef TBD_PF < TBD
 
         %%% Run through one timestep of TBD_PF.
         %%%
-        %%%   [post, w, ESS, didResample, llrMap, births] = obj.timestep(prior, w_prior, z)
+        %%%   [post, w, logw, ESS, didResample, llrMap, births, dbg] = obj.timestep(prior, logw_prior, z)
         %%%
-        %%% prior / post are 6 x N particle sets, w_prior / w the matching
-        %%% normalized weights. ESS is measured on w BEFORE the resample
+        %%% prior / post are 5 x N particle sets [px; vx; py; vy; E].
+        %%% logw_prior is the prior's log weights; w / logw are the posterior
+        %%% normalized weights and their logs (flat -log(N) after a
+        %%% resample). ESS is measured on w BEFORE the resample
         %%% decision, so it is the number that drove it; didResample says what
         %%% the filter decided. llrMap is the npx x npx profile log-LR map
         %%% (llr_map) for 'model', [] for 'gauss'. births is 2 x nBorn, the
@@ -579,7 +565,7 @@ classdef TBD_PF < TBD
                 % Evaluate importance weights
                 Y(:, n) = [x_plus(:,n); E_plus(n)];
                 [logW(n)] = obj.importance_weights(Y(:,n),z);
-                if E_plus(n) && ~E_minus(n) % correct weights for newboens
+                if E_plus(n) && ~E_minus(n) % correct weights for newborns
                     logW(n) = logW(n) + logBirthCorr;
                 end
             end
@@ -633,7 +619,8 @@ classdef TBD_PF < TBD
 
         end
 
-        %%% TODO: Log sum trick? 
+        %%% Normalize log weights with the log-sum-exp trick. Returns the
+        %%% linear weights w_n (sum to 1) and their logs logw_norm.
         function [w_n,logw_norm] = normalize_log(obj, logw)
             logw = reshape(double(logw), 1, []);
             logw(isnan(logw)) = -Inf;
@@ -644,7 +631,9 @@ classdef TBD_PF < TBD
                 logw_norm = -log(obj.N);
                 return
             end
-            %%% TODO: Is it right to subtract by the max? Might over/underflow otherwise 
+            %%% Subtract the max before exp so the largest term is exp(0) = 1:
+            %%% no overflow, and the ratios (all that survives normalizing)
+            %%% are unchanged.
             w = exp(logw - m);
             w_n = w / sum(w);
             logw_norm = logw - m - log(sum(w));

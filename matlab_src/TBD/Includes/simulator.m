@@ -25,7 +25,7 @@ classdef simulator < mWidar
         %%% Object count
         ct
 
-        %%% Noise varaince. Noise is enabled if var > 0
+        %%% Noise variance. Noise is enabled if var > 0
         var   % is noise is enabled, we will use this variance
 
     end
@@ -103,6 +103,8 @@ classdef simulator < mWidar
             end
 
         end
+
+
     end
     methods(Hidden)
         %%% Generate image when pos is in meters
@@ -158,7 +160,7 @@ classdef simulator < mWidar
                 obj.debug_print('Adding Noise')
                 for i = 1:obj.npx
                     for j = 1:obj.npx
-                        % add noise. gaussian with varaince of var
+                        % add noise. gaussian with variance of var
                         n = sqrt(obj.var)*randn();
                         blurred(i,j) = blurred(i,j) + n;
                     end
@@ -216,7 +218,7 @@ classdef simulator < mWidar
                 obj.debug_print('Adding Noise')
                 for i = 1:obj.npx
                     for j = 1:obj.npx
-                        % add noise. gaussian with varaince of var
+                        % add noise. gaussian with variance of var
                         n = sqrt(obj.var)*randn();
                         blurred(i,j) = blurred(i,j) + n;
                     end

@@ -53,7 +53,7 @@ TBD_PF_test/
 cfg.filter   "TBD_PF"
 cfg.env      -> environment(...)          forwarded verbatim as name/value
 cfg.TBD      -> TBD_PF(...)
-cfg.run      -> f.run(scenario, ...)
+cfg.run      -> f.run(scenario, env, ...)
 cfg.show     -> f.show(R, scenario, ...)
 ```
 
@@ -204,9 +204,9 @@ outDir = results/<name>_<timestamp>   (if output.save)
 for each trial
   fill show.Save / run.DebugDir / run.DebugName if empty
   if jsonencode(cfg.env) differs from the previous trial's:
-      scenario = environment(env args).setup()       % else reuse
+      e = environment(env args); scenario = e.setup()   % else reuse both
   f = build_filter(cfg)
-  R = f.run(scenario, run args)      (timed)
+  R = f.run(scenario, e, run args)   (timed; e supplies the M, G matrices)
   metrics = compute_metrics(R, scenario, runtime)
   if output.perTrial: f.show(R, scenario, show args)
   keep R if output.keepR / saveR
@@ -222,12 +222,12 @@ MATLAB cannot index a call result, so forwarding is always two lines:
 
 ```matlab
 args = name_value(cfg.run);
-R = f.run(scenario, args{:});
+R = f.run(scenario, e, args{:});
 ```
 
 ## 8. Multiple filters
 
-`build_filter` returns an object with `run(scenario, ...)` and `show(R, scenario, ...)`. To add one:
+`build_filter` returns an object with `run(scenario, env, ...)` and `show(R, scenario, ...)`. To add one:
 
 1. Add its parameter block to `default_cfg` (e.g. `cfg.EKF`).
 2. Add a `case` in `build_filter` that builds from that block.

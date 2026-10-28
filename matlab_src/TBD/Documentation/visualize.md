@@ -136,8 +136,7 @@ Signal behind, targets moving through it.
 | `'Format'` | `'gif'`, `'mp4'`, `'png'` (frame dump). Inferred from the `'Save'` extension |
 | `'CLim'` | `[lo hi]` fixed color limits; `[]` (default) uses the stack min/max so brightness doesn't flicker; `'frame'` uses each frame's own min/max (raw, unnormalized frames whose level drifts over the run) |
 | `'ImageLabel'` | Colorbar label for the background image (LaTeX interpreter). `''` (default) draws none. Skipped when the weight colorbar is drawn |
-| `'Intensity'` | Second panel with the weighted distribution of particle intensity `I` (default `false`) |
-| `'Signals2'` | `npx x npx x K` second image stack, drawn in a second scene panel to the right with the same truth / estimate / particle overlays. Takes the place of the intensity panel; needs its own figure (no `'Axes'`) |
+| `'Signals2'` | `npx x npx x K` second image stack, drawn in a second scene panel to the right with the same truth / estimate / particle overlays. Needs its own figure (no `'Axes'`) |
 | `'CLim2'`, `'Colormap2'`, `'ImageLabel2'` | Same three settings for that panel (`'Colormap2'` default `'parula'`) |
 | `'PanelTitles'` | `{left, right}` static panel titles with `'Signals2'`; the per-frame line (k, SNR, P(E)) moves to the figure title |
 | `'ShowZeroWeight'` | Also draw E = 1 particles with exactly zero weight, as small grey dots under the weighted cloud (default `false`) |
@@ -176,7 +175,6 @@ The results dashboard:
 [ track over energy map | existence P(E) ]
 [         p_x           |      p_y       ]   <- declared frames only
 [    position error     | occupied cells ]
-[   target intensity    (full width)     ]   <- when particles carry I; declared frames only
 [         ESS / N       (full width)     ]   <- when res.ess or res.weights is set
 [  matched-filter SNR   (full width)     ]   <- when res.snr is set
 ```
@@ -241,7 +239,7 @@ pinned to the floor means the likelihood is too peaked for `N` particles.
 | `'Time'` | `1 x K`, defaults to `1:K` |
 
 ```matlab
-R = pf.run(scenario);                      % adaptive resampling
+R = pf.run(scenario, env);                 % adaptive resampling
 v.ess_vs_time(R.ess, 'N', R.N, 'Threshold', R.essThresh, 'Resampled', R.resampled)
 ```
 

@@ -299,7 +299,7 @@ function [logL,L] = like(Y, z, prm)
     end
 end
 
-%%% Per-pixel log LR, same expression as TBD_PF.guass_likelihood
+%%% Per-pixel log LR, same expression as TBD_PF.gauss_likelihood
 %%%   pos [px py] meters, pix [x y] pixel center in meters, idx [col row]
 function [ll] = log_gauss_like(pos, pix, idx, z, I, prm)
     px = pos(1);

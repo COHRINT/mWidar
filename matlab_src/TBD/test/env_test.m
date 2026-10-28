@@ -16,6 +16,6 @@ Q = 1e-1 * [0.01 0 0 0 0;
 0 0 0 0 1e-3]; % keep the intensity random walk tight, see TBD.m
 
 f = TBD_PF('gamma', 0.50, 'Q', Q, 'N', 5000, 'Debug', true);
-R = f.run(scenario, 'ESS', 0.3, 'Var', v);
+R = f.run(scenario, e, 'ESS', 0.3, 'Var', v);
 figpath = sprintf('TBD/Figures/T_noise_v%i_SIS_%s_newlike', v, trajs{1});
 [f1, f2] = f.show(R,scenario, 'Animate', true, 'Save', figpath);

@@ -9,6 +9,7 @@ function t = T5_PF_All_N5000_v0_s1()
     t.scenarios = {"static", "line", "parabola", "scurve"};
 
     t.base.TBD = struct('Debug', true);
+    t.base.run = struct('ESS', 0.001);
     t.output = struct('perTrial', true);
 
 end

@@ -2,24 +2,28 @@
 %%%
 %%%   out = run_test('T5')        % unique prefix of a config/T*.m file
 %%%   out = run_test(1)
-%%%   out = run_test('T4_PF_Line_N5000_v15_s1')
+%%%   out = run_test('T4_PF_Line_N5000_v15_s5')
 %%%   out = run_test()            % list the available tests and prompt
 %%%   out = run_test('T1', 'perTrial', false, 'save', false)
 %%%                               % override any t.output field for this call
 %%%
 %%% Pipeline (see TEST_FRAMEWORK.md):
 %%%   load_test -> expand_trials -> for each trial:
-%%%       environment.setup (reused while env cfg is unchanged)
-%%%       build_filter -> f.run -> compute_metrics -> f.show (optional)
+%%%       environment + setup (reused while env cfg is unchanged)
+%%%       build_filter -> f.run(scenario, env) -> compute_metrics -> f.show (optional)
 %%%   -> summarize -> save to results/<name>_<timestamp>/
+%%%
+%%% The environment object is handed to f.run so the filter reuses the
+%%% forward-model matrices (M, G) its simulator already loaded.
 %%%
 %%% out.test      the merged test definition
 %%% out.trials    trial struct array (cfg, labels, metrics, R if output.keepR)
 %%% out.summary   per-trial and grouped metric tables (see summarize)
 %%% out.dir       output folder ('' if output.save is false)
 %%%
-%%% Runs from matlab_src (the filter loads supplemental/*.mat by relative
-%%% path); the working directory is restored afterwards.
+%%% Runs from matlab_src (simulator loads supplemental/*.mat and the filter
+%%% loads TBD/supp/TargetContribution.mat by relative path); the working
+%%% directory is restored afterwards.
 
 function out = run_test(name, varargin)
 
@@ -92,7 +96,7 @@ function out = run_test(name, varargin)
         f = build_filter(cfg);
         runArgs = name_value(cfg.run);
         tStart = tic;
-        R = f.run(scenario, runArgs{:});
+        R = f.run(scenario, e, runArgs{:});
         runtime = toc(tStart);
 
         trials(n).metrics = compute_metrics(R, scenario, runtime);

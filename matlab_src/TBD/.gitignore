@@ -2,5 +2,10 @@
 # no stupid asv
 *.asv
 
-Figures/
+# generated output
+/Figures/
 test/figs/
+test/TBD_PF_test/results/
+
+# needed by the 'model' likelihood, re-include past the root *.mat rule
+!supp/TargetContribution.mat

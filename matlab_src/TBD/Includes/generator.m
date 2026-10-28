@@ -15,8 +15,8 @@ classdef generator < mWidar
 
         %%% Object count, defaults 1
         ct
-        %%% Trajectory, list of trajectories you want to generate. 
-        % TODO: If length of list is more than ct, it will pick up to obj ct. If its less than ct, it will repeat trajs
+        %%% Trajectory, list of trajectories you want to generate, one per
+        %%% object. environment broadcasts a single entry to every object.
         trajectories
 
         %%% rw, enable or disable rw, default false
@@ -234,7 +234,7 @@ classdef generator < mWidar
 
         end
 
-        %%% Keep traget static in the center of the frame
+        %%% Keep target static in the center of the frame
         function [X] = generate_static(obj, i)
             [T, t] = obj.birth_death(i);
             

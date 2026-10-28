@@ -17,16 +17,16 @@ classdef TBD < mWidar
         % Assumed shape of the PSF blob. TODO: make sigmax and sigmay
         Sigma % For Gaussian PSF, blurring parameter in PIXELS (converted to meters in the likelihood)
         dt % dt
-        Ip % Do more reasearch on this term
-        Background % 'median' or 'none', how a frame's background is removed before the likelihood
+        Ip % TODO: unused, never read by TBD_PF. Kept for a future intensity state
+        Background % TODO: unused, never read by TBD_PF. 'median' or 'none', how a frame's background would be removed before the likelihood
 
         %%% PF Params
         N % # of particles
         Pb % prob of birth
         Ps % prob of survival
         pEthresh % existence threshold
-        PI % Markov transision
-        pDist % cells you evaluate accross for liklihood
+        PI % Markov transition
+        pDist % cells you evaluate across for the 'gauss' likelihood
 
         %%% Target Dynamics
         A
@@ -35,6 +35,8 @@ classdef TBD < mWidar
         v_max % used for sampling velocity on newly birthed particles
         v_min
 
+        % TODO: unused, intensity is no longer in the particle state. Kept
+        % for when it comes back.
         I_max
         I_min
 
@@ -56,7 +58,9 @@ classdef TBD < mWidar
             addParameter(p, 'Seed', 420, @(x) isempty(x) || (isscalar(x) && x >= 0 && mod(x,1) == 0));
 
             % sensor params
-            % NoiseSTD and Sigma have large affects on filter performance
+            % NoiseSTD and Sigma have large effects on filter performance
+            % TODO: 'STD' is effectively unused, TBD_PF.run() overwrites
+            % NoiseSTD from its 'Var' option.
             addParameter(p, 'STD', 0.75, @(x) isscalar(x) && x > 0);
             addParameter(p, 'Sigma', 0.5, @(x) isscalar(x) && x > 0);
             addParameter(p, 'dt', 0.1, @(x) isscalar(x) && x > 0);
@@ -71,15 +75,14 @@ classdef TBD < mWidar
             addParameter(p, 'pDist', 5, @(x) isscalar(x) && x >= 0 && mod(x,1) == 0);
             
             % Target dynamics
-            % Q is over [px; vx; py; vy; I]. Keep the I term small: the
-            % likelihood is steep in I, so a loose intensity random walk
-            % spreads the weights every step without helping localization.
+            % Q is over [px; vx; py; vy]
             addParameter(p, 'Q', 1e-1 * diag([0.01 0.5 0.01 0.5]), @(x) isequal(size(x), [4 4]));
             % Birth velocity range. Scenario targets move < 1 m/s; at
             % +-10 m/s newborns cross ~30 px per frame and leave the scene.
             addParameter(p, 'v_max', 0.05, @(x) isscalar(x));
             addParameter(p, 'v_min', -0.05, @(x) isscalar(x));
-            % Intensity range for births, and the bounds I is clamped to
+            % Intensity range for births, and the bounds I is clamped to.
+            % TODO: unused while intensity is out of the state.
             addParameter(p, 'I_max', 3, @(x) isscalar(x) && x > 0);
             addParameter(p, 'I_min', 0.1, @(x) isscalar(x) && x > 0);
 
@@ -102,7 +105,7 @@ classdef TBD < mWidar
             obj.NoiseSTD = R.STD;
             obj.Sigma    = R.Sigma;
             obj.dt       = R.dt;
-            obj.Ip       = R.Ip; % May not be needed here....
+            obj.Ip       = R.Ip; % TODO: unused, see property
             obj.Background = R.Background;
 
             %%% PF params
@@ -115,7 +118,7 @@ classdef TBD < mWidar
             obj.PI = [1-obj.Pb, obj.Pb;
                       1-obj.Ps, obj.Ps];
 
-            %%% Target dynamics, constant velocity in [px; vx; py; vy; I]
+            %%% Target dynamics, constant velocity in [px; vx; py; vy]
             obj.A = [0 1 0 0;
                      0 0 0 0;
                      0 0 0 1;
@@ -151,7 +154,7 @@ classdef TBD < mWidar
     methods (Abstract)
         %%% All these should be in child classes
         w = importance_weights(obj, Y, z)
-        l = guass_likelihood(obj, pos, pix, idx, z, I)
+        l = gauss_likelihood(obj, pos, pix, idx, z, I)
         X = sample_new(obj, z)
         [post, w, ESS, didResample, llrMap, births] = timestep(obj, prior, w_prior, z)
         X_plus = dynamics(obj, X_minus)

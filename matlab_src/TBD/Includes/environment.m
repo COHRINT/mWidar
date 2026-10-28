@@ -33,7 +33,7 @@ classdef environment < mWidar
         dt              % seconds
         tvec            % 0:dt:kEnd*dt, so K = kEnd + 1 samples
         K               % # of timesteps
-        trajectories    % 1 x ct cellstr from {'line','parabola','scurve'}
+        trajectories    % 1 x ct cellstr from {'line','parabola','scurve','static'}
         rw              % 1 x ct logical
         start           % 1 x ct cell of [x y] in meters, [] = random in-scene
         final           % 1 x ct cell of [x y] in meters, [] = random in-scene
@@ -166,6 +166,12 @@ classdef environment < mWidar
                 error('environment:generate', 'generator aborted, see messages above');
             end
 
+        end
+
+        %%% Function to return mWidar matrices for use in TBD_PF
+        function [SAMPLING, RECOVERY] = get_mWidar_matrices(obj)
+            SAMPLING = obj.sim.M;
+            RECOVERY = obj.sim.G;
         end
 
         %%% [signals, snr] = env.simulate(tracks)
@@ -306,7 +312,7 @@ classdef environment < mWidar
 
         %%% Name/value cell for one sub-object's constructor. This is the only
         %%% place that knows which environment property maps to which option
-        %%% name on which class, so the constructor and configure() agree.
+        %%% name on which class.
         function args = forward_args(obj, which)
             switch which
                 case 'gen'

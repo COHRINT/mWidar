@@ -1,7 +1,8 @@
 %%% Filter factory. Maps cfg.filter to a constructed filter object.
 %%%
 %%% Every filter returned here must provide
-%%%   R = f.run(scenario, <cfg.run as name/value>)
+%%%   R = f.run(scenario, env, <cfg.run as name/value>)
+%%%       env is the environment that generated scenario
 %%%   [fig, figAnim] = f.show(R, scenario, <cfg.show as name/value>)
 %%%
 %%% Adding a filter:

@@ -4,7 +4,7 @@
 %%% to the matching call, so a field here must be a real argument of:
 %%%   env  -> environment(...)
 %%%   TBD  -> TBD_PF(...)        (the block for cfg.filter, see build_filter)
-%%%   run  -> f.run(scenario, ...)
+%%%   run  -> f.run(scenario, env, ...)
 %%%   show -> f.show(R, scenario, ...)
 %%% Test-level controls (plotting on/off, saving, ...) live in the test
 %%% definition, never here. See default_test.
@@ -54,16 +54,16 @@ function cfg = default_cfg()
     cfg.TBD.pEthresh   = 0.5;
     cfg.TBD.pDist      = 5;
     cfg.TBD.Q          = diag([0.01 0.005 0.01 0.005]);
-    cfg.TBD.v_max      = 0.15;
-    cfg.TBD.v_min      = -0.15;
+    cfg.TBD.v_max      = 0.05;
+    cfg.TBD.v_min      = -0.05;
     cfg.TBD.I_max      = 3;
     cfg.TBD.I_min      = 0.1;
-    cfg.TBD.gamma      = 0.75;
+    cfg.TBD.gamma      = 0.85;
 
     %% TBD_PF.run(...)
     cfg.run = struct();
     cfg.run.Bootstrap    = false;
-    cfg.run.ESS          = 0.3;
+    cfg.run.ESS          = 0.001;
     cfg.run.Likelihood   = 'model';
     cfg.run.Var          = [];      % derived: env.Var
     cfg.run.DebugPlots   = false;
@@ -82,7 +82,5 @@ function cfg = default_cfg()
     cfg.show.ShowBirths     = false;
     cfg.show.WeightColormap = '';
     cfg.show.WeightScale    = 'log';
-    cfg.show.Intensity      = false;
-    cfg.show.IntensityBins  = 24;
 
 end

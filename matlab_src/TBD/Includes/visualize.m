@@ -12,7 +12,7 @@
 %%%   - Ground truth / estimated tracks are 4 x K, 4 x K x T (T targets) or a
 %%%     1 x T cell of 4 x K. Everything is normalized internally to a cell.
 %%%   - Particle histories are S x N x K with existence E in the LAST row
-%%%     ([px;vx;py;vy;I;E], or the older [px;vx;py;vy;E]), S x N x K x T, or a
+%%%     ([px;vx;py;vy;E]), S x N x K x T, or a
 %%%     cell of S x N x K.
 %%%   - 'Units' controls the axes (default 'meters'); 'DataUnits' declares what
 %%%     the passed data is already in and defaults to 'Units' (no conversion).
@@ -427,16 +427,6 @@ classdef visualize < mWidar
                            the current frame's SNR on every frame
               'Trail'      # of past estimate samples to keep drawn (default 15,
                            Inf for the full track)
-              'Intensity'  draw a second panel next to the scene holding the
-                           weighted distribution of the particles' target
-                           intensity I, with the E = 0 weight mass as a grey
-                           bar of its own. Needs 'Weights' to mean anything.
-              'IntensityRow'   state row holding I (default 5)
-              'IntensityLim'   [Imin Imax] bin range; pass the filter's own
-                           bounds. [] takes it from the data.
-              'IntensityBins'  # of bins over that range (default 24)
-              'IntensityYLim'  fix the panel's y limits; [] uses the largest
-                           single bar anywhere in the run
               'FPS'        playback / export frame rate
               'Save'       output path; extension picks the format
               'Format'     'gif' | 'mp4' | 'png' (frame dump), inferred from Save
@@ -449,8 +439,8 @@ classdef visualize < mWidar
                            colorbar is drawn, since both would sit in one spot.
               'Signals2'   npx x npx x K second image stack. Drawn in a second
                            scene panel to the right with the same truth,
-                           estimate and particle overlays. Replaces the
-                           intensity panel, and needs its own figure (no 'Axes').
+                           estimate and particle overlays. Needs its own
+                           figure (no 'Axes').
               'CLim2', 'Colormap2', 'ImageLabel2'
                            the same three settings for that panel ('Colormap2'
                            default 'parula')
@@ -476,11 +466,6 @@ classdef visualize < mWidar
             addParameter(p, 'pE', []);
             addParameter(p, 'SNR', []);
             addParameter(p, 'Trail', 15);
-            addParameter(p, 'Intensity', false, @islogical);
-            addParameter(p, 'IntensityRow', 5);
-            addParameter(p, 'IntensityLim', []);
-            addParameter(p, 'IntensityBins', 24);
-            addParameter(p, 'IntensityYLim', []);
             addParameter(p, 'FPS', obj.fps);
             addParameter(p, 'Format', '');
             addParameter(p, 'CLim', []);
@@ -516,38 +501,15 @@ classdef visualize < mWidar
                     "'Signals2' has %d frames but signals has %d", size(R.Signals2, 3), K);
             end
 
-            %%% Intensity panel. Bins and y scale are settled once over the
-            %%% whole run, so a frame-to-frame change in the bars means
-            %%% something; per-frame limits would make a collapsing
-            %%% distribution look exactly like a healthy one.
-            iopt = [];
-            if R.Intensity
-                iopt = obj.intensity_opts(Yc, R.Weights, R.IntensityRow, ...
-                    R.IntensityLim, R.IntensityBins, R.IntensityYLim);
-            end
-
             %%% Two panels are positioned by hand rather than tiled:
             %%% weight_colorbar places itself off the scene axes' Position,
             %%% and a tiledlayout owns that property.
-            axI = [];
             ax2 = [];
             if two
-                if ~isempty(iopt)
-                    obj.debug_print("intensity: 'Signals2' takes the second panel, skipping the intensity panel");
-                    iopt = [];
-                end
                 fig = obj.new_figure('Time History', [1500 720]);
                 ax  = axes(fig, 'Position', [0.040 0.10 0.405 0.74]);
                 ax2 = axes(fig, 'Position', [0.530 0.10 0.405 0.74]);
-            elseif ~isempty(iopt) && isempty(R.Axes)
-                fig = obj.new_figure('Time History', [1180 540]);
-                ax  = axes(fig, 'Position', [0.055 0.12 0.400 0.70]); %#ok<LAXES>
-                axI = axes(fig, 'Position', [0.575 0.12 0.395 0.70]); %#ok<LAXES>
             else
-                if ~isempty(iopt)
-                    obj.debug_print("intensity: 'Axes' was given, so there is no room for the intensity panel, skipping it");
-                    iopt = [];
-                end
                 if isempty(R.Axes)
                     %%% Own figure: leave headroom for the figure-level run
                     %%% title, which a default-positioned axes runs into.
@@ -704,10 +666,6 @@ classdef visualize < mWidar
                     title(ax, ttl, 'FontSize', obj.fs);
                 end
 
-                if ~isempty(axI)
-                    obj.intensity_frame(axI, Yc, R.Weights, k, iopt);
-                end
-
                 drawnow limitrate;
 
                 switch fmt
@@ -747,8 +705,7 @@ classdef visualize < mWidar
 
         %{
             The one-stop TBD results dashboard: existence, track in the plane,
-            per-axis position vs time, position error, particle health,
-            target intensity vs time (when the particle cloud carries I), and
+            per-axis position vs time, position error, particle health, and
             measurement SNR vs time when res.snr is filled in.
 
             fig = v.plot_TBD(res, ...)
@@ -779,7 +736,7 @@ classdef visualize < mWidar
 
             %%% Derive estimates from the particle history when the caller did
             %%% not hand over a point estimate.
-            [est, pE, Ihat] = obj.resolve_estimates(res);
+            [est, pE] = obj.resolve_estimates(res);
             tru = obj.to_cell(res.truth);
             kvec = obj.time_vector(res, obj.n_steps(res, est, tru));
             [tlab, ~] = obj.time_label(res);
@@ -787,19 +744,17 @@ classdef visualize < mWidar
             %%%   [ track | existence ]
             %%%   [  p_x  |    p_y    ]
             %%%   [ error | occupied cells ]
-            %%%   [    Intensity      ]   <- only when the particle cloud carries I (row 5)
             %%%   [       ESS        ]   <- only when the weights were recorded
             %%%   [       SNR        ]   <- only when res.snr is given
             %%% Wide on purpose: the scene panel is axis-equal, so it leaves
             %%% horizontal room in its tile that the legend drops into.
-            %%% Intensity, ESS and SNR span the full width: they share the x
-            %%% axis with the rows above them and read as the run's timeline.
+            %%% ESS and SNR span the full width: they share the x axis with
+            %%% the rows above them and read as the run's timeline.
             hasSNR = obj.has_snr(res.snr);
             essR = obj.ess_ratio(res);
             hasESS = ~isempty(essR);
-            hasIntensity = ~isempty(Ihat) && any(isfinite(Ihat(:)));
-            nRows = 3 + hasIntensity + hasESS + hasSNR;
-            figH = 950 + 220 * hasIntensity + 220 * hasESS + 220 * hasSNR;
+            nRows = 3 + hasESS + hasSNR;
+            figH = 950 + 220 * hasESS + 220 * hasSNR;
             fig = obj.new_figure('TBD Results', [1400 figH]);
             tl = tiledlayout(fig, nRows, 2, 'TileSpacing', 'compact', 'Padding', 'compact');
 
@@ -931,15 +886,6 @@ classdef visualize < mWidar
             end
             grid(ax, 'on');
             xlabel(ax, tlab, 'FontSize', obj.fs);
-
-            %%% Target intensity ----------------------------------------------
-            if hasIntensity
-                ax = nexttile(tl, [1 2]);
-                for t = 1:size(Ihat, 1)
-                    Ihat(t,:) = obj.declared_only(Ihat(t,:), pE, t, thresh);
-                end
-                obj.intensity_axes(ax, kvec, Ihat, tlab);
-            end
 
             %%% Effective sample size ---------------------------------------------
             if hasESS && ~isempty(res.particles)
@@ -1736,7 +1682,7 @@ classdef visualize < mWidar
             scenario  what was handed to TBD_PF.run (a bare cell -> no truth)
             K         # frames run
             fp        filter parameters packed by TBD_PF.run (N, Pb, Ps,
-                      gamma, NoiseSTD, TC, likelihood, yMin, I_min, I_max,
+                      gamma, NoiseSTD, TC, likelihood, yMin,
                       v_min, v_max, pEthresh, essThresh, bootstrap)
             Options
               'Dir'     root folder (default TBD/test/figs/debug)
@@ -2536,197 +2482,6 @@ classdef visualize < mWidar
             end
         end
 
-        %%% Settle the intensity histogram's bins and y scale once for the
-        %%% whole run. Returns [] when the panel cannot be drawn, which the
-        %%% caller reads as "skip it".
-        %%%   Yc     1 x T cell of S x N x K particle histories
-        %%%   W      N x K weights ([] -> treat the cloud as uniform 1/N)
-        %%%   row    state row holding I
-        %%%   lim    [Imin Imax] bin range, or [] to take it from the data
-        %%%   nbins  # of bins over that range
-        %%%   ylim_  caller-fixed y limits, or [] for the run's largest bar
-        function iopt = intensity_opts(obj, Yc, W, row, lim, nbins, ylim_)
-            iopt = [];
-            if isempty(Yc)
-                return
-            end
-
-            S = size(Yc{1}, 1);
-            %%% E lives in the LAST row, so a state this short carries no
-            %%% intensity at all (the older [px;vx;py;vy;E] layout).
-            if row < 1 || row >= S
-                obj.debug_print(sprintf( ...
-                    "intensity: state has %d rows, nothing to read in row %d, skipping the panel", ...
-                    S, row));
-                return
-            end
-
-            K = size(Yc{1}, 3);
-            nbins = max(2, round(nbins));
-
-            %%% Bin edges, fixed across the run. Prefer the filter's own I
-            %%% bounds when the caller passes them: births are drawn from that
-            %%% interval and the dynamics clamp back into it, so data-derived
-            %%% edges only ever differ by hiding how much of the range the run
-            %%% failed to explore.
-            if isempty(lim)
-                allI = [];
-                for t = 1:numel(Yc)
-                    v = Yc{t}(row,:,:);
-                    allI = [allI; v(isfinite(v))]; %#ok<AGROW>
-                end
-                if isempty(allI)
-                    obj.debug_print("intensity: no finite intensities in the cloud, skipping the panel");
-                    return
-                end
-                lim = [min(allI), max(allI)];
-            end
-            lim = reshape(double(lim), 1, 2);
-            if ~(lim(2) > lim(1))
-                lim = lim(1) + [0 1];
-            end
-
-            iopt           = struct();
-            iopt.row       = row;
-            iopt.edges     = linspace(lim(1), lim(2), nbins + 1);
-            iopt.bw        = iopt.edges(2) - iopt.edges(1);
-            iopt.centers   = iopt.edges(1:end-1) + iopt.bw / 2;
-            %%% The dead bar is parked a clear gap left of the first bin, but
-            %%% still one bin width from it so bar() sizes every bar the same.
-            iopt.deadX     = iopt.edges(1) - 1.5 * iopt.bw;
-            iopt.xlim      = [iopt.deadX - iopt.bw, iopt.edges(end) + 0.5 * iopt.bw];
-            iopt.liveColor = obj.particleColor;
-            iopt.deadColor = [0.65 0.65 0.65];
-
-            %%% y scale: the largest LIVE bar anywhere in the run. The dead
-            %%% mass is deliberately left out of it - 1 - p(E) sits near 1 on
-            %%% every frame before the track is born, and letting that set the
-            %%% scale would flatten the intensity distribution to nothing for
-            %%% the whole run. The dead bar clips against the top instead and
-            %%% carries its value as a label (see intensity_frame).
-            hi = 0;
-            for k = 1:K
-                live = obj.intensity_mass(Yc, W, k, iopt);
-                hi = max([hi, live]);
-            end
-            if ~(hi > 0)
-                hi = 1;
-            end
-            if isempty(ylim_)
-                iopt.ylim = [0, hi * 1.12];
-            else
-                iopt.ylim = reshape(double(ylim_), 1, 2);
-            end
-        end
-
-        %%% Weighted mass per intensity bin at frame k, plus the mass sitting
-        %%% on E = 0. These are the posterior weights, not particle counts:
-        %%% between resamples the two disagree, and the count is the wrong one
-        %%% (see the class header). live therefore sums to p(E) and dead holds
-        %%% 1 - p(E), so the whole panel sums to 1.
-        %%%
-        %%% Multiple targets are aggregated into one distribution - the
-        %%% weights are a single N x K set, so they cannot be split up.
-        function [live, dead] = intensity_mass(~, Yc, W, k, iopt)
-            live = zeros(1, numel(iopt.centers));
-            dead = 0;
-
-            for t = 1:numel(Yc)
-                Yk = Yc{t}(:,:,k);
-                N  = size(Yk, 2);
-
-                if isempty(W)
-                    wk = ones(1, N) / max(N, 1);
-                else
-                    wk = reshape(double(W(:, min(k, size(W,2)))), 1, []);
-                    wk = wk(1:min(N, numel(wk)));
-                    wk = [wk, zeros(1, N - numel(wk))]; %#ok<AGROW>
-                end
-                wk(~isfinite(wk)) = 0;
-
-                I     = Yk(iopt.row, :);
-                E     = Yk(end,:) ~= 0;
-                dead  = dead + sum(wk(~E));
-                alive = E & isfinite(I);
-                if ~any(alive)
-                    continue
-                end
-
-                %%% Clamp onto the end bins instead of dropping anything: the
-                %%% panel only reads as a distribution if the live bars and the
-                %%% dead bar still add up to 1.
-                Ia = min(max(I(alive), iopt.edges(1)), iopt.edges(end));
-                b  = discretize(Ia, iopt.edges);
-                wa = wk(alive);
-                ok = isfinite(b);
-                live = live + accumarray(b(ok)', wa(ok)', [numel(iopt.centers), 1])';
-            end
-        end
-
-        %%% One frame of the intensity distribution, drawn into its own axes
-        %%% beside the scene.
-        function intensity_frame(obj, ax, Yc, W, k, iopt)
-            [live, dead] = obj.intensity_mass(Yc, W, k, iopt);
-
-            cla(ax);
-
-            %%% Dead bar and live bars go in one bar() call so they share a
-            %%% width and a baseline; CData is what keeps the dead one grey.
-            b = bar(ax, [iopt.deadX, iopt.centers], [dead, live], 0.9);
-            b.FaceColor = 'flat';
-            b.CData     = [iopt.deadColor; repmat(iopt.liveColor, numel(iopt.centers), 1)];
-            b.EdgeColor = [0.25 0.25 0.25];
-            b.LineWidth = 0.5;
-            hold(ax, 'on');
-
-            %%% Separator, so the dead bar never reads as one more I bin.
-            %%% Nothing here hides its handle: cla() only deletes objects whose
-            %%% handles are visible, so a hidden line would survive every frame
-            %%% and the panel would silently accumulate one per step.
-            plot(ax, (iopt.edges(1) - 0.5 * iopt.bw) * [1 1], iopt.ylim, ':', ...
-                'Color', [0.4 0.4 0.4], 'LineWidth', obj.lw);
-
-            %%% Weighted mean over the live mass: the amplitude the likelihood
-            %%% is effectively testing the frame against.
-            mI = NaN;
-            if sum(live) > 0
-                mI = sum(live .* iopt.centers) / sum(live);
-                plot(ax, mI * [1 1], iopt.ylim, '--', 'Color', obj.estColor, ...
-                    'LineWidth', 1);
-            end
-
-            xlim(ax, iopt.xlim);
-            ylim(ax, iopt.ylim);
-            grid(ax, 'on');
-
-            %%% The dead bar is off the y scale by design, so it has to say how
-            %%% tall it actually is. Printed every frame, not only when it
-            %%% clips, so the number is always in the same place to read.
-            if dead >= iopt.ylim(2)
-                yTxt = iopt.ylim(2);
-                vAlign = 'top';
-            else
-                yTxt = dead;
-                vAlign = 'bottom';
-            end
-            text(ax, iopt.deadX, yTxt, sprintf('%.2f', dead), ...
-                'HorizontalAlignment', 'center', 'VerticalAlignment', vAlign, ...
-                'FontSize', obj.fs - 1, 'Color', [0.25 0.25 0.25]);
-
-            tk = linspace(iopt.edges(1), iopt.edges(end), 6);
-            set(ax, 'XTick', [iopt.deadX, tk], ...
-                    'XTickLabel', [{'E=0'}, cellstr(compose('%.2g', tk))], ...
-                    'FontSize', obj.fs - 1);
-            xlabel(ax, 'target intensity I', 'FontSize', obj.fs);
-            ylabel(ax, 'posterior weight', 'FontSize', obj.fs);
-
-            ttl = sprintf('Intensity distribution   P(E) = %.2f', sum(live));
-            if isfinite(mI)
-                ttl = [ttl, sprintf('   E[I] = %.3f', mI)];
-            end
-            title(ax, ttl, 'FontSize', obj.fs);
-        end
-
         %%% Settle the weight color scale once for a whole run.
         %%%   W      N x K (or 1 x N) weights
         %%%   cmap   colormap name, or an m x 3 table
@@ -3019,14 +2774,10 @@ classdef visualize < mWidar
         end
 
         %%% Use the supplied point estimate if there is one, otherwise take the
-        %%% MMSE over the existing particles. Ihat (T x K, weighted mean
-        %%% intensity over the E = 1 particles) only ever comes from the
-        %%% particle cloud - there is no 'res.I' for a caller to override it
-        %%% with, since the point estimate (res.est) carries position only.
-        function [est, pE, Ihat] = resolve_estimates(obj, res)
+        %%% MMSE over the existing particles.
+        function [est, pE] = resolve_estimates(obj, res)
             est = obj.to_cell(res.est);
             pE = obj.to_rowmat(res.pE);
-            Ihat = [];
 
             Yc = obj.to_particle_cell(res.particles);
             if isempty(Yc)
@@ -3045,26 +2796,21 @@ classdef visualize < mWidar
                 if isempty(res.pE)
                     pE(t,:) = e.pE; %#ok<AGROW>
                 end
-                Ihat(t,:) = e.I; %#ok<AGROW>
             end
         end
 
         %%% MMSE position estimate + existence probability from a particle set
-        %%% Row 5, when present, is target intensity I (TBD_PF convention); its
-        %%% weighted mean over the E = 1 particles comes back as e.I.
         function e = particle_estimate(obj, Y, W)
             K = size(Y,3);
             N = size(Y,2);
             [ix, iy] = obj.pos_rows(Y);
             hasE = size(Y,1) >= 5;
-            hasI = size(Y,1) >= 5;
 
             e.pE = nan(1,K);
             e.x = nan(1,K);
             e.y = nan(1,K);
             e.varx = nan(1,K);
             e.vary = nan(1,K);
-            e.I = nan(1,K);
 
             for k = 1:K
                 if hasE
@@ -3108,10 +2854,6 @@ classdef visualize < mWidar
                 e.y(k) = sum(wa .* ys);
                 e.varx(k) = sum(wa .* (xs - e.x(k)).^2);
                 e.vary(k) = sum(wa .* (ys - e.y(k)).^2);
-
-                if hasI
-                    e.I(k) = sum(wa .* Y(5,alive,k));
-                end
             end
         end
 
@@ -3233,42 +2975,6 @@ classdef visualize < mWidar
             end
             title(ax, ttl, 'FontSize', obj.fs);
             obj.maybe_legend(ax);
-        end
-
-        %%% Shared target-intensity panel, used by plot_TBD. Ihat is T x K,
-        %%% the posterior-weighted mean of particle intensity I over the
-        %%% E = 1 particles (see particle_estimate); frames with pE = 0 come
-        %%% back NaN and are drawn as gaps rather than dropping to zero.
-        %%% There is no ground-truth intensity to compare against - the
-        %%% simulator places a unit-amplitude target, I is purely a filter
-        %%% state - so this plots the estimate on its own.
-        function intensity_axes(obj, ax, kvec, Ihat, tlab)
-
-            Ihat = obj.to_rowmat(Ihat);
-            if isempty(kvec)
-                kvec = 1:size(Ihat,2);
-            end
-            n = min(numel(kvec), size(Ihat,2));
-            kvec = kvec(1:n);
-
-            cols = obj.palette(max(size(Ihat,1), 1));
-            for t = 1:size(Ihat,1)
-                v = Ihat(t,1:n);
-                plot(ax, kvec, v, '-', 'Color', cols(t,:), 'LineWidth', obj.lw, ...
-                    'DisplayName', obj.name_for('I_k', t, size(Ihat,1)));
-                hold(ax, 'on');
-            end
-
-            grid(ax, 'on');
-            xlabel(ax, tlab, 'FontSize', obj.fs);
-            ylabel(ax, 'intensity I', 'FontSize', obj.fs);
-            %%% One series needs no legend; a lone 'I_k' entry just lands on
-            %%% top of the data.
-            if size(Ihat, 1) > 1
-                obj.maybe_legend(ax);
-            end
-            title(ax, 'Target Intensity (weighted mean, E = 1 particles, declared frames)', ...
-                'FontSize', obj.fs);
         end
 
         function snr_axes(obj, ax, kvec, snr, tlab)
@@ -3414,8 +3120,7 @@ classdef visualize < mWidar
             d.truthM = obj.dbg_truth_at(ctx, k - 1);
 
             %%% The map the particles are scored against. Same expression as
-            %%% TBD_PF.model_likelihood AS WRITTEN there (I = 1: Ihat is
-            %%% computed but not used), so each particle's ell is this map at
+            %%% TBD_PF.model_likelihood, so each particle's ell is this map at
             %%% its cell. Rebuilt here from C rather than taken from llrMap
             %%% (TBD_PF.llr_map, R.llr) so the two can be checked against
             %%% each other: debug_summary (f), (g) plot both.
@@ -3431,7 +3136,7 @@ classdef visualize < mWidar
             inb = Ep & ix >= 1 & ix <= obj.npx & iy >= 1 & iy <= obj.npx;
 
             fin = Ep & isfinite(d.logL);
-            Epost = d.post(6,:) ~= 0;
+            Epost = d.post(end,:) ~= 0;
             livePost = Epost & d.w_post > 0;
 
             s = struct();
@@ -3840,7 +3545,7 @@ classdef visualize < mWidar
             [fig, tl] = obj.dbg_figure(ctx, sprintf('k = %d resample', k), [1650 600], 1, 3);
 
             pre = d.Ep & d.w > 0;
-            Epost = d.post(6,:) ~= 0;
+            Epost = d.post(end,:) ~= 0;
             livePost = Epost & d.w_post > 0;
             [U, ~, ic] = unique(d.post(:, livePost).', 'rows');
             cnt = accumarray(ic(:), 1).';
