@@ -82,5 +82,6 @@ function cfg = default_cfg()
     cfg.show.ShowBirths     = false;
     cfg.show.WeightColormap = '';
     cfg.show.WeightScale    = 'log';
+    cfg.show.AnimateWeights = false;  % particle weight vs index animation
 
 end

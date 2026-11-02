@@ -8,6 +8,6 @@ function t = T4_PF_Line_N5000_v15_s5()
 
     t.base.env = struct('Seed', 5);
     t.base.TBD = struct('Debug', true);
-    t.base.show = struct('Animate', true);
+    t.base.show = struct('Animate', true, 'AnimateWeights', true);
 
 end

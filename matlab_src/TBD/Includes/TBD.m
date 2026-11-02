@@ -158,7 +158,6 @@ classdef TBD < mWidar
         X = sample_new(obj, z)
         [post, w, ESS, didResample, llrMap, births] = timestep(obj, prior, w_prior, z)
         X_plus = dynamics(obj, X_minus)
-        w_n = normalize(obj, w)
 
     end
     methods(Hidden)

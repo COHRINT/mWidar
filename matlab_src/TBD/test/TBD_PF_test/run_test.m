@@ -11,7 +11,7 @@
 %%%   load_test -> expand_trials -> for each trial:
 %%%       environment + setup (reused while env cfg is unchanged)
 %%%       build_filter -> f.run(scenario, env) -> compute_metrics -> f.show (optional)
-%%%   -> summarize -> save to results/<name>_<timestamp>/
+%%%   -> summarize -> save to results/<name>/
 %%%
 %%% The environment object is handed to f.run so the filter reuses the
 %%% forward-model matrices (M, G) its simulator already loaded.
@@ -54,8 +54,8 @@ function out = run_test(name, varargin)
     if t.output.save
         rootDir = t.output.rootDir;
         if rootDir == "", rootDir = fullfile(here, 'results'); end
-        outDir = fullfile(rootDir, sprintf('%s_%s', t.name, char(datetime('now', 'Format', 'yyyyMMdd_HHmmss'))));
-        mkdir(fullfile(outDir, 'figures'));
+        outDir = fullfile(rootDir, t.name);
+        if ~exist(fullfile(outDir, 'figures'), 'dir'), mkdir(fullfile(outDir, 'figures')); end
         fprintf("output: %s\n", outDir);
     end
 
@@ -106,9 +106,9 @@ function out = run_test(name, varargin)
 
         if t.output.perTrial
             showArgs = name_value(cfg.show);
-            [fig, figAnim] = f.show(R, scenario, showArgs{:});
+            [fig, figAnim, figW] = f.show(R, scenario, showArgs{:});
             if t.output.closeFigs
-                close([fig, figAnim]);
+                close([fig, figAnim, figW]);
             end
         end
 

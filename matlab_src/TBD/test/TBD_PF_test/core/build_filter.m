@@ -3,7 +3,7 @@
 %%% Every filter returned here must provide
 %%%   R = f.run(scenario, env, <cfg.run as name/value>)
 %%%       env is the environment that generated scenario
-%%%   [fig, figAnim] = f.show(R, scenario, <cfg.show as name/value>)
+%%%   [fig, figAnim, figW] = f.show(R, scenario, <cfg.show as name/value>)
 %%%
 %%% Adding a filter:
 %%%   1. add its parameter block to default_cfg (e.g. cfg.EKF)

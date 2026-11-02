@@ -44,7 +44,7 @@ TBD_PF_test/
     scenarios.m           named scenario library
     variants.m            named filter-variant library
     T1_...m … T5_...m     test definitions
-  results/<name>_<yyyyMMdd_HHmmss>/   (created by run_test)
+  results/<name>/   (created by run_test)
 ```
 
 ## 1. `default_cfg`: the trial cfg
@@ -199,7 +199,7 @@ Seeds: MC sets `env.Seed`; `TBD.Seed` follows it via `resolve_cfg`. Every varian
 cd matlab_src (restored on exit), addpath Includes/core/config
 t      = load_test(name);  apply varargin to t.output
 trials = expand_trials(t)
-outDir = results/<name>_<timestamp>   (if output.save)
+outDir = results/<name>   (if output.save)
 
 for each trial
   fill show.Save / run.DebugDir / run.DebugName if empty

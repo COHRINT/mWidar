@@ -699,6 +699,157 @@ classdef visualize < mWidar
 
         end
 
+        %{
+            Particle weight vs particle index, one frame per timestep. Left
+            panel: normalized log weights log(w_n). Right panel: normalized
+            weights w_n.
+
+            fig = v.animate_weights(W, ...)
+
+            W is N x K, normalized weights (each column sums to 1). The x axis
+            is the raw particle index, so it reshuffles on every resample.
+            Zero weights have log w = -Inf and are not drawn on the log panel;
+            how many there are goes in that panel's title.
+
+            y limits are fixed over the whole run so frames compare: log panel
+            [min finite log w, 0], linear panel [0, max w]. Both panels mark
+            the uniform weight 1/N with a dashed line.
+
+            Options
+              'ESS'        1 x K ESS, shown as ESS/N in the per-frame title
+              'Resampled'  1 x K logical, flagged in the per-frame title
+              'Which'      label for the weights, e.g. 'pre-resample' (default '')
+              'Title'      run title over both panels
+              'FPS', 'Save', 'Format', 'Pause'  as animate_time_history
+        %}
+        function fig = animate_weights(obj, W, varargin)
+
+            p = obj.common_parser();
+            addParameter(p, 'ESS', []);
+            addParameter(p, 'Resampled', []);
+            addParameter(p, 'Which', '');
+            addParameter(p, 'FPS', obj.fps);
+            addParameter(p, 'Format', '');
+            addParameter(p, 'Pause', 0);
+            parse(p, varargin{:})
+            R = p.Results;
+
+            W = double(W);
+            [N, K] = size(W);
+            L = log(W);   % log(0) = -Inf, which plot simply skips
+            x = 1:N;
+            uni = 1 / N;
+
+            %%% Limits once over the run. Per-frame limits would rescale a
+            %%% collapsed frame to look like a healthy one.
+            fin = L(isfinite(L));
+            if isempty(fin)
+                logLim = [log(uni) - 1, 0];
+            else
+                lo  = min(fin);
+                pad = max(0.5, 0.05 * -lo);
+                logLim = [lo - pad, pad];
+            end
+            wMax = max(W(:), [], 'omitnan');
+            if isempty(wMax) || ~(wMax > 0)
+                wMax = 1;
+            end
+            linLim = [0, 1.05 * max(wMax, uni)];
+
+            fig = obj.new_figure('Particle Weights', [1400 600]);
+            axL = subplot(1, 2, 1, 'Parent', fig);
+            axW = subplot(1, 2, 2, 'Parent', fig);
+
+            %%% Draw once, then only swap YData per frame: 2 x N points
+            %%% redrawn from scratch each frame is the slow part otherwise.
+            hold(axL, 'on'); hold(axW, 'on');
+            hL = plot(axL, x, L(:,1), '.', 'Color', obj.particleColor, 'MarkerSize', 5);
+            hW = plot(axW, x, W(:,1), '.', 'Color', obj.particleColor, 'MarkerSize', 5);
+            yline(axL, log(uni), '--k', '$\log(1/N)$', 'Interpreter', 'latex', ...
+                'LabelHorizontalAlignment', 'left', 'FontSize', obj.fs - 1);
+            yline(axW, uni, '--k', '$1/N$', 'Interpreter', 'latex', ...
+                'LabelHorizontalAlignment', 'left', 'FontSize', obj.fs - 1);
+
+            xlim(axL, [0 N + 1]); ylim(axL, logLim);
+            xlim(axW, [0 N + 1]); ylim(axW, linLim);
+            xlabel(axL, 'particle index', 'FontSize', obj.fs);
+            xlabel(axW, 'particle index', 'FontSize', obj.fs);
+            ylabel(axL, '$\log w_n$', 'Interpreter', 'latex', 'FontSize', obj.fs);
+            ylabel(axW, '$w_n$',      'Interpreter', 'latex', 'FontSize', obj.fs);
+            grid(axL, 'on'); grid(axW, 'on'); box(axL, 'on'); box(axW, 'on');
+            title(axW, 'normalized weights', 'FontSize', obj.fs);
+
+            runLines = {};
+            if ~isempty(R.Title)
+                runLines = cellstr(obj.wrap_title(R.Title, 110));
+            end
+            sg = sgtitle(fig, ' ', 'FontSize', obj.fs);
+
+            ess = obj.to_rowmat(R.ESS);
+            rs  = logical(obj.to_rowmat(R.Resampled));
+
+            [fmt, outFile] = obj.resolve_format(R.Save, R.Format);
+            vw = [];
+            if fmt == "mp4"
+                vw = VideoWriter(outFile, 'MPEG-4');
+                vw.FrameRate = R.FPS;
+                open(vw);
+            end
+
+            for k = 1:K
+
+                set(hL, 'YData', L(:,k));
+                set(hW, 'YData', W(:,k));
+
+                nZero = nnz(W(:,k) == 0);
+                title(axL, sprintf('normalized log weights  (%d of %d zero, not drawn)', nZero, N), ...
+                    'FontSize', obj.fs);
+
+                ttl = sprintf('k = %d / %d', k, K);
+                if ~isempty(R.Which)
+                    ttl = [ttl, '   ', char(R.Which), ' weights']; %#ok<AGROW>
+                end
+                if k <= numel(ess) && isfinite(ess(k))
+                    ttl = [ttl, sprintf('   ESS/N = %.3g', ess(k) / N)]; %#ok<AGROW>
+                end
+                if k <= numel(rs) && rs(k)
+                    ttl = [ttl, '   resampled']; %#ok<AGROW>
+                end
+                sg.String = [runLines, {ttl}];
+
+                drawnow limitrate;
+
+                switch fmt
+                    case "gif"
+                        frame = getframe(fig);
+                        [im8, map] = rgb2ind(frame2im(frame), 256);
+                        if k == 1
+                            imwrite(im8, map, outFile, 'gif', ...
+                                'LoopCount', Inf, 'DelayTime', 1/R.FPS);
+                        else
+                            imwrite(im8, map, outFile, 'gif', ...
+                                'WriteMode', 'append', 'DelayTime', 1/R.FPS);
+                        end
+                    case "mp4"
+                        writeVideo(vw, getframe(fig));
+                    case "png"
+                        [d, n, e] = fileparts(outFile);
+                        exportgraphics(fig, fullfile(d, sprintf('%s_%03d%s', n, k, e)), ...
+                            'Resolution', obj.dpi);
+                    otherwise
+                        if R.Pause > 0
+                            pause(R.Pause);
+                        end
+                end
+
+            end
+
+            if ~isempty(vw)
+                close(vw);
+            end
+
+        end
+
         %% ------------------------------------------------------------------
         %% TBD specific plots
         %% ------------------------------------------------------------------

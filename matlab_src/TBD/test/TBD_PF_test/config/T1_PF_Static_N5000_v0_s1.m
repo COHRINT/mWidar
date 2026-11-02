@@ -7,9 +7,9 @@ function t = T1_PF_Static_N5000_v0_s1()
                     "no additive noise on the mWidar signal. Fairly easy scenario, mainly used to debug new changes.";
     t.scenarios = {"static"};
 
-    t.base.env = struct('Debug', true);
-    t.base.TBD = struct('Debug', true, 'Pb', 0.13, 'v_max', 0.05, 'v_min', -0.05);
+    t.base.env = struct('Debug', false);
+    t.base.TBD = struct('Debug', true, 'Pb', 0.13, 'v_max', 0.05, 'v_min', -0.05, 'gamma', 0.99);
     t.base.run = struct('ESS', 0.0005, 'DebugFrames', [9 11 20 40 60 80 91]);
-    t.base.show = struct('Animate', true);
+    t.base.show = struct('Animate', true, 'AnimateWeights', true);
 
 end

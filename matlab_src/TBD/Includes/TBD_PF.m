@@ -79,6 +79,8 @@ classdef TBD_PF < TBD
         %%%
         %%%   R.particles  5 x N x K, posterior particle set [px; vx; py; vy; E] at each k
         %%%   R.weights     N x K, normalized posterior weight of each particle
+        %%%   R.weightsPre  N x K, normalized weights before the resample
+        %%%                 decision (plotting only, see show 'AnimateWeights')
         %%%   R.ess         1 x K, ESS of the weights BEFORE the resample decision
         %%%   R.resampled   1 x K logical, frames where the filter resampled
         %%%   R.pE          1 x K, existence probability = weight mass on E = 1
@@ -204,6 +206,12 @@ classdef TBD_PF < TBD
             %%% birth process, which the posterior particles mostly can't
             %%% (a newborn rarely survives the resample).
             R.births = cell(1, K);
+            %%% Normalized weights BEFORE each frame's resample decision,
+            %%% N x K. Plotting only (show 'AnimateWeights'): R.weights is
+            %%% flat 1/N on every resampled frame, so it can't show the
+            %%% weight collapse that triggered the resample. Column k is
+            %%% paired with the pre-resample cloud, not R.particles(:,:,k).
+            R.weightsPre = nan(obj.N, K);
 
             %%% Debug plots: everything visualize needs that only the filter
             %%% knows. Plotting only. yMin is the y gate hard-coded in
@@ -222,7 +230,7 @@ classdef TBD_PF < TBD
 
             %%% Filter
             for k = 1:K
-                [post, w, logw, ess, didResample, llrMap, births, dbg] = obj.timestep(prior, logw_prior, z{k});
+                [post, w, logw, ess, didResample, llrMap, births, dbg, wPre] = obj.timestep(prior, logw_prior, z{k});
                 if obj.debugPlots
                     dbgSteps{k} = obj.vis.debug_step(dbg, k, dbgCtx);
                 end
@@ -231,6 +239,7 @@ classdef TBD_PF < TBD
                     R.llr(:,:,k)  = single(llrMap - R.llrMax(k));
                 end
                 R.births{k} = births;
+                R.weightsPre(:,k) = wPre(:);
 
                 R.particles(:,:,k) = post;
                 R.weights(:,k)     = w(:);
@@ -306,7 +315,16 @@ classdef TBD_PF < TBD
         %%%               cell shares a weight, and after a resample they are
         %%%               all 1/N, so the shading carries almost nothing.
         %%%   'WeightScale'    'log' (default) or 'linear' scale for that shading.
-        function [fig, figAnim] = show(obj, R, scenario, varargin)
+        %%%   'AnimateWeights' also play particle weight vs particle index, one
+        %%%               frame per timestep, in its own figure: normalized log
+        %%%               weights on the left, normalized weights on the right
+        %%%               (vis.animate_weights). Uses the weights from BEFORE
+        %%%               each resample (R.weightsPre), since R.weights is flat
+        %%%               1/N on resampled frames. Independent of 'Animate'.
+        %%%               With 'Save' writes <base>_weights.gif. Default false.
+        %%%
+        %%%   figW is the weight animation figure, [] unless 'AnimateWeights'.
+        function [fig, figAnim, figW] = show(obj, R, scenario, varargin)
 
             if nargin < 3
                 scenario = [];
@@ -322,10 +340,12 @@ classdef TBD_PF < TBD
             addParameter(p, 'ShowBirths', true, @islogical);
             addParameter(p, 'WeightColormap', '');
             addParameter(p, 'WeightScale', 'log');
+            addParameter(p, 'AnimateWeights', false, @islogical);
             parse(p, varargin{:});
             opt = p.Results;
 
             figAnim = [];
+            figW = [];
 
             res = obj.to_vis_results(R, scenario);
 
@@ -355,6 +375,39 @@ classdef TBD_PF < TBD
                 'ESSThresh', obj.essThresh_of(R), ...
                 'Title',     ttl, ...
                 'Save',      savePath);
+
+            if opt.AnimateWeights
+                if isfield(R, 'weightsPre') && ~isempty(R.weightsPre)
+                    W = R.weightsPre;
+                    wLabel = 'pre-resample';
+                elseif isfield(R, 'weights') && ~isempty(R.weights)
+                    %%% Runs from before R.weightsPre existed
+                    W = R.weights;
+                    wLabel = 'posterior';
+                    obj.debug_print("show: R has no weightsPre, animating the posterior R.weights (flat 1/N on resampled frames)");
+                else
+                    W = [];
+                    obj.debug_print("show: R has no weights, skipping AnimateWeights");
+                end
+                if ~isempty(W)
+                    wPath = '';
+                    if ~isempty(opt.Save)
+                        wPath = char(opt.Save) + "_weights.gif";
+                    end
+                    essArg = {};
+                    if isfield(R, 'ess'), essArg = {'ESS', R.ess}; end
+                    resArg = {};
+                    if isfield(R, 'resampled'), resArg = {'Resampled', R.resampled}; end
+                    obj.debug_print(sprintf("show: animating %s weights, %d frames at %g fps", ...
+                        wLabel, size(W, 2), opt.FPS));
+                    figW = obj.vis.animate_weights(W, ...
+                        essArg{:}, resArg{:}, ...
+                        'Which', wLabel, ...
+                        'FPS',   opt.FPS, ...
+                        'Title', ttl, ...
+                        'Save',  wPath);
+                end
+            end
 
             if opt.Animate
                 if isempty(res.signals)
@@ -484,7 +537,7 @@ classdef TBD_PF < TBD
             l = (-(hh*(hh - 2*zz))/(2 * obj.NoiseSTD^2));
         end
 
-        function [l] = model_likelihood(obj, r, c, I) % doesn't need z since C is computed already
+        function [l] = model_likelihood(obj, r, c) % doesn't need z since C is computed already
 
             Cv = obj.C(r,c);
             TCv = obj.TC(r,c);
@@ -504,7 +557,7 @@ classdef TBD_PF < TBD
 
         %%% Run through one timestep of TBD_PF.
         %%%
-        %%%   [post, w, logw, ESS, didResample, llrMap, births, dbg] = obj.timestep(prior, logw_prior, z)
+        %%%   [post, w, logw, ESS, didResample, llrMap, births, dbg, wPre] = obj.timestep(prior, logw_prior, z)
         %%%
         %%% prior / post are 5 x N particle sets [px; vx; py; vy; E].
         %%% logw_prior is the prior's log weights; w / logw are the posterior
@@ -519,7 +572,10 @@ classdef TBD_PF < TBD
         %%% step's intermediate variables for visualize.debug_step. Also
         %%% plotting only: filling it draws no random numbers and changes
         %%% nothing the filter computes.
-        function [post, w, logw, ESS, didResample, llrMap, births, dbg] = timestep(obj, prior, logw_prior, z)
+        %%% wPre is a copy of the normalized weights BEFORE the resample
+        %%% decision (the w ESS was measured on), paired with the pre-resample
+        %%% particle set rather than post. Plotting only.
+        function [post, w, logw, ESS, didResample, llrMap, births, dbg, wPre] = timestep(obj, prior, logw_prior, z)
             llrMap = [];
             dbg = [];
             x_minus = prior(1:4,:);
@@ -548,8 +604,6 @@ classdef TBD_PF < TBD
             % valid cells are any which are in the upper gamma percentile of brightness
             % So for gamma = 0.7, births are uniformly chosen from the gamma brightest
             [birthIdx, nValid] = obj.birth_cells(z);
-            % Want to check below with book:
-            logBirthCorr = log(numel(birthIdx) / nValid); 
 
             % Hold our log weights
             logW = zeros(1, obj.N); 
@@ -565,15 +619,14 @@ classdef TBD_PF < TBD
                 % Evaluate importance weights
                 Y(:, n) = [x_plus(:,n); E_plus(n)];
                 [logW(n)] = obj.importance_weights(Y(:,n),z);
-                if E_plus(n) && ~E_minus(n) % correct weights for newborns
-                    logW(n) = logW(n) + logBirthCorr;
-                end
+
             end
 
             %%% Update
             %%% logw_prior + logW is the weight update
             [w, logw_post] = obj.normalize_log(logw_prior + logW);
             ESS = obj.get_ESS(w);
+            wPre = w;   % plotting only, the resample below overwrites w
 
             %%% Where this frame's newborns landed, BEFORE the resample: a
             %%% newborn almost never survives one, so the posterior alone
@@ -635,20 +688,21 @@ classdef TBD_PF < TBD
             %%% no overflow, and the ratios (all that survives normalizing)
             %%% are unchanged.
             w = exp(logw - m);
-            w_n = w / sum(w);
-            logw_norm = logw - m - log(sum(w));
+            w_n = w ./ sum(w);
+            logw_norm = log(w_n);
+            assert(abs(sum(w_n) - 1) < 1e-6, "Sum of weights != 1, sum(w_n) = %d", sum(w_n))
+            % assert(abs(exp(sum(logw_norm)) - 1) < 1e-6, "Sum of log weights != 1, exp(sum(logw_norm)) = %d", sum(logw_norm))
             
         end
         %%% Effective sample size, Kong's 1/sum(w^2) written scale-free so it
         %%% works on normalized or unnormalized weights. Ranges over [1, N].
         function ESS = get_ESS(~, w)
-            s1 = sum(w);
             s2 = sum(w.^2);
-            if ~(s2 > 0) || ~isfinite(s1)
+            if ~(s2 > 0)
                 ESS = NaN; % every weight zero, caller treats this as "no info"
                 return
             end
-            ESS = s1^2 / s2;
+            ESS = 1 / s2; % Min =1, Max = N
         end
 
         % the brightest (1 - gamma) fraction of the valid pixels in this frame
@@ -715,34 +769,6 @@ classdef TBD_PF < TBD
             end
 
             w = ones(1,obj.N) / obj.N;
-        end
-
-        function w_n = normalize(obj, w)
-            w = reshape(double(w), 1, []);
-
-            %%% The likelihood ratio is a product over a (2*pDist+1)^2 window of
-            %%% exponentials, so it can overflow on a strong frame. Clamp the
-            %%% infinities, drop the NaNs, then divide by the max before the sum
-            %%% so a large-but-finite set cannot overflow on the way to 1.
-            w(isinf(w) & w > 0) = realmax;
-            w(~isfinite(w)) = 0;
-
-            m = max(w);
-            if m > 0
-                w = w / m;
-            end
-
-            t = sum(w);
-            if t == 0
-                % Fall back to uniform so resample keeps the whole set instead
-                % of collapsing onto particle N (cdf is all zeros otherwise)
-                obj.debug_print("unable to normalize PF weights, all weights == 0, using uniform")
-                w_n = ones(size(w)) / numel(w);
-                return;
-            end
-
-            w_n = w./t;
-
         end
 
         %%% Display version of the per-frame profile log-LR map (R.llr), for
