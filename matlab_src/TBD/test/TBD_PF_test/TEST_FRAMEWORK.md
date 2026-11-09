@@ -66,7 +66,6 @@ Rule: **every field in env/TBD/run/show is a real argument of that call.** That 
 | `TBD.Seed` | `env.Seed` | `resolve_cfg` |
 | `TBD.dt` | `env.dt` | `resolve_cfg` |
 | `TBD.K` | `scenario.K` (generated frame count, `kEnd + 1`) | `run_test` |
-| `run.Var` | `env.Var` | `resolve_cfg` |
 | `show.Save` | `<outDir>/figures/<trial file label>` | `run_test` |
 | `run.DebugDir`, `run.DebugName` | `<outDir>/debug`, trial label | `run_test` |
 

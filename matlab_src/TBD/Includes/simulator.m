@@ -68,11 +68,8 @@ classdef simulator < mWidar
         %% Signal Generation
 
         %%% Generate single image
-        %%% [signal, SNR] = sim.generate_mWidar_image(pos, 'meters', true)
-        %%% SNR is the matched-filter SNR of this frame in dB (see get_SNR); it is
-        %%% measured on the noiseless signal, so callers can label a frame with
-        %%% the SNR it was actually generated at.
-        function [signal, SNR] = generate_mWidar_image(obj, pos, varargin)
+        %%% signal = sim.generate_mWidar_image(pos, 'meters', true)
+        function signal = generate_mWidar_image(obj, pos, varargin)
             
             % parse
             p = inputParser;
@@ -90,16 +87,15 @@ classdef simulator < mWidar
             assert(meters || pixels)
 
             signal = zeros(obj.npx);
-            SNR = NaN;
 
             if meters
                 obj.debug_print("SELECTED METERS")
-                [signal, SNR] = obj.generate_mWidar_image_meters(pos);
+                signal = obj.generate_mWidar_image_meters(pos);
             end
 
             if pixels
                 obj.debug_print("SELECTED PIXELS")
-                [signal, SNR] = obj.generate_mWidar_image_pixels(pos);
+                signal = obj.generate_mWidar_image_pixels(pos);
             end
 
         end
@@ -108,7 +104,7 @@ classdef simulator < mWidar
     end
     methods(Hidden)
         %%% Generate image when pos is in meters
-        function [signal, SNR] = generate_mWidar_image_meters(obj, pos)
+        function signal = generate_mWidar_image_meters(obj, pos)
             
             S = zeros(obj.npx);
             
@@ -152,9 +148,6 @@ classdef simulator < mWidar
                 blurred = obj.blur_signal(raw_signal);
             end
 
-            % get signal SNR
-            SNR = obj.get_SNR(blurred);
-
             %%% Add noise if var > 0, even when no object is present
             if obj.var > 0
                 obj.debug_print('Adding Noise')
@@ -173,7 +166,7 @@ classdef simulator < mWidar
 
 
 
-        function [signal, SNR] = generate_mWidar_image_pixels(obj, pos)
+        function signal = generate_mWidar_image_pixels(obj, pos)
 
             S = zeros(obj.npx);
 
@@ -209,9 +202,6 @@ classdef simulator < mWidar
                 
                 blurred = obj.blur_signal(raw_signal);
             end
-
-            % get signal SNR
-            SNR = obj.get_SNR(blurred);
 
             %%% Add noise if var > 0, even when no object is present
             if obj.var > 0
@@ -261,37 +251,6 @@ classdef simulator < mWidar
                 fprintf(str)
             end
         end
-        
-        %%% Matched-filter SNR of a frame in dB: 10*log10( sum(h.^2) / var ).
-        %%% NOTE: signal here is the noiseless frame h (after blur, before
-        %%% noise and normalization). The noise is zero-mean i.i.d. Gaussian
-        %%% per pixel, so this is the SNR a matched filter for the whole
-        %%% template achieves, which is what the forward-model likelihood
-        %%% uses: for one unit-intensity target at cell x it equals
-        %%% I^2 * E(x) / sigma^2 with I = 1 (E = TBD_PF.TC, roadmap item 16).
-        %%% It counts the whole template, pedestal included, so it is much
-        %%% higher than the per-pixel contrast you see by eye: roughly
-        %%% 58-74 dB at Var = 15 here, against ~4 dB peak-above-median.
-        %%% With several targets it is the energy of the superposed frame.
-        %%% The degenerate cases are reported rather than hidden, so a plot can
-        %%% leave them as gaps instead of drawing a bogus number:
-        %%%   var == 0 (noise off)   -> +Inf with signal, NaN on a blank frame
-        %%%   no target in the scene -> -Inf (zero energy)
-        function SNR = get_SNR(obj, signal)
-            energy = sum(signal(:).^2);
-
-            if obj.var <= 0
-                if energy > 0
-                    SNR = Inf; % noiseless
-                else
-                    SNR = NaN; % no signal and no noise, nothing to report
-                end
-                return
-            end
-
-            SNR = 10 * log10(energy / obj.var); % -Inf when energy == 0
-        end
-
 
     end
 

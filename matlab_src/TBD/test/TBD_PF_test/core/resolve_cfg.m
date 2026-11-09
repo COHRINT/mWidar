@@ -8,7 +8,6 @@ function cfg = resolve_cfg(cfg)
     %% Links
     if isempty(cfg.TBD.Seed), cfg.TBD.Seed = cfg.env.Seed; end
     if isempty(cfg.TBD.dt),   cfg.TBD.dt   = cfg.env.dt;   end
-    if isempty(cfg.run.Var),  cfg.run.Var  = cfg.env.Var;  end
 
     %% Checks that span blocks or would otherwise fail deep in a class
     assert(isequal(size(cfg.TBD.Q), [4 4]), "cfg.TBD.Q must be 4x4, got %s", mat2str(size(cfg.TBD.Q)));

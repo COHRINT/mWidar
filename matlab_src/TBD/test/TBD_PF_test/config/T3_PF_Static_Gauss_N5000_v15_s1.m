@@ -11,6 +11,7 @@ function t = T3_PF_Static_Gauss_N5000_v15_s1()
     t.base.env = struct('Debug', true);
     t.base.TBD = struct('Debug', true, 'Pb', 0.03, 'v_max', 0.05, 'v_min', -0.05, ...
                         'Q', 1e-3 * diag([0.01 0.005 0.01 0.005]));
+    t.base.run = struct('ESS', 0.3);
     t.base.show = struct('Animate', true);
 
 end

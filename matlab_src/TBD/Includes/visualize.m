@@ -108,8 +108,6 @@ classdef visualize < mWidar
               'Mask'        1 x K (or T x K) logical, only plot where true
                             (e.g. declared = pE > thresh)
               'Labels'      cellstr of per-target names for the legend
-              'SNR'         scalar or 1 x K signal SNR [dB]; appended to the
-                            title, but only when a background is actually drawn
               'Units'/'DataUnits'/'Axes'/'Title'/'Save'
         %}
         function fig = trajectories(obj, tracks, varargin)
@@ -120,7 +118,6 @@ classdef visualize < mWidar
             addParameter(p, 'ColorByTime', false, @islogical);
             addParameter(p, 'Mask', []);
             addParameter(p, 'Labels', {});
-            addParameter(p, 'SNR', []);
             parse(p, varargin{:})
             R = p.Results;
 
@@ -128,7 +125,6 @@ classdef visualize < mWidar
             du = obj.resolve_data_units(R);
 
             %%% Optional energy background
-            snr = [];
             if ~isempty(R.Background)
                 bg = R.Background;
                 if ndims(bg) == 3
@@ -136,8 +132,6 @@ classdef visualize < mWidar
                 end
                 obj.draw_image(ax, bg, R.Units, R.Colormap, []);
                 hold(ax, 'on');
-                %%% Only label SNR when there is a signal on the axes to label
-                snr = R.SNR;
             end
 
             est = obj.to_cell(tracks);
@@ -199,8 +193,7 @@ classdef visualize < mWidar
             if ~isempty(h)
                 legend(ax, h, lbl, 'Location', 'best');
             end
-            obj.set_title(ax, obj.signal_title(R.Title, '', snr), ...
-                obj.signal_title('', 'Target Trajectories', snr));
+            obj.set_title(ax, R.Title, 'Target Trajectories');
             obj.save_figure(fig, R.Save);
 
         end
@@ -216,7 +209,6 @@ classdef visualize < mWidar
               'Weights'       1 x N weights, used to size/shade the particles
               'CLim'          color limits, [] for auto
               'Colorbar'      logical, default true
-              'SNR'           frame SNR [dB], appended to the title
               'Units'/'DataUnits'/'Axes'/'Title'/'Save'
         %}
         function fig = signal_frame(obj, signal, varargin)
@@ -228,7 +220,6 @@ classdef visualize < mWidar
             addParameter(p, 'Weights', []);
             addParameter(p, 'CLim', []);
             addParameter(p, 'Colorbar', true, @islogical);
-            addParameter(p, 'SNR', []);
             parse(p, varargin{:})
             R = p.Results;
 
@@ -253,8 +244,7 @@ classdef visualize < mWidar
 
             obj.style_scene(ax, R.Units);
             obj.maybe_legend(ax);
-            obj.set_title(ax, obj.signal_title(R.Title, '', R.SNR), ...
-                obj.signal_title('', 'mWidar Signal Frame', R.SNR));
+            obj.set_title(ax, R.Title, 'mWidar Signal Frame');
             obj.save_figure(fig, R.Save);
 
         end
@@ -271,8 +261,6 @@ classdef visualize < mWidar
               'Truth'   truth tracks, marked on the frame they belong to
               'Est'     estimated tracks, same
               'CLim'    shared color limits ('auto' per-frame if [])
-              'SNR'     1 x K signal SNR [dB]; each tile is labelled with the
-                        SNR of the frame it shows
         %}
         function fig = signal_montage(obj, signals, varargin)
 
@@ -282,7 +270,6 @@ classdef visualize < mWidar
             addParameter(p, 'Truth', []);
             addParameter(p, 'Est', []);
             addParameter(p, 'CLim', []);
-            addParameter(p, 'SNR', []);
             parse(p, varargin{:})
             R = p.Results;
 
@@ -311,14 +298,7 @@ classdef visualize < mWidar
                 obj.mark_tracks_at_k(ax, tru, k, du, R.Units, obj.truthColor, 'o');
                 obj.mark_tracks_at_k(ax, est, k, du, R.Units, obj.estColor, 'x');
                 obj.style_scene(ax, R.Units);
-                %%% Second line rather than a separator: the tiles are small,
-                %%% and a one-line title with the SNR on it gets clipped.
-                tag = obj.snr_tag(obj.snr_at(R.SNR, k));
-                if isempty(tag)
-                    title(ax, sprintf('k = %d', k), 'FontSize', obj.fs);
-                else
-                    title(ax, {sprintf('k = %d', k), tag}, 'FontSize', obj.fs);
-                end
+                title(ax, sprintf('k = %d', k), 'FontSize', obj.fs);
                 if ii ~= 1
                     xlabel(ax, ''); ylabel(ax, '');
                 end
@@ -340,14 +320,11 @@ classdef visualize < mWidar
 
             Options
               'Names'  1 x 2 cellstr of panel titles
-              'SNR'    1 x 2 SNR [dB] for A and B, appended to their titles
-                       (a scalar is taken to apply to both)
         %}
         function fig = compare_signals(obj, A, B, varargin)
 
             p = obj.common_parser();
             addParameter(p, 'Names', {'A', 'B'});
-            addParameter(p, 'SNR', []);
             parse(p, varargin{:})
             R = p.Results;
 
@@ -377,14 +354,12 @@ classdef visualize < mWidar
             ax = nexttile(tl);
             obj.draw_image(ax, A, R.Units, R.Colormap, shared);
             obj.style_scene(ax, R.Units);
-            title(ax, obj.signal_title('', R.Names{1}, obj.snr_at(R.SNR, 1)), ...
-                'FontSize', obj.fs);
+            title(ax, R.Names{1}, 'FontSize', obj.fs);
 
             ax = nexttile(tl);
             obj.draw_image(ax, B, R.Units, R.Colormap, shared);
             obj.style_scene(ax, R.Units);
-            title(ax, obj.signal_title('', R.Names{2}, obj.snr_at(R.SNR, 2)), ...
-                'FontSize', obj.fs);
+            title(ax, R.Names{2}, 'FontSize', obj.fs);
             colorbar(ax);
 
             ax = nexttile(tl);
@@ -423,8 +398,6 @@ classdef visualize < mWidar
               'WeightCLim'      fix the weight color limits, in the scaled
                            domain (so log10 units when 'WeightScale' is 'log')
               'pE'         T x K existence probability, shown in the title
-              'SNR'        1 x K signal SNR [dB]; the title is relabelled with
-                           the current frame's SNR on every frame
               'Trail'      # of past estimate samples to keep drawn (default 15,
                            Inf for the full track)
               'FPS'        playback / export frame rate
@@ -445,7 +418,7 @@ classdef visualize < mWidar
                            the same three settings for that panel ('Colormap2'
                            default 'parula')
               'PanelTitles' {left, right} static panel titles when 'Signals2'
-                           is given. The per-frame line (k, SNR, P(E)) then
+                           is given. The per-frame line (k, P(E)) then
                            moves to the figure title above both panels.
               'ShowZeroWeight'  also draw E = 1 particles that carry exactly
                            zero weight, as small grey dots under the weighted
@@ -464,7 +437,6 @@ classdef visualize < mWidar
             addParameter(p, 'Particles', []);
             addParameter(p, 'Weights', []);
             addParameter(p, 'pE', []);
-            addParameter(p, 'SNR', []);
             addParameter(p, 'Trail', 15);
             addParameter(p, 'FPS', obj.fps);
             addParameter(p, 'Format', '');
@@ -647,12 +619,6 @@ classdef visualize < mWidar
                 end
 
                 ttl = sprintf('k = %d / %d', k, K);
-                %%% Per frame, not the whole run: SNR changes with the target's
-                %%% position, so the number has to track the frame on screen.
-                tag = obj.snr_tag(obj.snr_at(R.SNR, k));
-                if ~isempty(tag)
-                    ttl = [ttl, '   ', tag]; %#ok<AGROW>
-                end
                 if ~isempty(pE)
                     ttl = [ttl, sprintf('   P(E) = %s', ...
                         strjoin(compose('%.2f', pE(:,k)'), ', '))]; %#ok<AGROW>
@@ -856,8 +822,7 @@ classdef visualize < mWidar
 
         %{
             The one-stop TBD results dashboard: existence, track in the plane,
-            per-axis position vs time, position error, particle health, and
-            measurement SNR vs time when res.snr is filled in.
+            per-axis position vs time, position error, and particle health.
 
             fig = v.plot_TBD(res, ...)
 
@@ -896,16 +861,14 @@ classdef visualize < mWidar
             %%%   [  p_x  |    p_y    ]
             %%%   [ error | occupied cells ]
             %%%   [       ESS        ]   <- only when the weights were recorded
-            %%%   [       SNR        ]   <- only when res.snr is given
             %%% Wide on purpose: the scene panel is axis-equal, so it leaves
             %%% horizontal room in its tile that the legend drops into.
-            %%% ESS and SNR span the full width: they share the x axis with
-            %%% the rows above them and read as the run's timeline.
-            hasSNR = obj.has_snr(res.snr);
+            %%% ESS spans the full width: it shares the x axis with the rows
+            %%% above it and reads as the run's timeline.
             essR = obj.ess_ratio(res);
             hasESS = ~isempty(essR);
-            nRows = 3 + hasESS + hasSNR;
-            figH = 950 + 220 * hasESS + 220 * hasSNR;
+            nRows = 3 + hasESS;
+            figH = 950 + 220 * hasESS;
             fig = obj.new_figure('TBD Results', [1400 figH]);
             tl = tiledlayout(fig, nRows, 2, 'TileSpacing', 'compact', 'Padding', 'compact');
 
@@ -948,14 +911,7 @@ classdef visualize < mWidar
             %%% Legend goes outside: the scene is square and a 'best' legend
             %%% lands on top of the image every time.
             obj.maybe_legend(ax, 'eastoutside');
-            %%% The background is a projection over every frame, so snr_tag
-            %%% summarises the run rather than quoting one frame.
-            snrBG = [];
-            if ~isempty(bg)
-                snrBG = res.snr;
-            end
-            title(ax, obj.signal_title('', 'Track (declared only)', snrBG), ...
-                'FontSize', obj.fs);
+            title(ax, 'Track (declared only)', 'FontSize', obj.fs);
 
             %%% Existence -----------------------------------------------------
             ax = nexttile(tl);
@@ -1042,12 +998,6 @@ classdef visualize < mWidar
             if hasESS && ~isempty(res.particles)
                 ax = nexttile(tl, [1 2]);
                 obj.ess_axes(ax, kvec, essR, R.ESSThresh, res.resampled, tlab);
-            end
-
-            %%% Measurement SNR ---------------------------------------------------
-            if hasSNR
-                ax = nexttile(tl, [1 2]);
-                obj.snr_axes(ax, kvec, res.snr, tlab);
             end
 
             if ~isempty(R.Title)
@@ -1144,33 +1094,6 @@ classdef visualize < mWidar
         end
 
         %{
-            Measurement SNR vs time. The companion to existence(): when a track
-            drops out, this says whether the signal was there to be found.
-
-            fig = v.snr_vs_time(snr, ...)
-              snr  1 x K matched-filter SNR in dB, as simulator.get_SNR reports it
-                   (scenario.snr carries it downstream)
-            Options
-              'Time'    1 x K time vector, defaults to 1:K
-              'XLabel'  axis label for 'Time' (default 'k')
-              'Axes'/'Title'/'Save'
-        %}
-        function fig = snr_vs_time(obj, snr, varargin)
-
-            p = obj.common_parser();
-            addParameter(p, 'Time', []);
-            addParameter(p, 'XLabel', 'k');
-            parse(p, varargin{:})
-            R = p.Results;
-
-            [fig, ax] = obj.get_axes(R, 'Measurement SNR');
-            obj.snr_axes(ax, R.Time, snr, R.XLabel);
-            obj.set_title(ax, R.Title, 'Measurement SNR');
-            obj.save_figure(fig, R.Save);
-
-        end
-
-        %{
             Estimated vs true target count over time. The headline number for
             multi-target TBD: are births and deaths being caught at all?
 
@@ -1246,7 +1169,6 @@ classdef visualize < mWidar
               'Truth'    4 x 1 (or 4 x T) truth state for that frame
               'Est'      4 x 1 point estimate
               'ShowDead' also draw the E = 0 particles, in grey
-              'SNR'      SNR [dB] of 'Signal', appended to the positions title
         %}
         function fig = particle_cloud(obj, Yk, varargin)
 
@@ -1256,7 +1178,6 @@ classdef visualize < mWidar
             addParameter(p, 'Truth', []);
             addParameter(p, 'Est', []);
             addParameter(p, 'ShowDead', false, @islogical);
-            addParameter(p, 'SNR', []);
             parse(p, varargin{:})
             R = p.Results;
 
@@ -1305,13 +1226,7 @@ classdef visualize < mWidar
             obj.overlay_states(ax, R.Est, du, R.Units, obj.estColor, 'x', 'Estimate');
             obj.style_scene(ax, R.Units);
             obj.maybe_legend(ax);
-            %%% Only label SNR when the signal is actually drawn underneath
-            snr = [];
-            if ~isempty(R.Signal)
-                snr = R.SNR;
-            end
-            title(ax, obj.signal_title('', ...
-                sprintf('Positions (%d / %d existing)', nnz(alive), N), snr), ...
+            title(ax, sprintf('Positions (%d / %d existing)', nnz(alive), N), ...
                 'FontSize', obj.fs);
 
             %%% Velocities -----------------------------------------------------
@@ -1367,7 +1282,6 @@ classdef visualize < mWidar
               'Signal'   npx x npx frame to compare against
               'Bins'     grid coarsening factor (default 2 -> 64 x 64 bins)
               'Truth'
-              'SNR'      SNR [dB] of 'Signal', appended to its panel title
         %}
         function fig = particle_density(obj, Yk, varargin)
 
@@ -1376,7 +1290,6 @@ classdef visualize < mWidar
             addParameter(p, 'Signal', []);
             addParameter(p, 'Bins', 2);
             addParameter(p, 'Truth', []);
-            addParameter(p, 'SNR', []);
             parse(p, varargin{:})
             R = p.Results;
 
@@ -1422,8 +1335,7 @@ classdef visualize < mWidar
                 obj.overlay_states(ax, R.Truth, du, R.Units, obj.truthColor, 'o', 'Truth');
                 obj.style_scene(ax, R.Units);
                 colorbar(ax);
-                title(ax, obj.signal_title('', 'Measurement', R.SNR), ...
-                    'FontSize', obj.fs);
+                title(ax, 'Measurement', 'FontSize', obj.fs);
             end
 
             ax = nexttile(tl);
@@ -2054,7 +1966,6 @@ classdef visualize < mWidar
                 'weights',   [], ... % N x K normalized weights
                 'ess',       [], ... % 1 x K effective sample size (absolute, 1..N)
                 'resampled', [], ... % 1 x K logical, frames the filter resampled on
-                'snr',       [], ... % 1 x K matched-filter SNR [dB] (simulator.get_SNR)
                 't',         [], ... % 1 x K time stamps (seconds); [] -> use k
                 'pEthresh',  0.5);
         end
@@ -2172,90 +2083,6 @@ classdef visualize < mWidar
                 title(ax, fallback, 'FontSize', obj.fs);
             else
                 title(ax, given, 'FontSize', obj.fs);
-            end
-        end
-
-        %% ------------------------------------------------------------------
-        %% SNR labelling
-        %% ------------------------------------------------------------------
-
-        %%% Text for the SNR of a frame, as simulator.get_SNR reports it.
-        %%% A vector is summarised by the mean of its finite entries, which is
-        %%% what the montage / MIP style plots want. Returns '' when there is
-        %%% nothing meaningful to say, so a caller can append it blindly.
-        function tag = snr_tag(~, snr)
-            tag = '';
-            if isempty(snr)
-                return
-            end
-            v = double(snr(:))';
-
-            if ~isscalar(v)
-                g = v(isfinite(v));
-                if isempty(g)
-                    return
-                end
-                tag = sprintf('SNR = %.1f dB (mean)', mean(g));
-                return
-            end
-
-            one = v(1);
-            if isnan(one)
-                return
-            elseif isinf(one)
-                if one > 0
-                    tag = 'SNR = Inf (noiseless)';
-                else
-                    tag = 'SNR = -Inf (no target)';
-                end
-            else
-                tag = sprintf('SNR = %.1f dB', one);
-            end
-        end
-
-        %%% Is there an SNR worth drawing a panel for? A noiseless run records
-        %%% Inf for every frame, which is true but not a plot.
-        function tf = has_snr(~, snr)
-            tf = ~isempty(snr) && any(isfinite(double(snr(:))));
-        end
-
-        %%% SNR for frame k out of a 1 x K vector. A scalar is taken to apply to
-        %%% every frame; anything short of k reports NaN rather than erroring,
-        %%% matching how the rest of the class clamps to the shorter series.
-        function v = snr_at(~, snr, k)
-            v = NaN;
-            if isempty(snr)
-                return
-            end
-            s = double(snr(:))';
-            if isscalar(s)
-                v = s;
-            elseif k >= 1 && k <= numel(s)
-                v = s(k);
-            end
-        end
-
-        %%% Title for a panel that draws a signal: the caller's title, or the
-        %%% fallback, with the SNR appended. Every signal plot labels SNR the
-        %%% same way because they all come through here.
-        %%%
-        %%% An empty base stays empty, tag or no tag. Callers pair this with
-        %%% set_title as
-        %%%   set_title(ax, signal_title(R.Title, '', snr), ...
-        %%%                 signal_title('', fallback, snr))
-        %%% and that only picks the fallback if the first argument is empty, so
-        %%% returning a bare tag here would lose the fallback text.
-        function t = signal_title(obj, given, fallback, snr)
-            t = char(string(given));
-            if isempty(t)
-                t = char(string(fallback));
-            end
-            if isempty(t)
-                return
-            end
-            tag = obj.snr_tag(snr);
-            if ~isempty(tag)
-                t = [t '   |   ' tag];
             end
         end
 
@@ -3039,10 +2866,6 @@ classdef visualize < mWidar
             title(ax, 'Target Existence', 'FontSize', obj.fs);
         end
 
-        %%% Shared SNR vs time panel, used by plot_TBD and snr_vs_time.
-        %%% Frames whose SNR is not finite (noise off, or no target in the
-        %%% scene) are drawn as gaps: plotting them would drag the y limits out
-        %%% to +-Inf and hide the range that matters.
         %%% ESS/N for a results struct, or [] when the run recorded neither an
         %%% ESS series nor the weights it would be computed from.
         function essR = ess_ratio(obj, res)
@@ -3126,51 +2949,6 @@ classdef visualize < mWidar
             end
             title(ax, ttl, 'FontSize', obj.fs);
             obj.maybe_legend(ax);
-        end
-
-        function snr_axes(obj, ax, kvec, snr, tlab)
-
-            v = obj.to_rowmat(snr);
-            if isempty(v)
-                text(ax, 0.5, 0.5, 'no SNR data', 'Units', 'normalized', ...
-                    'HorizontalAlignment', 'center');
-                axis(ax, 'off');
-                return
-            end
-            v = v(1,:);
-
-            if isempty(kvec)
-                kvec = 1:numel(v);
-            end
-            n = min(numel(kvec), numel(v));
-            kvec = kvec(1:n);
-            v = v(1:n);
-
-            bad = ~isfinite(v);
-            if any(bad)
-                obj.debug_print(sprintf("SNR: %d / %d frames not finite, drawn as gaps", ...
-                    nnz(bad), n));
-                v(bad) = NaN;
-            end
-
-            plot(ax, kvec, v, '-', 'Color', obj.estColor, 'LineWidth', obj.lw, ...
-                'DisplayName', 'SNR_k');
-            hold(ax, 'on');
-
-            good = ~isnan(v);
-            if any(good)
-                yline(ax, mean(v(good)), 'k:', 'LineWidth', 1, ...
-                    'Label', sprintf('mean %.1f dB', mean(v(good))));
-            else
-                text(ax, 0.5, 0.5, 'no finite SNR', 'Units', 'normalized', ...
-                    'HorizontalAlignment', 'center');
-            end
-
-            grid(ax, 'on');
-            xlabel(ax, tlab, 'FontSize', obj.fs);
-            ylabel(ax, 'SNR [dB]', 'FontSize', obj.fs);
-            title(ax, 'Matched-filter SNR  ($\sum h^2 / \sigma^2$, noiseless frame)', ...
-                'FontSize', obj.fs, 'Interpreter', 'latex');
         end
 
         function K = n_steps(~, res, est, tru)

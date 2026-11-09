@@ -6,9 +6,9 @@ function t = T2_PF_Static_N5000_v15_s1()
                     "additive noise (Var = 15) on the mWidar signal, model likelihood.";
     t.scenarios = {"static_noisy"};
 
-    t.base.env = struct('Debug', true);
+    t.base.env = struct('Debug', false);
     t.base.TBD = struct('Debug', true, 'Pb', 0.03, 'v_max', 0.05, 'v_min', -0.05);
-    t.base.run = struct('ESS', 0.0005, 'DebugFrames', [9 11 20 40 60 80 91]);
+    t.base.run = struct('ESS', 0.300, 'NoiseSTD', sqrt(15)*50);
     t.base.show = struct('Animate', true, 'AnimateWeights', true);
 
 end

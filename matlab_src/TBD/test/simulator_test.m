@@ -4,6 +4,6 @@ addpath("TBD/Includes")
 sim = simulator('Var', 0,'Debug', true);
 v = visualize();
 
-[s, snr] = sim.generate_mWidar_image({[20, 50]},'pixels', true);
+s = sim.generate_mWidar_image({[20, 50]},'pixels', true);
 
-f = v.signal_frame(s, 'SNR', snr)
+f = v.signal_frame(s)

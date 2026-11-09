@@ -96,14 +96,15 @@ classdef TBD_PF < TBD
             %%% only do it once the weights have actually degenerated.
             p = inputParser;
             addParameter(p, 'Bootstrap', false, @islogical);
-            addParameter(p, 'ESS', 0.005, @(x) isscalar(x) && isnumeric(x) && x > 0 && x <= 1); % Particles are often tightly grouped, small ESS allows for births to get a chance
+            addParameter(p, 'ESS', 0.3, @(x) isscalar(x) && isnumeric(x) && x > 0 && x <= 1); % Particles are often tightly grouped, small ESS allows for births to get a chance
             addParameter(p, 'Likelihood', 'model', @(x) ismember(x, {'gauss', 'model'}))
-            addParameter(p, 'Var', 1)
+            addParameter(p, 'NoiseSTD', 1000);
             addParameter(p, 'DebugPlots', false, @islogical);
             addParameter(p, 'DebugFrames', [], @(x) isempty(x) || (isnumeric(x) && all(x >= 1)));
             addParameter(p, 'DebugName', '', @(x) ischar(x) || isstring(x));
             addParameter(p, 'DebugDir', fullfile('TBD', 'test', 'figs', 'debug'), @(x) ischar(x) || isstring(x));
             addParameter(p, 'DebugVisible', false, @islogical);
+            
             parse(p, varargin{:});
 
             %%% TBD_PF is a value class, so these land on run()'s own copy of
@@ -114,13 +115,8 @@ classdef TBD_PF < TBD
             obj.RESAMPLE_THRESHOLD = p.Results.ESS;
             obj.likelihood = p.Results.Likelihood;
             obj.debugPlots = p.Results.DebugPlots;
-            var = p.Results.Var;
-
-            if var ~= 0
-                obj.NoiseSTD = sqrt(var);
-            else
-                obj.NoiseSTD = 0.1; % some small value
-            end
+            obj.NoiseSTD = p.Results.NoiseSTD;
+            
             %%% Filepaths
             obj.TARGETCONTRIBUTION_FILEPATH = "TBD/supp/TargetContribution.mat";
 
@@ -277,8 +273,7 @@ classdef TBD_PF < TBD
 
         %%% Quick look at a run. Draws the vis.plot_TBD dashboard (track over
         %%% the energy map, existence, per-axis position, error, occupied
-        %%% cells, ESS, and matched-filter SNR vs
-        %%% time when the scenario recorded it) and optionally plays the
+        %%% cells, and ESS) and optionally plays the
         %%% frame-by-frame history with the particle cloud. Everything is
         %%% delegated to vis, same as environment.show.
         %%%
@@ -451,7 +446,6 @@ classdef TBD_PF < TBD
                     'Particles', R.particles, ...
                     'Weights',   res.weights, ...
                     'pE',        R.pE, ...
-                    'SNR',       res.snr, ...
                     'DataUnits', 'meters', ...
                     'Trail',     opt.Trail, ...
                     'FPS',       opt.FPS, ...
@@ -514,7 +508,7 @@ classdef TBD_PF < TBD
                 for j = 1:numel(yvec)
                     %%% Products here become a sum
                     logW = logW + obj.gauss_likelihood([px py], [xm(i), ym(j)], ...
-                                                    [xvec(i), yvec(j)], z, X(5));
+                                                    [xvec(i), yvec(j)], z);
                 end
             end
 
@@ -558,23 +552,6 @@ classdef TBD_PF < TBD
         %%% Run through one timestep of TBD_PF.
         %%%
         %%%   [post, w, logw, ESS, didResample, llrMap, births, dbg, wPre] = obj.timestep(prior, logw_prior, z)
-        %%%
-        %%% prior / post are 5 x N particle sets [px; vx; py; vy; E].
-        %%% logw_prior is the prior's log weights; w / logw are the posterior
-        %%% normalized weights and their logs (flat -log(N) after a
-        %%% resample). ESS is measured on w BEFORE the resample
-        %%% decision, so it is the number that drove it; didResample says what
-        %%% the filter decided. llrMap is the npx x npx profile log-LR map
-        %%% (llr_map) for 'model', [] for 'gauss'. births is 2 x nBorn, the
-        %%% [px; py] of every particle born this frame, taken before the
-        %%% resample. llrMap and births are for plotting only.
-        %%% dbg is [] unless obj.debugPlots, then a struct of copies of this
-        %%% step's intermediate variables for visualize.debug_step. Also
-        %%% plotting only: filling it draws no random numbers and changes
-        %%% nothing the filter computes.
-        %%% wPre is a copy of the normalized weights BEFORE the resample
-        %%% decision (the w ESS was measured on), paired with the pre-resample
-        %%% particle set rather than post. Plotting only.
         function [post, w, logw, ESS, didResample, llrMap, births, dbg, wPre] = timestep(obj, prior, logw_prior, z)
             llrMap = [];
             dbg = [];
@@ -850,11 +827,6 @@ classdef TBD_PF < TBD
                 res.signals = cat(3, scenario.signal{:});
                 res.truth   = scenario.truth;
                 res.Etruth  = scenario.exist;
-                % Scenarios built before SNR was recorded have no field; vis
-                % drops the SNR panel and labels when res.snr is empty.
-                if isfield(scenario, 'snr')
-                    res.snr = scenario.snr;
-                end
                 if isfield(scenario, 'tvec') && numel(scenario.tvec) == R.K
                     res.t = scenario.tvec;
                 end

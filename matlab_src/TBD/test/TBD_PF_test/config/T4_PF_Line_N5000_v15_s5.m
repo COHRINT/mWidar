@@ -8,6 +8,7 @@ function t = T4_PF_Line_N5000_v15_s5()
 
     t.base.env = struct('Seed', 5);
     t.base.TBD = struct('Debug', true);
-    t.base.show = struct('Animate', true, 'AnimateWeights', true);
+    t.base.run = struct('ESS', 0.3,'NoiseSTD', sqrt(15)*10);
+    t.base.show = struct('Animate', true, 'AnimateWeights', false);
 
 end

@@ -174,13 +174,9 @@ classdef environment < mWidar
             RECOVERY = obj.sim.G;
         end
 
-        %%% [signals, snr] = env.simulate(tracks)
-        %%% snr is 1 x K matched-filter SNR in dB for each frame, straight off the
-        %%% simulator, so every downstream plot can label the frame it draws.
-        function [signals, snr] = simulate(obj, tracks)
+        function signals = simulate(obj, tracks)
 
             signals = cell(1,obj.K);
-            snr = nan(1,obj.K);
 
             for k = 1:obj.K
                 
@@ -194,25 +190,17 @@ classdef environment < mWidar
 
                 % Call simulator
                 if strcmp(obj.units, 'meters')
-                    [signals{k}, snr(k)] = obj.sim.generate_mWidar_image(pos,'meters',true);
+                    signals{k} = obj.sim.generate_mWidar_image(pos,'meters',true);
                 elseif strcmp(obj.units, 'pixels')
-                    [signals{k}, snr(k)] = obj.sim.generate_mWidar_image(pos,'pixels',true);
+                    signals{k} = obj.sim.generate_mWidar_image(pos,'pixels',true);
                 end
-            end
-
-            good = isfinite(snr);
-            if any(good)
-                obj.debug_print(sprintf("simulated %d frames, SNR mean %.1f dB, min %.1f, max %.1f", ...
-                    obj.K, mean(snr(good)), min(snr(good)), max(snr(good))));
-            else
-                obj.debug_print(sprintf("simulated %d frames, no finite SNR (noise off or empty scene)", obj.K));
             end
         end
 
         function scenario = setup(obj)
             tracks = obj.generate();
-            [signals, snr] = obj.simulate(tracks);
-            scenario = obj.build_scenario(tracks, signals, snr);
+            signals = obj.simulate(tracks);
+            scenario = obj.build_scenario(tracks, signals);
         end
 
         %%% Quick look at a scenario. Draws the truth tracks over the max
@@ -245,13 +233,6 @@ classdef environment < mWidar
             % vis wants signals as an npx x npx x K stack, scenario keeps a cell
             stack = cat(3, scenario.signal{:});
 
-            % Scenarios saved before SNR was recorded simply have no field, and
-            % vis leaves the SNR off the titles when it is empty.
-            snr = [];
-            if isfield(scenario, 'snr')
-                snr = scenario.snr;
-            end
-
             % Per-target legend entries from the config snapshot
             labels = cell(1, scenario.object_count);
             for i = 1:scenario.object_count
@@ -276,7 +257,6 @@ classdef environment < mWidar
                 'Background', stack, ...
                 'Mask',       scenario.exist, ...
                 'Labels',     labels, ...
-                'SNR',        snr, ...
                 'DataUnits',  scenario.units, ...
                 'Title',      ttl, ...
                 'Save',       savePath);
@@ -288,7 +268,6 @@ classdef environment < mWidar
                 end
                 figAnim = obj.vis.animate_time_history(stack, ...
                     'Truth',     scenario.truth, ...
-                    'SNR',       snr, ...
                     'DataUnits', scenario.units, ...
                     'Trail',     R.Trail, ...
                     'FPS',       R.FPS, ...
@@ -359,12 +338,11 @@ classdef environment < mWidar
         %%%   scenario.dt, .tvec      time base, tvec is 1 x K
         %%%   scenario.units          units of truth ('meters' or 'pixels')
         %%%   scenario.signal         1 x K cell, each npx x npx
-        %%%   scenario.snr            1 x K matched-filter SNR [dB] of each frame (simulator.get_SNR)
         %%%   scenario.truth          1 x ct cell, each 4 x K  [px; vx; py; vy]
         %%%   scenario.exist          ct x K logical, true where object i is alive
         %%%   scenario.cardinality    1 x K, # objects alive at each k
         %%%   scenario.meta           config snapshot (trajectories, rw, endpoints, sim settings, seed)
-        function scenario = build_scenario(obj, tracks, signals, snr)
+        function scenario = build_scenario(obj, tracks, signals)
 
             % Shape checks, so a bad upstream stage fails here with a clear
             % message instead of deep inside a filter.
@@ -373,11 +351,6 @@ classdef environment < mWidar
             end
             if ~iscell(signals) || numel(signals) ~= obj.K
                 error('environment:scenario', 'signals must be a 1 x %d cell', obj.K);
-            end
-            if nargin < 4 || isempty(snr)
-                snr = nan(1, obj.K);
-            elseif numel(snr) ~= obj.K
-                error('environment:scenario', 'snr has %d entries, expected %d', numel(snr), obj.K);
             end
             for i = 1:obj.ct
                 if ~isequal(size(tracks{i}), [4 obj.K])
@@ -405,7 +378,6 @@ classdef environment < mWidar
             scenario.tvec         = obj.tvec;
             scenario.units        = obj.units;
             scenario.signal       = reshape(signals, 1, []);
-            scenario.snr          = reshape(snr, 1, []);
             scenario.truth        = reshape(tracks, 1, []);
             scenario.exist        = exist_mask;
             scenario.cardinality  = sum(exist_mask, 1);

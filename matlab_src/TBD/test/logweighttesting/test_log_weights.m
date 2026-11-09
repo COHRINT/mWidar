@@ -37,12 +37,7 @@ z = scenario.signal{1};
 N = 1000; % # of particles;
 pf = TBD_PF('N', N, 'Seed', 1);   % defaults: Sigma = 0.5 px, pDist = 5
 pf.likelihood = 'gauss';
-Var = 0;                           % matches the environment ('Noise', false)
-if Var ~= 0                        % same rule as TBD_PF.run
-    pf.NoiseSTD = sqrt(Var);
-else
-    pf.NoiseSTD = 0.1;
-end
+pf.NoiseSTD = 0.1;                 % small value, the environment has 'Noise', false
 
 %%% Parameters for the hand-written reference, read off pf so both sides use
 %%% the same numbers. The y = 0.25 m gate is hard-coded in importance_weights.
