@@ -14,6 +14,7 @@
 %%% config must return obj, and setup() returns the scenario rather than
 %%% caching it on the object.
 
+
 classdef environment < mWidar
 
     properties
@@ -21,6 +22,8 @@ classdef environment < mWidar
         debug
         units   % 'meters' (generator output), forwarded to sim & vis
         seed    % rng seed, [] leaves rng alone
+        detector % Use a CA-CFAR detector on the mWidar image
+        detector_args % name/value cell forwarded to run_detector (Pfa, Ng, Nr, Blur, YMin)
 
         %%% Composed objects
         gen     % generator
@@ -57,6 +60,8 @@ classdef environment < mWidar
 
             obj = obj@mWidar();
 
+            addpath("supplemental/Final_Test_Tracks"); % For CA_CFAR
+
             p = inputParser;
             p.FunctionName = 'environment';
 
@@ -64,7 +69,8 @@ classdef environment < mWidar
             addParameter(p, 'Debug', false, @islogical);
             addParameter(p, 'Units', 'meters', @(x) ismember(x, {'meters', 'Meters', 'm', 'pixels', 'pixel', 'px'}));
             addParameter(p, 'Seed', [], @(x) isempty(x) || (isscalar(x) && x >= 0 && mod(x,1) == 0));
-
+            addParameter(p, 'Detector',false, @islogical);
+            addParameter(p, 'DetectorArgs', {}, @iscell);   % e.g. {'Blur', 2, 'YMin', 0.5}
             % Scenario / truth
             addParameter(p, 'objs', 1, @(x) isscalar(x) && x >= 1 && mod(x,1) == 0);
             addParameter(p, 'kEnd', 100, @(x) isscalar(x) && x >= 1 && mod(x,1) == 0);
@@ -93,6 +99,8 @@ classdef environment < mWidar
             obj.debug = R.Debug;
             obj.units = R.Units;
             obj.seed  = R.Seed;
+            obj.detector = R.Detector;
+            obj.detector_args = R.DetectorArgs;
 
             %%% Time base
             obj.ct   = R.objs;
@@ -342,6 +350,8 @@ classdef environment < mWidar
         %%%   scenario.exist          ct x K logical, true where object i is alive
         %%%   scenario.cardinality    1 x K, # objects alive at each k
         %%%   scenario.meta           config snapshot (trajectories, rw, endpoints, sim settings, seed)
+        %%%   scenario.detections     if the detection flag is set, CA_CFAR will be run and detections stored here. Empty otherwise
+        %%%                           (1 x K cell, each 2 x N_meas [x; y] in scenario.units, ready for KF_RBPF.timestep)
         function scenario = build_scenario(obj, tracks, signals)
 
             % Shape checks, so a bad upstream stage fails here with a clear
@@ -382,6 +392,16 @@ classdef environment < mWidar
             scenario.exist        = exist_mask;
             scenario.cardinality  = sum(exist_mask, 1);
 
+            % CA_CFAR detections per frame, each 2 x N_meas [x; y] in
+            % scenario.units (see run_detector). Empty when Detector is off.
+            scenario.detections   = {};
+            if obj.detector
+                scenario.detections = cell(1, obj.K);
+                for k = 1:obj.K
+                    scenario.detections{k} = obj.run_detector(signals{k}, obj.detector_args{:});
+                end
+            end
+
             % Actual endpoints used, read back off the tracks so randomly
             % chosen ones are recorded too.
             p0 = cell(1, obj.ct);
@@ -404,7 +424,9 @@ classdef environment < mWidar
                 'noise',        obj.noise, ...
                 'var',          obj.var, ...
                 'seed',         obj.seed, ...
-                'npx',          obj.npx, ...
+                'detector',     obj.detector, ...
+                'detector_args', {obj.detector_args}, ...
+                'npx',         obj.npx, ...
                 'created',      char(datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss')));
 
             obj.debug_print(sprintf("scenario built: %d obj, K=%d, %d signal frames", ...
@@ -480,6 +502,72 @@ classdef environment < mWidar
                     p1{i} = [ 1.0 + 0.9*rand(),  3.0 + 0.9*rand()];   % x in [1,1.9],  y in [3,3.9]
                 end
             end
+        end
+
+        %%% Wrapper for CA_CFAR detector
+        %%%
+        %%%   y = env.run_detector(z, 'Pfa', 0.365, 'Blur', 2, 'YMin', 0.5)
+        %%%
+        %%% Options
+        %%%   'Pfa'   false alarm probability (default 0.365, tuned in the old pipeline)
+        %%%   'Ng'    guard-cell radius (default 5)
+        %%%   'Nr'    training-cell radius (default 20)
+        %%%   'Blur'  imgaussfilt sigma [px] applied before CFAR, 0 = off
+        %%%           (default 2, as in supplemental/Final_Test_Tracks/test_track.m)
+        %%%   'YMin'  clutter floor [m], detections with y < YMin are dropped
+        %%%           (default 0.5, as in the old dataset scripts), -Inf = off
+        %%%
+        %%% Blur and normalization only touch the detector's copy of the image,
+        %%% the scenario signal (what TBD-PF sees) is unchanged.
+        function [y] = run_detector(obj, z, varargin)
+
+            p = inputParser;
+            addParameter(p, "Pfa", 0.3);
+            addParameter(p, "Ng", 5);
+            addParameter(p, "Nr", 20);
+            addParameter(p, "Blur", 2, @(x) isscalar(x) && x >= 0);
+            addParameter(p, "YMin", 0.5, @isscalar);
+
+            parse(p, varargin{:});
+            R = p.Results;
+
+            Pfa = R.Pfa;
+            Ng = R.Ng;
+            Nr = R.Nr;
+
+            % Smooth the additive white noise so not every noise pixel is a
+            % local max
+            if R.Blur > 0
+                z = imgaussfilt(z, R.Blur);
+            end
+
+            % Min-max normalize to [0, 1] so the image is non-negative (raw
+            % images with additive noise have negative pixels).
+            zmin = min(z(:));
+            zmax = max(z(:));
+            if zmax > zmin
+                z = (z - zmin) / (zmax - zmin);
+            end
+
+            % CA_CFAR returns find() row/col indices (N x 1 each).
+            % Image convention (simulator): S(row, col) = S(Gy, Gx),
+            % so row -> y, col -> x.
+            [~, loc_y, loc_x] = CA_CFAR(z, Pfa, Ng, Nr);
+
+            % Clutter floor, applied in meters whatever the output units
+            keep = obj.ygrid(loc_y) >= R.YMin;
+            loc_y = loc_y(keep);
+            loc_x = loc_x(keep);
+
+            % KF_RBPF expects z as [N_z x N_meas] with H = [1 0 ...; 0 1 ...],
+            % i.e. each column is one detection [x; y].
+            if ismember(obj.units, {'meters', 'Meters', 'm'})
+                y = [obj.xgrid(loc_x); obj.ygrid(loc_y)];   % 2 x N, meters
+            else
+                y = [loc_x.'; loc_y.'];                     % 2 x N, pixels
+            end
+            y = reshape(y, 2, []);   % guarantees 2 x 0 when no detections
+
         end
 
     end
